@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "black-market-sdk"
+version = "0.1.0"
+description = "Canonical Python SDK for the Black Market protocol on Robinhood Chain (Abyss DEX, Atomic launches, lending market)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["black-market", "abyss", "robinhood-chain", "defi", "web3"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "web3>=7.0.0",
+    "eth-abi>=5.0.0",
+    "eth-utils>=4.0.0",
+    "eth-account>=0.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["black_market_sdk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
