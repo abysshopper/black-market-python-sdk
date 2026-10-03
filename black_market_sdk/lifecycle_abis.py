@@ -117,11 +117,12 @@ V4_POSITION_CONFIG_COMPONENTS_V1 = [
     _argument("tickLower", "int24"), _argument("tickUpper", "int24"), _argument("liquidity", "uint128"),
     _argument("salt", "bytes32"), _argument("maxTokenAmount", "uint256"),
 ]
-V4_MARKET_CONFIG_COMPONENTS_V1 = [
+V4_MARKET_CONFIG_COMPONENTS_V2 = [
     _argument("version", "uint16"), _argument("lpFeePips", "uint24"), _argument("tickSpacing", "int24"),
     _argument("sqrtPriceX96", "uint160"), _argument("hookFeePips", "uint24"), _argument("feeMode", "uint8"),
     _argument("protocolFeeDenominator", "uint8"), _argument("treasury", "address"),
     _argument("externalLiquidityDisabled", "bool"),
+    _argument("oracleConfigId", "bytes32"),
     _argument("positions", "tuple[]", components=V4_POSITION_CONFIG_COMPONENTS_V1),
 ]
 ABYSS_POSITION_CONFIG_COMPONENTS_V1 = [

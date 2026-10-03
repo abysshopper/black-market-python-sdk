@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from web3 import Web3
+from eth_abi import decode as abi_decode, encode as abi_encode
 
 from black_market_sdk import (
     ERC20_ABI,
@@ -37,6 +38,7 @@ from black_market_sdk import (
     encode_launch_plan,
     create_controlled_launch_fork,
     hash_launch_plan,
+    get_tick_at_sqrt_ratio,
     launch_id_of,
     launch_plan_from_dict,
     plan_launch,
@@ -53,6 +55,22 @@ def request(client: Web3, method: str, params: list):
     if response.get("error") is not None:
         raise RuntimeError(f"{method}: {response['error']}")
     return response["result"]
+
+
+def observe_market_oracle(client: Web3, root: str, identity: dict, seconds_ago: int, block_number: int):
+    if identity["venue"] == 0:
+        signature = "observeTruncated(bytes32,uint32[])"
+        data = Web3.keccak(text=signature)[:4] + abi_encode(
+            ["bytes32", "uint32[]"], [bytes.fromhex(identity["poolId"][2:]), [seconds_ago]]
+        )
+        address = root
+    else:
+        signature = "observeTruncated(uint32[])"
+        data = Web3.keccak(text=signature)[:4] + abi_encode(["uint32[]"], [[seconds_ago]])
+        address = identity["pool"]
+    return client.provider.make_request(
+        "eth_call", [{"to": address, "data": Web3.to_hex(data)}, hex(block_number)]
+    )
 
 
 def load_rows(manifest: dict, manifest_path: Path) -> list[dict]:
@@ -144,7 +162,12 @@ def recovery_branches(client: Web3, launch, limits: LifecycleLimitResolver, batc
     recovered = read_launch_progress(client, plan, transaction_hashes=[transaction_hash])
     if recovered.prepared_markets != before.prepared_markets or recovered.receipts[0].status not in {"reorged", "pending-or-replaced"}:
         raise AssertionError("reorg recovery retained an orphaned local preparation counter")
-    replay = build_next_transaction(client, plan, transaction_hashes=[transaction_hash], **kwargs)
+    replacement_block = client.eth.get_block(receipt["blockNumber"])
+    if bytes(replacement_block["hash"]) == bytes(receipt["blockHash"]):
+        raise AssertionError("removed preparation receipt still belongs to the canonical block")
+    # A missing receipt is correctly ambiguous to the SDK. Acknowledge this independently
+    # proven orphan before regenerating work; never relax the pending-receipt safety gate.
+    replay = build_next_transaction(client, plan, **kwargs)
     if replay is None or replay.kind != "prepare" or replay.first_market != before.prepared_markets:
         raise AssertionError("reorg recovery did not return the exact uncompleted canonical step")
 
@@ -184,7 +207,7 @@ def recovery_branches(client: Web3, launch, limits: LifecycleLimitResolver, batc
     finally:
         if request(client, "evm_revert", [snapshot]) is not True:
             raise AssertionError("revocation branch snapshot failed to revert")
-    return {"orphanedTransaction": transaction_hash, "recoveredPreparedMarkets": recovered.prepared_markets, "cancelAfterRevocation": True}
+    return {"orphanedTransaction": transaction_hash, "orphanedBlockHash": Web3.to_hex(receipt["blockHash"]), "canonicalReplacementBlockHash": Web3.to_hex(replacement_block["hash"]), "orphanedReceiptAcknowledged": True, "recoveredPreparedMarkets": recovered.prepared_markets, "cancelAfterRevocation": True}
 
 
 def run(manifest_path: Path) -> dict:
@@ -236,6 +259,7 @@ def run(manifest_path: Path) -> dict:
         if not resimulation.admitted or resimulation.block.block_hash != launch.simulation.block.block_hash:
             raise AssertionError("public simulation API did not prove this actual canonical sequence")
         receipts = []
+        activation_receipt = None
         transaction_hashes = []
         recovery = {}
         while True:
@@ -246,6 +270,8 @@ def run(manifest_path: Path) -> dict:
             transaction_hash = Web3.to_hex(receipt["transactionHash"])
             receipts.append({"kind": step.kind, "transactionHash": transaction_hash, "blockHash": Web3.to_hex(receipt["blockHash"]), "gasUsed": receipt["gasUsed"], "gasLimit": step.gas_limit})
             transaction_hashes.append(transaction_hash)
+            if step.kind in {"atomic", "activate"}:
+                activation_receipt = receipt
             if step.kind.startswith("approval"):
                 try:
                     build_next_transaction(client, launch, account=account, transaction_hashes=transaction_hashes, confirmations=2, fork=fork)
@@ -264,15 +290,31 @@ def run(manifest_path: Path) -> dict:
         markets = read_launch_markets(client, plan)
         if len(markets) != len(plan.markets) or sum(len(market["positions"]) for market in markets) != progress.position_count:
             raise AssertionError("canonical discovery omitted an activated market or position")
+        if activation_receipt is None:
+            raise AssertionError("full activation did not retain its actual atomic/staged receipt")
+        oracle_block = client.eth.get_block(activation_receipt["blockHash"])
+        oracle_history = []
         for market in markets:
             venue_coverage.add(market["identity"]["venue"])
             if not market["live"]["publicTrading"]:
                 raise AssertionError("public market readiness did not start at activation")
-            # Fee-only V4 profiles have no oracle (oracleReadyAt 0); canonical Abyss
-            # pools disclose their pool-genesis timestamp only.
-            oracle_ready = market["live"]["oracleReadyAt"] != 0
-            if oracle_ready != (market["identity"]["venue"] == 1):
-                raise AssertionError("venue oracle readiness does not match the fee-only V4 / canonical Abyss boundary")
+            # Both fixture venues disclose actual initialization time, not oracle maturity.
+            if not 0 < market["live"]["oracleReadyAt"] <= oracle_block["timestamp"]:
+                raise AssertionError("real pool-local oracle genesis is missing or lies in the future")
+            elapsed = oracle_block["timestamp"] - market["live"]["oracleReadyAt"]
+            identity = market["identity"]
+            opening_tick = get_tick_at_sqrt_ratio(int(identity["openingSqrtPriceX96"]))
+            normalized_tick = opening_tick if identity["currency0"].lower() == progress.token.lower() else -opening_tick
+            current = observe_market_oracle(client, manifest["addresses"]["v4Hook"], identity, 0, activation_receipt["blockNumber"])
+            if current.get("error") is not None:
+                raise AssertionError(f"real pool-local oracle read failed: {current['error']}")
+            ticks, seconds_per_liquidity = abi_decode(["int56[]", "uint160[]"], bytes.fromhex(current["result"][2:]))
+            if ticks[0] != normalized_tick * elapsed or seconds_per_liquidity[0] != elapsed << 128:
+                raise AssertionError("actual oracle omitted quote-normalized empty history through full activation")
+            older = observe_market_oracle(client, manifest["addresses"]["v4Hook"], identity, elapsed + 1, activation_receipt["blockNumber"])
+            if older.get("error", {}).get("data") != Web3.to_hex(Web3.keccak(text="ObservationTooOld()")[:4]):
+                raise AssertionError(f"oracle fabricated history before its actual genesis: {older}")
+            oracle_history.append({"marketIndex": market["marketIndex"], "venue": identity["venue"], "initializedAt": market["live"]["oracleReadyAt"], "blockHash": Web3.to_hex(activation_receipt["blockHash"]), "tickCumulative": str(ticks[0]), "secondsPerLiquidityCumulativeX128": str(seconds_per_liquidity[0]), "beforeGenesisRejected": True})
             for position in market["positions"]:
                 if position["liveLiquidity"] != int(position["liquidity"]) or position["liveOwner"].lower() != market["custody"].lower():
                     raise AssertionError("live canonical position is not in its permanent custody")
@@ -282,7 +324,7 @@ def run(manifest_path: Path) -> dict:
         if build_next_transaction(client, launch, account=account, fork=fork) is not None:
             raise AssertionError("terminal active launch yielded another economic command")
         coverage.add((launch.mode, int(plan.token.kind)))
-        observation.update({"transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "feePreview": payments, "recovery": recovery})
+        observation.update({"transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "feePreview": payments, "recovery": recovery, "oracleHistory": oracle_history})
         observations.append(observation)
     required = {("atomic", 0), ("staged", 0), ("staged", 1)}
     refused_atomic_404 = any(item["mode"] == "atomic" and item["tokenKind"] == 1 and not item["admitted"] for item in observations)

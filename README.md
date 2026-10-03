@@ -154,14 +154,80 @@ encoders. Public immutable input types are `LaunchPlanV1`,
 `LifecycleMarketConfig`, `LifecycleInitialBuy`, and the venue-specific
 `Lifecycle*MarketConfig` / `Lifecycle*Position` types.
 
-`LifecycleV4MarketConfig` is the fee-only V4 schema: version, lpFeePips,
-tickSpacing, sqrtPriceX96, hookFeePips, feeMode, protocolFeeDenominator,
-treasury, externalLiquidityDisabled and positions — no oracle fields; the
-frozen fee-only V4 profile reports `oracleReadyAt=0`. Canonical Abyss configs
-carry their registered oracle config ID and the live read reports the pool's
-oracle readiness. Preactivation protection is lifecycle token transfer
-restriction plus activation-time canonical opening-state verification on both
-venues.
+`LifecycleV4MarketConfig` is the lifecycle V2 fee-and-oracle schema:
+`version`, `lp_fee_pips`, `tick_spacing`, `sqrt_price_x96`, `hook_fee_pips`,
+`fee_mode`, `protocol_fee_denominator`, `treasury`, `external_liquidity_disabled`,
+`oracle_config_id`, then unchanged positions (ticks/liquidity/salt/token maximum).
+The only lifecycle V4 profile is `keccak256("black-market.v4-lifecycle-market.v2")`.
+Outer market `config_version=2` and inner `version=2` are mandatory; retired profile
+and old versions are rejected, with no compatibility path. Exact ABI:
+
+```text
+(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])
+```
+
+Use the canonical factory's admitted oracle ID in the committed config:
+
+```python
+from dataclasses import replace
+from black_market_sdk import encode_lifecycle_v4_market_config
+
+config = replace(reviewed_v4_config, version=2,
+                 oracle_config_id=admitted_canonical_oracle_config_id)
+encoded_config = encode_lifecycle_v4_market_config(config)
+# Commit encoded_config with outer config_version=2 and the approved V2 profile.
+```
+
+The root is new `SharedLaunchFeeHookV2` / `SharedLaunchFeeHookDeployerV2`, with
+new `fees/v2/V4FeeCollectorV2` and unchanged `V4FeeLiquidityLockerV1`. Independent
+fee-only V1 contracts and historical hooks stay unchanged. The root constructor
+binds manager, adapter registrar and canonical Abyss factory oracle authority.
+Registration snapshots `oracleConfigs(id)` once, with movement **1..887272** and
+cardinality cap **2..4096**. The unchanged real `TruncatedOracle` maintains independent
+full-PoolId state and observations; pre-swap/pre-active-liquidity sampling is once
+per block, before zero/wrong-currency fee returns, with quote-normalized clamping.
+
+Root APIs are `observeTruncated(poolId, secondsAgos)`,
+`increaseObservationCardinalityNext(poolId, requested)` and `oracleInitializedAt(poolId)`.
+Initial populated/prepared cardinality is **1**; permissionless capped monotonic lazy
+growth does not populate fabricated history. `readMarket().oracleReadyAt` reports
+actual genesis, not maturity, on both venues: atomic history starts in that transaction;
+staged history exists only since preparation, and pre-genesis reads fail. Token
+restrictions and canonical opening-state continuity remain the preactivation protection,
+without a pool-side launch gate. Trader deltas, ERC6909/liabilities, floored treasury
+accrual and exact burn/take settlement/permanent custody remain preserved.
+
+Current restoration evidence is in the sibling application's
+[review](../black-market/docs/launch-lifecycle-v1-review.md#lifecycle-v4-oracle-restoration-evidence),
+[contract results](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/contract-proof-results.json)
+and [non-test runtime JSON](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-non-test-oracle-launch-lifecycle-v4-oracle-proof-7.json).
+The 147 unique named tests have final passing evidence across runs (146 initial
+passes plus one targeted test-ordering correction), not a single all-green 147 run;
+fresh live Kyber proof separately passed **9/9** at block **78750379**.
+The primary complete graph is
+[`launch-lifecycle-v4-oracle-proof-7`](../black-market/contracts/deployments/local/launch-lifecycle-v4-oracle-proof-7/manifest.json).
+Its [actual runner](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-runtime-attempt7.command.json)
+exited **0**, including both SDKs, actual Chromium, cross-block ordinary router swaps
+and rollback-negative deployment capture. The
+[runtime summary](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-runtime-summary-launch-lifecycle-v4-oracle-proof-7.json)
+records Python **13 plans: 3 Active (atomic ERC20, staged ERC20, staged ERC404),
+10 refusals**, real orphan acknowledgement/recovery and cancellation after revocation,
+and both venues' genesis/pre-genesis reads. The full offline Python suite passed
+**133/133**. Oversized indivisible activations remain truthful refusals under the
+unchanged **16,000,000** account/RPC gas envelope, not launch successes.
+Normal runtime/initcode limits remained **24,576 / 49,152 bytes**, chain transaction
+gas **16,777,216**, block gas **30,000,000**. Actual browser proof passed **2/2,
+exit 0, zero console/page errors**: atomic Active and staged ERC404 Ready/reload → Active
+with all buys/NFTs; exact submitted calldata and explicit fresh identity differences
+are retained in the summary. Ordinary non-test swaps in blocks **92/93** observed
+spot **3930 → 4091 → 4252**, truncated **0 → 17 → 34**, cursor **0 → 1 → 2**,
+capacity **1 → 4** and pre-genesis rejection without fabricated history.
+Older V1 graphs/browser results and intermediate -5/-6 attempts remain historical;
+-6 passed two browser tests but its runner failed a throwaway post-test bind check.
+The [operations recipe](../black-market/docs/launch-lifecycle-v1-operations.md#settled-oracle-restoration-proof--7)
+discloses removed verification-only callbacks while retaining exact command metadata.
+The [final summary](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/final-summary.json)
+records **no proof blockers**, no production broadcast/default rebinding.
 
 ### Commitment and execution
 

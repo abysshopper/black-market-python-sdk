@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import IntEnum
-from typing import Any
+from typing import Any, Literal
 
 from eth_abi import decode as abi_decode
 from eth_abi import encode as abi_encode
@@ -25,7 +25,7 @@ from .lifecycle_abis import (
     LAUNCH_LIFECYCLE_V1_ABI, LAUNCH_MARKET_ADAPTER_V1_ABI, LAUNCH_PLAN_COMPONENTS_V1,
     LAUNCH_PROGRESS_COMPONENTS_V1, LAUNCH_RECEIPT_COMPONENTS_V1,
     ADAPTER_REGISTRATION_COMPONENTS_V1, MARKET_IDENTITY_COMPONENTS_V1,
-    PROFILE_REGISTRATION_COMPONENTS_V1, V4_MARKET_CONFIG_COMPONENTS_V1,
+    PROFILE_REGISTRATION_COMPONENTS_V1, V4_MARKET_CONFIG_COMPONENTS_V2,
 )
 from .lifecycle_rpc import (
     ControlledLaunchFork, LaunchBlock, LaunchExecutionLimits, LaunchLimitContext, LaunchRpcSimulation,
@@ -157,7 +157,7 @@ class LifecycleV4Position:
 
 @dataclass(frozen=True)
 class LifecycleV4MarketConfig:
-    version: int
+    version: Literal[2]
     lp_fee_pips: int
     tick_spacing: int
     sqrt_price_x96: int
@@ -166,6 +166,7 @@ class LifecycleV4MarketConfig:
     protocol_fee_denominator: int
     treasury: str
     external_liquidity_disabled: bool
+    oracle_config_id: bytes | str
     positions: tuple[LifecycleV4Position, ...]
 
 
@@ -201,6 +202,8 @@ def _tuple_type(components: Sequence[Mapping[str, Any]]) -> str:
 
 
 LAUNCH_PLAN_V1_ABI_TYPE = _tuple_type(LAUNCH_PLAN_COMPONENTS_V1)
+V4_LIFECYCLE_PROFILE_ID = keccak(text="black-market.v4-lifecycle-market.v2")
+V4_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V2))
 
 
 def _uint(value: Any, bits: int, name: str) -> int:
@@ -394,7 +397,10 @@ def launch_id_of(plan: LaunchPlanV1) -> str:
 
 
 def encode_lifecycle_v4_market_config(config: LifecycleV4MarketConfig | Mapping[str, Any]) -> bytes:
-    return abi_encode([_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V1)], [_struct_tuple(V4_MARKET_CONFIG_COMPONENTS_V1, config)])
+    values = _struct_tuple(V4_MARKET_CONFIG_COMPONENTS_V2, config)
+    if values[0] != 2:
+        raise ValueError("V4 lifecycle market config version must be 2")
+    return abi_encode([_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V2)], [values])
 
 
 def encode_lifecycle_abyss_market_config(config: LifecycleAbyssMarketConfig | Mapping[str, Any]) -> bytes:
