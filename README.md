@@ -244,6 +244,35 @@ or fee-asset addresses. `predict_launch_token` may be called on a draft plan
 containing its quote policies; then include that exact predicted token in the
 ascending, unique fee-asset set. There is no zero-address token sentinel.
 
+New V2 hubs cap the initial `executor_fee_bps` at 1,000 (10%). The current registered
+fee owner can use `LAUNCH_FEE_HUB_V2_ABI` to call `setExecutorFeeBps(uint16)` immediately.
+`executorFeeBps()` reads the current rate; `MAX_EXECUTOR_FEE_BPS()` returns 1,000,
+and `ExecutorFeeUpdated` records updates. Accepted ownership transfers move this
+authority. The owner/rewards/burn fractions remain fixed. Each harvest snapshots
+one rate for all freshly collected fees, including earlier accrual; old owner credits
+are unaffected. Callback updates are blocked. Preview is not a minimum-payment
+guarantee after an owner rate change. Existing immutable hubs and fee-only V1 remain
+unchanged.
+
+New lifecycle hubs always reserve owner allocations rather than pushing them.
+With `LAUNCH_FEE_HUB_V2_ABI`, read `claimableOwnerFees(owner, asset)` and call
+`claimOwnerFees(asset, recipient)` as the credited owner. Withdrawal neither
+harvests pools nor charges a bounty; old credits remain with the old owner after handoff.
+
+`LIFECYCLE_DIVIDEND_V1_ABI` exposes new ERC20/ERC404 dividend tokens'
+`dividendBountyBps()` and `setDividendBountyBps(uint16)`. The current registered fee
+owner controls this independent setting, initially zero, capped at 1,000 bps.
+Third-party `claimFor` / `claimRange` pays the caller
+`floor(gross_dividend * bounty_bps / 10_000)` per asset and the beneficiary the remainder.
+Self-claims receive the full amount; zero still permits third-party payout. One
+current-rate snapshot applies to every asset and previously accrued dividends,
+without an opt-in, delay or minimum-payment guarantee. `DividendBountyUpdated`
+records rate changes and `RewardClaimBountyPaid` records the caller payout.
+`earned` / `pendingRewards` are gross; claim returns, `RewardPaid` and
+`lifetimeRewardsPaid` are net beneficiary receipts. `MULTI_ASSET_REWARDS_V1_ABI`
+also supports staking claims, which have no payout bounty. These ABIs are package-root
+exports for the opt-in lifecycle; legacy reward contracts are not relabeled.
+
 Funding outputs and 1–8 fee assets are strictly ascending and never silently
 sorted. Fee dispositions sum to 10,000; burn is launch-token-only. Creator,
 payer, and refund authority are identical. Token budgets cannot be reused

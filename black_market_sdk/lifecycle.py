@@ -333,8 +333,8 @@ def to_launch_plan_tuple(plan: LaunchPlanV1) -> tuple[Any, ...]:
         raise ValueError("ERC404 nftUnit must be positive")
     if not 1 <= len(plan.markets) <= 16 or len(plan.buys) > 64:
         raise ValueError("a lifecycle launch requires 1..16 markets and at most 64 buys")
-    if not 1 <= len(plan.fee_assets) <= 8 or plan.executor_fee_bps >= 10_000:
-        raise ValueError("fee assets must number 1..8 and executorFeeBps must be below 10000")
+    if not 1 <= len(plan.fee_assets) <= 8 or plan.executor_fee_bps > 1_000:
+        raise ValueError("fee assets must number 1..8 and executorFeeBps must not exceed 1000")
     for sequence, name in ((plan.fee_assets, "feeAssets"), (plan.funding, "funding")):
         addresses = [int(item.asset, 16) for item in sequence]
         if any(address == 0 for address in addresses) or any(left >= right for left, right in zip(addresses, addresses[1:])):

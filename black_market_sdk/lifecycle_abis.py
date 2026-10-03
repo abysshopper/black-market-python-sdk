@@ -215,6 +215,13 @@ LAUNCH_FEE_HUB_V2_ABI = [
     *[_function(name, [], [_argument("", "address")]) for name in ("launchToken", "feeOwnerRegistry", "configurator", "rewards")],
     *[_function(name, [], [_argument("", "bool")]) for name in ("requiresOwner", "requiresRewards", "finalized")],
     _function("executorFeeBps", [], [_argument("", "uint16")]),
+    _function("MAX_EXECUTOR_FEE_BPS", [], [_argument("", "uint16")]),
+    _function("setExecutorFeeBps", [_argument("newFeeBps", "uint16")], [], "nonpayable"),
+    {"type": "event", "name": "ExecutorFeeUpdated", "anonymous": False, "inputs": [
+        _argument("feeOwner", "address", indexed=True),
+        _argument("previousFeeBps", "uint16", indexed=False),
+        _argument("newFeeBps", "uint16", indexed=False),
+    ]},
     *[_function(name, [], [_argument("", "address[]")]) for name in ("assets", "sources")],
     _function("policy", [_argument("asset", "address")], [_argument("", "tuple", components=FEE_ASSET_POLICY_COMPONENTS_V2)]),
     _function("sourceId", [_argument("source", "address")], [_argument("", "bytes32")]),
@@ -227,6 +234,28 @@ LAUNCH_FEE_HUB_V2_ABI = [
     _function("claimableOwnerFees", [_argument("owner", "address"), _argument("asset", "address")], [_argument("", "uint256")]),
     _function("reservedOwnerFees", [_argument("asset", "address")], [_argument("", "uint256")]),
     _function("claimOwnerFees", [_argument("asset", "address"), _argument("recipient", "address")], [_argument("amount", "uint256")], "nonpayable"),
+    _event("OwnerFeesCredited", [_argument("owner", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+    _event("OwnerFeesClaimed", [_argument("owner", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("recipient", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+]
+
+# Claim amounts and RewardPaid are net beneficiary receipts; earned is gross entitlement.
+MULTI_ASSET_REWARDS_V1_ABI = [
+    _function("rewardAssets", [], [_argument("", "address[]")]),
+    _function("earned", [_argument("beneficiary", "address"), _argument("asset", "address")], [_argument("", "uint256")]),
+    _function("pendingRewards", [_argument("beneficiary", "address")], [_argument("", "uint256[]")]),
+    _function("lifetimeRewardsPaid", [_argument("asset", "address"), _argument("beneficiary", "address")], [_argument("", "uint256")]),
+    _function("claim", [], [_argument("", "uint256[]")], "nonpayable"),
+    _function("claimFor", [_argument("beneficiary", "address")], [_argument("", "uint256[]")], "nonpayable"),
+    _function("claimRange", [_argument("beneficiary", "address"), _argument("start", "uint256"), _argument("count", "uint256")], [_argument("", "uint256[]")], "nonpayable"),
+    _event("RewardPaid", [_argument("beneficiary", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+    _event("RewardClaimBountyPaid", [_argument("executor", "address", indexed=True), _argument("beneficiary", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+]
+LIFECYCLE_DIVIDEND_V1_ABI = [
+    *MULTI_ASSET_REWARDS_V1_ABI,
+    _function("MAX_DIVIDEND_BOUNTY_BPS", [], [_argument("", "uint16")]),
+    _function("dividendBountyBps", [], [_argument("", "uint16")]),
+    _function("setDividendBountyBps", [_argument("newBountyBps", "uint16")], [], "nonpayable"),
+    _event("DividendBountyUpdated", [_argument("feeOwner", "address", indexed=True), _argument("previousBountyBps", "uint16", indexed=False), _argument("newBountyBps", "uint16", indexed=False)]),
 ]
 LAUNCH_FUNDING_ESCROW_V1_ABI = [
     _function("core", [], [_argument("", "address")]),
