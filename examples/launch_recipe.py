@@ -1,5 +1,10 @@
 """Derive an Atomic launch pool recipe and estimate the initial buy — no RPC needed."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from black_market_sdk import (
     AtomicLaunchInitialBuyEstimateInput,
     AtomicLaunchPoolRecipeInput,

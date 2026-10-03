@@ -3383,6 +3383,17 @@ WETH_GATEWAY_ABI = [
   },
  ]
 
+# WETH9 deposit surface used to wrap a shortfall before a launch.
+WETH_ABI = [
+  {
+   "type": "function",
+   "name": "deposit",
+   "stateMutability": "payable",
+   "inputs": [],
+   "outputs": [],
+  },
+ ]
+
 WORKBENCH_FAUCET_ABI = [
   {
    "type": "function",

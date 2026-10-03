@@ -4,6 +4,11 @@ Historical example only: it never signs, simulates, or broadcasts a transaction.
 Source: https://robinhoodchain.blockscout.com/tx/0xd0dcae27e9ec2f7fb6e2304d7b1d739fd2f45f91d1eb5e762cdfcf01819fb837
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from black_market_sdk import (
     ATOMIC_LAUNCH_ORACLE_CONFIG_ID,
     AUCTION_SUPPLY,
@@ -16,7 +21,7 @@ from black_market_sdk import (
     FeeDisposition,
     TokenKind,
     build_atomic_launch_calldata,
-    get_addresses,
+    ROBINHOOD_ATOMIC_LAUNCH_APPLICATION,
 )
 
 ABBY_DEPLOYMENT = {
@@ -24,7 +29,7 @@ ABBY_DEPLOYMENT = {
     "transaction_hash": "0xd0dcae27e9ec2f7fb6e2304d7b1d739fd2f45f91d1eb5e762cdfcf01819fb837",
     "block_number": 56_232_272,
     "creator": "0x73bD52A3848B9219C6FE7E0D81CecF85E0c6D38b",
-    "launch_factory": "0xAf3FdC499b3717EBE8aD51B66bA78Cb083552351",
+    "launch_factory": ROBINHOOD_ATOMIC_LAUNCH_APPLICATION.launch_factory,
     "launch_fee": 500_000_000_000_000,
     "token": "0x450b50d216088e40cdd412da98b3b4c07bb4931f",
     "pool": "0x5304f1300384d129d7f18a2b657d9cc6ff2cc002",
@@ -69,7 +74,7 @@ ABBY_REQUEST = AtomicLaunchRequest(
 )
 
 ABBY_CALLDATA = build_atomic_launch_calldata(ABBY_REQUEST)
-assert get_addresses(4663).launch_factory == ABBY_DEPLOYMENT["launch_factory"]
+assert ROBINHOOD_ATOMIC_LAUNCH_APPLICATION.launch_factory == ABBY_DEPLOYMENT["launch_factory"]
 assert ABBY_CALLDATA[:4].hex() == "e5ac002e"
 assert len(ABBY_CALLDATA) == 1_060
 

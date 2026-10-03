@@ -1,11 +1,12 @@
 """Chain definitions and canonical Black Market deployment addresses.
 
-Overrides are evaluated once at module import. Launch-application addresses
-use bare, ``VITE_``, then ``NEXT_PUBLIC_`` precedence on every chain. Abyss
-infrastructure overrides apply to ``31337`` and ``46631`` only; mainnet
-``4663`` remains canonical. Lending overrides apply to ``31337`` with the same
-precedence and to ``46631`` with public prefixes only. The mainnet liquidation
-executor is the sole lending-field exception and supports all three forms.
+Overrides are evaluated once at module import. Launch-application and unified
+launch addresses use bare, ``VITE_``, then ``NEXT_PUBLIC_`` precedence on every
+chain. Abyss infrastructure overrides apply to ``31337`` and ``46631`` only;
+mainnet ``4663`` remains canonical. Lending overrides apply to ``31337`` with
+the same precedence and to ``46631`` with public prefixes only. The mainnet
+liquidation executor is the sole lending-field exception and supports all three
+forms.
 """
 
 from __future__ import annotations
@@ -80,6 +81,21 @@ class LaunchApplicationAddresses:
 
 
 @dataclass(frozen=True)
+class UnifiedLaunchAddresses:
+    """Verified schema-/2 launcher routes and supporting deployer contracts."""
+
+    unified_launcher: str
+    launch_pool_registry: str
+    abyss_launch_pool_adapter_v3: str
+    uniswap_v4_launch_pool_adapter_v3: str
+    burnable_token_deployer_v2: str
+    holder_dividend_token_deployer_v2: str
+    uniswap_v4_pool_manager: str
+    uniswap_v4_v3_hook_deployer: str
+    uniswap_v4_v3_liquidity_locker: str
+    uniswap_v4_v3_abyss_bonus_distributor: str
+
+@dataclass(frozen=True)
 class ProtocolAddresses(AbyssInfrastructureAddresses, LaunchApplicationAddresses):
     lending_pool: str
     addresses_provider: str
@@ -121,6 +137,19 @@ _LAUNCH_ENV_KEYS = {
     "launch_fee_owner_registry": "LAUNCH_FEE_OWNER_REGISTRY",
 }
 
+_UNIFIED_LAUNCH_ENV_KEYS = {
+    "unified_launcher": "LAUNCH_FACTORY",
+    "launch_pool_registry": "LAUNCH_POOL_REGISTRY",
+    "abyss_launch_pool_adapter_v3": "ABYSS_LAUNCH_POOL_ADAPTER_V3",
+    "uniswap_v4_launch_pool_adapter_v3": "UNISWAP_V4_LAUNCH_POOL_ADAPTER_V3",
+    "burnable_token_deployer_v2": "BURNABLE_TOKEN_DEPLOYER_V2",
+    "holder_dividend_token_deployer_v2": "HOLDER_DIVIDEND_TOKEN_DEPLOYER_V2",
+    "uniswap_v4_pool_manager": "UNISWAP_V4_POOL_MANAGER",
+    "uniswap_v4_v3_hook_deployer": "UNISWAP_V4_V3_HOOK_DEPLOYER",
+    "uniswap_v4_v3_liquidity_locker": "UNISWAP_V4_V3_LIQUIDITY_LOCKER",
+    "uniswap_v4_v3_abyss_bonus_distributor": "UNISWAP_V4_V3_ABYSS_BONUS_DISTRIBUTOR",
+}
+
 
 def _abyss_infrastructure_from_env(
     fallback: AbyssInfrastructureAddresses,
@@ -144,8 +173,23 @@ def _launch_application_from_env(
     )
 
 
+def _unified_launch_from_env(
+    fallback: UnifiedLaunchAddresses,
+) -> UnifiedLaunchAddresses:
+    return UnifiedLaunchAddresses(
+        **{
+            field: _env_addr(name, getattr(fallback, field))
+            for field, name in _UNIFIED_LAUNCH_ENV_KEYS.items()
+        }
+    )
+
+
 _ZERO_ABYSS_INFRASTRUCTURE = AbyssInfrastructureAddresses(**{f: ZERO_ADDRESS for f in _ABYSS_ENV_KEYS})
 _ZERO_LAUNCH_APPLICATION = LaunchApplicationAddresses(**{f: ZERO_ADDRESS for f in _LAUNCH_ENV_KEYS})
+_ZERO_UNIFIED_LAUNCH_ADDRESSES = UnifiedLaunchAddresses(
+    **{field: ZERO_ADDRESS for field in _UNIFIED_LAUNCH_ENV_KEYS}
+)
+
 
 #: Canonical replacement: abyss/deployments/4663/abyss-canonical-replacement-20260830/deployment.json.
 ROBINHOOD_ABYSS_INFRASTRUCTURE = AbyssInfrastructureAddresses(
@@ -163,8 +207,9 @@ ROBINHOOD_ABYSS_INFRASTRUCTURE = AbyssInfrastructureAddresses(
     abyss_fee_router="0x2c3B1b6fe0EDa8e10C0445567b47e66E825B34cd",
 )
 
-#: Captured replacement: contracts/deployments/launch/robinhood-mainnet-replacement-deployment-record.json.
-ROBINHOOD_LAUNCH_APPLICATION = LaunchApplicationAddresses(
+#: Historical Atomic replacement, retained solely for explicit legacy calldata
+#: reconstruction. It must not be used as the current UnifiedLauncher target.
+ROBINHOOD_ATOMIC_LAUNCH_APPLICATION = LaunchApplicationAddresses(
     launch_token_factory="0x7B6F6efb4536F579223423e31d9036D996bc90F0",
     launch_coordinator="0xE98A82202D794A7836316971e7ACf61F260f8399",
     launch_factory="0xAf3FdC499b3717EBE8aD51B66bA78Cb083552351",
@@ -173,6 +218,31 @@ ROBINHOOD_LAUNCH_APPLICATION = LaunchApplicationAddresses(
     launch_fee_owner_registry="0xdD3756269Db20F2a60055b0FE8c101FAd12525f9",
 )
 
+#: schema-/2 deployment record's applicationAddresses object. ``launch_factory``
+#: is the current UnifiedLauncher entry point, not an AtomicLaunchFactory.
+ROBINHOOD_LAUNCH_APPLICATION = LaunchApplicationAddresses(
+    launch_token_factory="0x84225a7b7fd9981f8a3086acfbbb688348247f6f",
+    launch_coordinator="0xcc3aa2dff0fd6e9505b12b731111ec1b7b49621d",
+    launch_factory="0xa7a4755fb907593f05fd1e289aa780f0d57f3a12",
+    launch_template_registry="0x01422012c452f2e363d56bd408c7ed1c44204701",
+    launch_module_factory="0xe6bb1f77b94fa2003db0f4c2e248649061922c64",
+    launch_fee_owner_registry="0xa8018950ebb6a35708820c89243ddab8718ee0bc",
+)
+
+#: Verified routes from the schema-/2 deployment record and the later enabled
+#: V3 extension registration.
+ROBINHOOD_UNIFIED_LAUNCH_ADDRESSES = UnifiedLaunchAddresses(
+    unified_launcher="0xa7a4755fb907593f05fd1e289aa780f0d57f3a12",
+    launch_pool_registry="0x04f453aac720a5fb410fe81fc50b747f969b352c",
+    abyss_launch_pool_adapter_v3="0xd0eb22fd4be5d049545e072d8e7fad72475b4cea",
+    uniswap_v4_launch_pool_adapter_v3="0x9607ddc99381f18985770b4f93685ed90220bc98",
+    burnable_token_deployer_v2="0xd12ed68dd35dc9f76df8fe5b99cd988430f356d1",
+    holder_dividend_token_deployer_v2="0xe9ea8555e0e7ee68a0733f45c285e7b5558ab842",
+    uniswap_v4_pool_manager="0x8366a39cc670b4001a1121b8f6a443a643e40951",
+    uniswap_v4_v3_hook_deployer="0x78e773891f66f0423789e6d06f3cf613c0296d7a",
+    uniswap_v4_v3_liquidity_locker="0x44bb63597bff2e7cb6c7fd1716df4abd6e3420ec",
+    uniswap_v4_v3_abyss_bonus_distributor="0xd3f171677431644aefc17a0cfc66d65b626284b3",
+)
 #: Workbench deployment snapshot — override via env when redeploying.
 _WORKBENCH_DEFAULTS = ProtocolAddresses(
     **vars(ROBINHOOD_ABYSS_INFRASTRUCTURE),
@@ -266,8 +336,35 @@ def _build_addresses() -> dict[SupportedChainId, ProtocolAddresses]:
 ADDRESSES: dict[SupportedChainId, ProtocolAddresses] = _build_addresses()
 
 
+def _build_unified_launch_addresses() -> dict[SupportedChainId, UnifiedLaunchAddresses]:
+    return {
+        ANVIL_LOCAL_CHAIN_ID: _unified_launch_from_env(_ZERO_UNIFIED_LAUNCH_ADDRESSES),
+        ROBINHOOD_MAINNET_CHAIN_ID: _unified_launch_from_env(
+            ROBINHOOD_UNIFIED_LAUNCH_ADDRESSES
+        ),
+        WORKBENCH_CHAIN_ID: _unified_launch_from_env(_ZERO_UNIFIED_LAUNCH_ADDRESSES),
+    }
+
+
+UNIFIED_LAUNCH_ADDRESSES: dict[SupportedChainId, UnifiedLaunchAddresses] = (
+    _build_unified_launch_addresses()
+)
+
+
 def get_addresses(chain_id: SupportedChainId = WORKBENCH_CHAIN_ID) -> ProtocolAddresses:
     return ADDRESSES[chain_id]
+
+
+def get_unified_launch_addresses(
+    chain_id: SupportedChainId = WORKBENCH_CHAIN_ID,
+) -> UnifiedLaunchAddresses:
+    """Return verified UnifiedLauncher routes for ``chain_id``.
+
+    Undeployed default chains deliberately contain zero addresses rather than
+    silently borrowing a route from mainnet.
+    """
+
+    return UNIFIED_LAUNCH_ADDRESSES[chain_id]
 
 
 def is_supported_chain_id(chain_id: int) -> bool:
