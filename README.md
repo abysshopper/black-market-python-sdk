@@ -158,7 +158,7 @@ encoders. Public immutable input types are `LaunchPlanV1`,
 `version`, `lp_fee_pips`, `tick_spacing`, `sqrt_price_x96`, `hook_fee_pips`,
 `fee_mode`, `protocol_fee_denominator`, `treasury`, `external_liquidity_disabled`,
 `oracle_config_id`, then unchanged positions (ticks/liquidity/salt/token maximum).
-The only lifecycle V4 profile is `keccak256("black-market.v4-lifecycle-market.v2")`.
+The only lifecycle V4 profile is `keccak256("black-market.v4-lifecycle-market.v3")`.
 Outer market `config_version=2` and inner `version=2` are mandatory; retired profile
 and old versions are rejected, with no compatibility path. Exact ABI:
 
@@ -179,7 +179,7 @@ encoded_config = encode_lifecycle_v4_market_config(config)
 ```
 
 The root is new `SharedLaunchFeeHookV2` / `SharedLaunchFeeHookDeployerV2`, with
-new `fees/v2/V4FeeCollectorV2` and unchanged `V4FeeLiquidityLockerV1`. Independent
+new `fees/v2/V4FeeCollectorV2` and new `launch/fees/v2/V4FeeLiquidityLockerV2` custody. Independent
 fee-only V1 contracts and historical hooks stay unchanged. The root constructor
 binds manager, adapter registrar and canonical Abyss factory oracle authority.
 Registration snapshots `oracleConfigs(id)` once, with movement **1..887272** and
@@ -193,9 +193,12 @@ Initial populated/prepared cardinality is **1**; permissionless capped monotonic
 growth does not populate fabricated history. `readMarket().oracleReadyAt` reports
 actual genesis, not maturity, on both venues: atomic history starts in that transaction;
 staged history exists only since preparation, and pre-genesis reads fail. Token
-restrictions and canonical opening-state continuity remain the preactivation protection,
-without a pool-side launch gate. Trader deltas, ERC6909/liabilities, floored treasury
-accrual and exact burn/take settlement/permanent custody remain preserved.
+restrictions and canonical opening-state continuity remain enforced, without a swap gate.
+V4 additions are custody-only until registrar-only `completePoolOpening`; afterwards
+the committed `externalLiquidityDisabled` policy applies unchanged, so `False` preserves
+external-liquidity support. `openingCompletedAt` is not oracle genesis or maturity.
+Trader deltas, ERC6909/liabilities, floored treasury accrual and exact burn/take
+settlement/permanent custody remain preserved.
 
 Current restoration evidence is in the sibling application's
 [review](../black-market/docs/launch-lifecycle-v1-review.md#lifecycle-v4-oracle-restoration-evidence),
@@ -314,13 +317,24 @@ For an **exclusively owned separate local Anvil**, call
 The two RPC endpoints must differ, including loopback aliases. This is a
 configuration helper: simulation validates Anvil capability and resets **only
 the separate fork**, when needed, to the exact source block through its explicit
-source URL. It validates chain/head hash, takes a fork snapshot, estimates
-against actual preceding state, submits real fresh fork transactions, checks
-receipts, and reverts that snapshot in `finally`. The exact-gas admission pass
-also submits and reverts actual fork transactions. It never impersonates or
+source URL. The refresh URL is independently checked against the planning
+source's pinned chain ID, block number/hash and every creator nonce; a different
+same-chain endpoint is not trusted merely because reset succeeds. After reset
+and immediately before each measurement or exact-gas admission snapshot, those
+same dimensions must match on the resulting fork or simulation fails closed
+with `LaunchStateChanged`. Only then does it estimate against actual preceding
+state, submit real fresh fork transactions, check receipts, and revert its
+snapshot in `finally`. The exact-gas admission pass also submits and reverts
+actual fork transactions. It never impersonates or
 injects funds; an unrestored snapshot is a hard failure. Planning never snapshots,
 resets, or sends transactions to the source execution node. Do not pass a shared
 node or production client as a controlled fork.
+
+Snapshot cleanup's existing `restored_exactly` predicate tolerates some
+same-height changed hashes; it is not proof of exact restored-header identity.
+That tolerance is not used as admission evidence: the next measurement or
+exact-gas pass independently checks the exact pinned chain/header/nonces and
+refreshes a mismatched fork before executing.
 
 ### Real local manifest example
 
@@ -390,6 +404,16 @@ sequences, reloads, confirmation gating, orphaned receipts, registry retirement
 and exact launch-isolated cancellation refunds, then reads live custody and
 previews every canonical fee asset. This is local integration, not production
 admission or publication.
+
+The Solidity exporter declares each row's expected positive/negative outcome. Every
+expected-positive row must actually become `Active`, including staged ERC20/ERC404
+coverage by decoded token kind. A negative row passes only with numeric measured
+headroom/cap evidence for the indivisible step, an exhausted exact-ceiling receipt, or
+an authenticated terminal failing `callTracer` chain reaching `OutOfGas` at that cap.
+Generic RPC/estimator reverts, staging advice, affordability and unrelated ABI/identity/
+funding/oracle failures abort. If SDK evidence is opaque, the smoke replays the exact
+sequence at the unchanged cap only on the separate owned fork, records per-row
+`gasEvidence`, and resets its pinned head. It never changes source balances/code/allowances.
 
 ### Recovery and cancellation
 

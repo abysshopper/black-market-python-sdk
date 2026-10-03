@@ -202,7 +202,7 @@ def _tuple_type(components: Sequence[Mapping[str, Any]]) -> str:
 
 
 LAUNCH_PLAN_V1_ABI_TYPE = _tuple_type(LAUNCH_PLAN_COMPONENTS_V1)
-V4_LIFECYCLE_PROFILE_ID = keccak(text="black-market.v4-lifecycle-market.v2")
+V4_LIFECYCLE_PROFILE_ID = keccak(text="black-market.v4-lifecycle-market.v3")
 V4_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V2))
 
 

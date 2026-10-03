@@ -195,11 +195,11 @@ class ControlledLaunchFork:
     """An explicitly isolated local Anvil instance at the exact source block.
 
     ``isolated=True`` is an ownership assertion: no other task may mutate this
-    instance while its snapshot is held. It must have the source chain ID and
-    canonical head hash, and the creator must already be unlocked and funded.
-    ``source_rpc_url`` enables exact pinned-block refresh on this fork only.
-    Source and fork endpoints must differ. No balance/code/allowance injection
-    or impersonation occurs.
+    instance while its snapshot is held. Before each simulation pass, its chain
+    ID, exact canonical head number/hash and creator nonces must match the pinned
+    source. ``source_rpc_url`` enables exact pinned-block refresh on this fork
+    only and is independently checked against that source state. Source and fork
+    endpoints must differ. No balance/code/allowance injection or impersonation occurs.
     """
 
     client: Web3
@@ -333,26 +333,49 @@ def _simulate_fork(
     if client is source or (isinstance(source_endpoint, str) and _same_rpc_endpoint(source_endpoint, fork_endpoint)):
         raise ValueError("controlled fork must be separate from the source execution node")
     rpc(client, "anvil_nodeInfo", [])
-    fork_head = read_block(client)
+    source_chain = quantity(rpc(source, "eth_chainId", []))
     creators = sorted({str(transaction.get("from", "")).lower() for transaction in transactions if transaction.get("from")})
-    def _nonce_drifted() -> bool:
-        for creator in creators:
-            if quantity(rpc(client, "eth_getTransactionCount", [creator, fork_head.tag])) != quantity(rpc(source, "eth_getTransactionCount", [creator, block.tag])):
-                return True
-        return False
-    if fork_head.number != block.number or fork_head.block_hash != block.block_hash or _nonce_drifted():
+    source_nonces = {creator: quantity(rpc(source, "eth_getTransactionCount", [creator, block.tag])) for creator in creators}
+
+    def state_mismatch(target: Web3, head: LaunchBlock) -> str | None:
+        chain = quantity(rpc(target, "eth_chainId", []))
+        if chain != source_chain:
+            return f"chain ID expected {source_chain}, got {chain}"
+        if head.number != block.number:
+            return f"block number expected {block.number}, got {head.number}"
+        if head.block_hash != block.block_hash:
+            return f"block hash expected {block.block_hash}, got {head.block_hash}"
+        for creator, expected_nonce in source_nonces.items():
+            nonce = quantity(rpc(target, "eth_getTransactionCount", [creator, head.tag]))
+            if nonce != expected_nonce:
+                return f"creator nonce for {creator} expected {expected_nonce}, got {nonce}"
+        return None
+
+    if fork.source_rpc_url is not None:
+        refresh_source = Web3(Web3.HTTPProvider(fork.source_rpc_url))
+        mismatch = state_mismatch(refresh_source, read_block(refresh_source, block.number))
+        if mismatch is not None:
+            raise LaunchStateChanged(f"controlled fork source state mismatch: {mismatch}")
+    fork_head = read_block(client)
+    if state_mismatch(client, fork_head) is not None:
         if fork.source_rpc_url is None:
             raise ValueError("the controlled fork is stale and has no source refresh configuration")
         if block.number > (1 << 53) - 1:
             raise ValueError("the pinned block cannot be represented exactly by the fork reset API")
         rpc(client, "anvil_reset", [{"forking": {"jsonRpcUrl": fork.source_rpc_url, "blockNumber": block.number}}])
         fork_head = read_block(client)
+        mismatch = state_mismatch(client, fork_head)
+        if mismatch is not None:
+            raise LaunchStateChanged(f"controlled fork state mismatch after reset: {mismatch}")
     assert_canonical(source, block)
     unlocked = {str(account).lower() for account in rpc(client, "eth_accounts", [])}
     if any(str(transaction["from"]).lower() not in unlocked for transaction in transactions):
         raise ValueError("the controlled fork creator is not already unlocked")
     head_before = read_block(client)
-    nonces_before = {creator: quantity(rpc(client, "eth_getTransactionCount", [creator, head_before.tag])) for creator in creators}
+    mismatch = state_mismatch(client, head_before)
+    if mismatch is not None:
+        raise LaunchStateChanged(f"controlled fork state mismatch before simulation: {mismatch}")
+    nonces_before = source_nonces
     snapshot = rpc(client, "evm_snapshot", [])
     calls: list[LaunchSimulationCall] = []
     def restored_exactly() -> bool:

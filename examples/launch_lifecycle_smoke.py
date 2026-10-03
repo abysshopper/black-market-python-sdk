@@ -15,7 +15,7 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -48,6 +48,7 @@ from black_market_sdk import (
     read_launch_progress,
     simulate_launch_plan,
 )
+from black_market_sdk.lifecycle_rpc import LaunchRpcSimulation, LaunchSimulationCall
 
 
 def request(client: Web3, method: str, params: list):
@@ -127,6 +128,83 @@ def send(client: Web3, transaction: dict) -> dict:
 
 def read_balance(client: Web3, asset: str, creator: str) -> int:
     return client.eth.contract(address=Web3.to_checksum_address(asset), abi=ERC20_ABI).functions.balanceOf(creator).call()
+
+INTENTIONAL_REFUSALS = {"gas-cap-refusal"}
+
+
+def refusal_outcome(launch) -> str:
+    """Fail closed unless the actual indivisible step has numeric cap evidence."""
+    simulation = launch.simulation
+    reason_text = "; ".join(simulation.reasons) or "unknown refusal"
+    evidence = simulation.evidence
+    cap = launch.limits.gas_cap(simulation.block)
+    if evidence is not None and evidence.confidence == "stateful":
+        for index, (transaction, call) in enumerate(zip(simulation.transactions, evidence.calls)):
+            if not all(previous.success for previous in evidence.calls[:index]):
+                break
+            if transaction.kind not in {"activate", "atomic"}:
+                continue
+            exhausted_trace = evidence.backend == "controlled-fork-ceiling-receipts" and call.error is not None and call.error.get("outOfGas") is True
+            if not call.success and transaction.gas_limit == cap and (call.gas_used >= cap - cap // 64 or exhausted_trace):
+                return "gas-cap-refusal"
+            required = call.gas_required if call.gas_required is not None else call.gas_used
+            if call.success and launch.limits.buffered_gas(required) > cap and any(
+                reason.startswith("a measured transaction does not fit current limits with conservative headroom")
+                for reason in simulation.reasons
+            ):
+                return "gas-cap-refusal"
+    return f"failure:{reason_text}"
+
+
+def refusal_evidence(client: Web3, launch, fork: ControlledLaunchFork):
+    """Obtain receipt/terminal-trace evidence on the already-owned separate fork."""
+    if refusal_outcome(launch) == "gas-cap-refusal":
+        return launch
+    block = launch.simulation.block
+    cap = launch.limits.gas_cap(block)
+    transactions = tuple(replace(transaction, gas_limit=cap) for transaction in launch.simulation.transactions)
+    if request(client, "eth_getBlockByNumber", [block.tag, False])["hash"].lower() != block.block_hash:
+        raise AssertionError("refusal proof source must remain canonical")
+
+    def reset() -> None:
+        request(fork.client, "anvil_reset", [{"forking": {"jsonRpcUrl": fork.source_rpc_url, "blockNumber": block.number}}])
+        head = request(fork.client, "eth_getBlockByNumber", ["latest", False])
+        if head["hash"].lower() != block.block_hash or int(request(fork.client, "eth_chainId", []), 16) != launch.chain_id:
+            raise AssertionError("refusal proof must restore the exact pinned fork chain/head")
+        if request(fork.client, "eth_getTransactionCount", [launch.account, "latest"]) != request(client, "eth_getTransactionCount", [launch.account, block.tag]):
+            raise AssertionError("refusal proof must restore the exact pinned creator nonce")
+
+    reset()
+    calls = []
+    try:
+        for transaction in transactions:
+            transaction_hash = fork.client.eth.send_transaction(transaction.as_transaction())
+            receipt = fork.client.eth.wait_for_transaction_receipt(transaction_hash, timeout=180)
+            success = receipt["status"] == 1
+            failure_trace = []
+            if not success:
+                frame = request(fork.client, "debug_traceTransaction", [Web3.to_hex(transaction_hash), {"tracer": "callTracer"}])
+                # Trace only the terminal failing chain, not a recovered earlier OOG.
+                while frame and frame.get("error"):
+                    failure_trace.append(frame["error"])
+                    frame = frame.get("calls", [None])[-1]
+            error = None if success else {
+                "outOfGas": any("out of gas" in error.lower() or "outofgas" in error.lower() for error in failure_trace),
+                "failureTrace": failure_trace, "transactionHash": Web3.to_hex(transaction_hash),
+            }
+            calls.append(LaunchSimulationCall(success, int(receipt["gasUsed"]), "0x", (), error))
+            if not success:
+                break
+    finally:
+        reset()
+        if request(client, "eth_getBlockByNumber", [block.tag, False])["hash"].lower() != block.block_hash:
+            raise AssertionError("refusal proof must not outlive its canonical source block")
+    proof = LaunchRpcSimulation("stateful", "controlled-fork-ceiling-receipts", block, tuple(calls), None, len(transactions))
+    reasons = ("Exact ceiling receipt failure" if any(not call.success for call in proof.calls)
+        else "Exact ceiling sequence succeeded; original refusal is not proven gas exhaustion",)
+    return replace(launch, simulation=replace(launch.simulation, evidence=proof, backend=proof.backend,
+        confidence=proof.confidence, transactions=transactions, reasons=reasons))
+
 
 
 def recovery_branches(client: Web3, launch, limits: LifecycleLimitResolver, batch_size: int, fork: ControlledLaunchFork, root_admin: str) -> dict:
@@ -227,6 +305,8 @@ def run(manifest_path: Path) -> dict:
     fork_client = Web3(Web3.HTTPProvider(os.environ["LAUNCH_LIFECYCLE_FORK_RPC_URL"], request_kwargs={"timeout": 180}))
     fork = create_controlled_launch_fork(client, fork_client, isolated=True)
     rows = load_rows(manifest, manifest_path)
+
+
     observations = []
     coverage = set()
     venue_coverage = set()
@@ -240,18 +320,35 @@ def run(manifest_path: Path) -> dict:
         if row.get("planHash") and hash_launch_plan(plan) != row["planHash"].lower():
             raise AssertionError("Python economic hash differs from deployed Solidity fixture")
         if row.get("launchId") and launch_id_of(plan) != row["launchId"].lower():
-            raise AssertionError("Python domain identity differs from Solidity fixture")
+            raise AssertionError("Python domain identity differs from deployed Solidity fixture")
         if row.get("predictedToken") and predict_launch_token(client, plan).lower() != row["predictedToken"].lower():
             raise AssertionError("Python deterministic prediction differs from Solidity fixture")
         limits = execution_limits(manifest, row)
         batch_size = int(row.get("prepareBatchSize", row.get("batchSize", 1)))
         launch = plan_launch(client, plan, account=account, mode=row["mode"], limits=limits, prepare_batch_size=batch_size, fork=fork)
-        observation = {"name": row.get("name", str(plan.nonce)), "mode": launch.mode, "tokenKind": int(plan.token.kind), "planHash": launch.plan_hash, "launchId": launch.launch_id, "predictedToken": launch.predicted_token, "admitted": launch.admitted, "confidence": launch.confidence, "backend": launch.simulation.backend, "blockNumber": launch.simulation.block.number, "blockHash": launch.simulation.block.block_hash, "atomicAdmitted": launch.atomic_simulation.admitted if launch.atomic_simulation else None}
+        expected_atomic = row.get("expectedAdmitted")
+        expected_staged = row.get("expectedStagedAdmitted")
+        if expected_atomic is None and expected_staged is None:
+            raise AssertionError(f"fixture {row.get('name')} lacks an explicit exporter expectation")
+        observation = {"name": row.get("name", str(plan.nonce)), "mode": launch.mode, "tokenKind": int(plan.token.kind), "planHash": launch.plan_hash, "launchId": launch.launch_id, "predictedToken": launch.predicted_token, "admitted": launch.admitted, "confidence": launch.confidence, "backend": launch.simulation.backend, "blockNumber": launch.simulation.block.number, "blockHash": launch.simulation.block.block_hash, "atomicAdmitted": launch.atomic_simulation.admitted if launch.atomic_simulation else None, "expectedAdmitted": expected_atomic, "expectedStagedAdmitted": expected_staged}
         if not launch.admitted:
+            evidence_launch = refusal_evidence(client, launch, fork)
+            outcome = refusal_outcome(evidence_launch)
             observation["reasons"] = launch.simulation.reasons
+            observation["outcome"] = outcome
+            evidence = evidence_launch.simulation.evidence
+            observation["gasEvidence"] = {"backend": evidence.backend, "blockNumber": evidence.block.number, "blockHash": evidence.block.block_hash, "calls": [
+                {"kind": transaction.kind, "success": call.success, "gasUsed": call.gas_used, "gasLimit": transaction.gas_limit, "gasRequired": call.gas_required, "error": call.error}
+                for transaction, call in zip(evidence_launch.simulation.transactions, evidence.calls)
+            ]}
             observations.append(observation)
-            if row.get("expectedAdmitted") is True:
+            if expected_atomic is True:
                 raise AssertionError(f"required fixture unsupported: {observation}")
+            expected_outcome = row.get("expectedOutcome") if row["mode"] == "atomic" else row.get("expectedStagedOutcome")
+            if expected_outcome != outcome:
+                raise AssertionError(f"refusal must be the exporter's expected intentional outcome, got {outcome!r} for {observation['name']}; {observation['gasEvidence']}")
+            if outcome not in INTENTIONAL_REFUSALS:
+                raise AssertionError(f"refusal is not an intentional known gas-cap refusal: {observation}")
             continue
         # This is a second real invocation of the public simulation API, not a
         # wrapper returning the stored launch's old confidence/counters.
@@ -324,10 +421,20 @@ def run(manifest_path: Path) -> dict:
         if build_next_transaction(client, launch, account=account, fork=fork) is not None:
             raise AssertionError("terminal active launch yielded another economic command")
         coverage.add((launch.mode, int(plan.token.kind)))
-        observation.update({"transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "feePreview": payments, "recovery": recovery, "oracleHistory": oracle_history})
+        observation.update({"outcome": "active", "transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "feePreview": payments, "recovery": recovery, "oracleHistory": oracle_history})
         observations.append(observation)
     required = {("atomic", 0), ("staged", 0), ("staged", 1)}
     refused_atomic_404 = any(item["mode"] == "atomic" and item["tokenKind"] == 1 and not item["admitted"] for item in observations)
+    for observation in observations:
+        if observation.get("expectedAdmitted") is True:
+            if not observation["admitted"]:
+                raise AssertionError(f"expected admission missing for {observation['name']}")
+        if observation.get("expectedAdmitted") is True and observation["mode"] == "atomic" and not observation["admitted"]:
+            raise AssertionError(f"expected atomic admission missing for {observation['name']}")
+        if observation.get("expectedStagedAdmitted") is True and observation["mode"] == "staged" and not observation["admitted"]:
+            raise AssertionError(f"expected staged admission missing for {observation['name']}")
+        if observation.get("expectedStagedAdmitted") is False and observation["mode"] == "staged" and observation["admitted"]:
+            raise AssertionError(f"unexpected staged admission for {observation['name']}")
     if not required <= coverage or not refused_atomic_404 or venue_coverage != {0, 1} or not recovery_observed:
         raise AssertionError(f"real fixture coverage incomplete: modes/kinds={coverage}, atomic404Refused={refused_atomic_404}, venues={venue_coverage}, recovery={recovery_observed}")
     return {"sdk": "black-market-python-sdk", "chainId": client.eth.chain_id, "coverage": sorted(coverage), "venues": sorted(venue_coverage), "fixtures": observations}
