@@ -5,17 +5,18 @@ Usage: LAUNCH_LIFECYCLE_RPC_URL=http://127.0.0.1:8545 \
 
 The manifest and plan rows are generated from the actual new local deployment.
 No keys, default addresses, production broadcasts or fabricated pools are used.
-Simulation snapshots and recovery branches are reverted; admitted final fixture
-transactions are real local transactions retained for the integration evidence.
+Each fixture executes in an independent local snapshot. Actual Active state,
+receipts and market evidence are observed before rollback, not retained on-chain.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
-from dataclasses import fields, replace
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -28,27 +29,46 @@ from black_market_sdk import (
     ERC20_ABI,
     LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI,
     LAUNCH_LIFECYCLE_V1_ABI,
+    LAUNCH_MARKET_ADAPTER_V1_ABI,
+    MARKET_IDENTITY_COMPONENTS_V1,
+    POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1,
+    V4_LIFECYCLE_PROFILE_ID,
+    V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
     ControlledLaunchFork,
     LaunchExecutionLimits,
     LaunchStateChanged,
     LaunchLimitContext,
     LifecycleLimitResolver,
     LifecyclePhase,
+    PoolBoundHookParametersV1,
+    build_pool_bound_hook_deployment_transaction,
     build_next_transaction,
     encode_launch_plan,
     create_controlled_launch_fork,
+    decode_lifecycle_pool_bound_v4_market_config,
+    decode_lifecycle_events,
+    encode_lifecycle_pool_bound_v4_market_config,
+    encode_pool_bound_hook_parameters,
     hash_launch_plan,
     get_tick_at_sqrt_ratio,
     launch_id_of,
     launch_plan_from_dict,
     plan_launch,
     predict_launch_token,
+    predict_pool_bound_hook_address,
+    mine_pool_bound_hook_salt,
+    pool_bound_market_commitment,
+    prepare_pool_bound_lifecycle_plan,
     preview_lifecycle_fees,
     read_launch_markets,
     read_launch_progress,
+    read_lifecycle_profiles,
+    read_pool_bound_hook_deployment,
     simulate_launch_plan,
+    to_launch_plan_tuple,
 )
-from black_market_sdk.lifecycle_rpc import LaunchRpcSimulation, LaunchSimulationCall
+from black_market_sdk.lifecycle import canonical_abi_type
+from black_market_sdk.lifecycle_rpc import LaunchRpcSimulation, LaunchSimulationCall, hex_bytes
 
 
 def request(client: Web3, method: str, params: list):
@@ -58,13 +78,13 @@ def request(client: Web3, method: str, params: list):
     return response["result"]
 
 
-def observe_market_oracle(client: Web3, root: str, identity: dict, seconds_ago: int, block_number: int):
+def observe_market_oracle(client: Web3, identity: dict, seconds_ago: int, block_number: int):
     if identity["venue"] == 0:
         signature = "observeTruncated(bytes32,uint32[])"
         data = Web3.keccak(text=signature)[:4] + abi_encode(
             ["bytes32", "uint32[]"], [bytes.fromhex(identity["poolId"][2:]), [seconds_ago]]
         )
-        address = root
+        address = identity["hook"]
     else:
         signature = "observeTruncated(uint32[])"
         data = Web3.keccak(text=signature)[:4] + abi_encode(["uint32[]"], [[seconds_ago]])
@@ -86,9 +106,92 @@ def load_rows(manifest: dict, manifest_path: Path) -> list[dict]:
     rows = payload if isinstance(payload, list) else payload.get("plans", payload.get("fixtures", []))
     if isinstance(payload, dict) and payload.get("admittedPython"):
         rows = [*rows, payload["admittedPython"]]
+    if isinstance(payload, dict):
+        bound_rows = payload.get("poolBoundPlans", [])
+        if not isinstance(bound_rows, list):
+            raise ValueError("poolBoundPlans must contain complete rows with their own committed nonces")
+        rows = [*rows, *bound_rows]
+        catalogue_rows = payload.get("cataloguePlans", [])
+        if not isinstance(catalogue_rows, list) or len(catalogue_rows) != 32:
+            raise ValueError("all eight one-buy catalogue shapes require both explicit modes and offerings")
+        rows = [*rows, *catalogue_rows]
+    if any(row.get("expectationMode") == "measured-policy" for row in rows):
+        exported_limits = payload.get("executionLimits") if isinstance(payload, dict) else None
+        configured_limits = manifest.get("executionLimits")
+        if not isinstance(exported_limits, dict) or not exported_limits.get("provenance") or not isinstance(configured_limits, dict) or not configured_limits.get("provenance"):
+            raise ValueError("measured-policy fixtures require matching reviewed execution limits and provenance")
+        for key, value in exported_limits.items():
+            if key not in configured_limits or configured_limits[key] != value:
+                raise ValueError(f"fixture execution policy {key} differs from the captured manifest")
     if not rows:
         raise ValueError("the deployment fixture has no complete economic plans")
     return rows
+
+
+def finalize_bound_fixture(client: Web3, plan, row: dict, *, exercise_remine: bool):
+    indices = [index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)]
+    if not indices:
+        return plan, []
+    if read_launch_progress(client, plan).phase != LifecyclePhase.NONE:
+        raise AssertionError("pool-bound SDK fixture must use its own fresh exporter nonce")
+    profiles = read_lifecycle_profiles(client, orchestrator=plan.orchestrator, profile_ids=[V4_POOL_BOUND_LIFECYCLE_PROFILE_ID])
+    if not profiles[0].admitted or profiles[0].topology.hook_topology != 2 or profiles[0].topology.config_version != 3:
+        raise AssertionError("SDK discovery did not certify the actual pool-bound V3 offering")
+    token = predict_launch_token(client, plan)
+    expected = {int(item["marketIndex"]): item for item in row.get("hookDeployments", [])}
+    markets = list(plan.markets)
+    exported = {}
+    for index in indices:
+        metadata = read_pool_bound_hook_deployment(client, plan, market_index=index)
+        exported[index] = metadata
+        vector = expected.get(index)
+        if vector is None:
+            raise AssertionError("pool-bound exporter row is missing exact hook deployment evidence")
+        for field, actual in (("deployer", metadata.deployer), ("initCodeHash", metadata.init_code_hash), ("salt", metadata.salt), ("predictedHook", metadata.predicted_hook)):
+            if str(vector[field]).lower() != actual.lower():
+                raise AssertionError(f"Python {field} differs from actual Solidity deployment metadata")
+        deployment_transaction = build_pool_bound_hook_deployment_transaction(client, plan, market_index=index)
+        parameter_type = canonical_abi_type({"type": "tuple", "components": POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1})
+        values, salt = abi_decode([parameter_type, "bytes32"], bytes.fromhex(deployment_transaction.data[10:]))
+        parameters = PoolBoundHookParametersV1(*values)
+        encoded_parameters = encode_pool_bound_hook_parameters(parameters)
+        if Web3.to_hex(encoded_parameters) != vector["encodedParameters"].lower() or Web3.to_hex(Web3.keccak(encoded_parameters)) != vector["deploymentConfigHash"].lower():
+            raise AssertionError("Python 18-field constructor tuple/hash differs from actual Solidity helper")
+        commitment = pool_bound_market_commitment(plan, token=token, registrar=parameters.registrar, market_index=index)
+        if commitment != vector["marketCommitment"].lower() or Web3.to_hex(salt) != metadata.salt or profiles[0].topology.hook_creation_code_hash != vector["creationCodeHash"].lower():
+            raise AssertionError("Python market commitment/salt/creation code differs from certified Solidity graph")
+        config = decode_lifecycle_pool_bound_v4_market_config(plan.markets[index].config)
+        markets[index] = replace(markets[index], config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=bytes(32))))
+    unmined = replace(plan, markets=tuple(markets))
+    if unmined.nonce != plan.nonce or predict_launch_token(client, unmined).lower() != token.lower():
+        raise AssertionError("unmined hook salt changed the committed nonce or token identity")
+    for index in indices:
+        metadata = read_pool_bound_hook_deployment(client, unmined, market_index=index)
+        if metadata.init_code_hash != exported[index].init_code_hash or metadata.salt != hex_bytes(bytes(32)):
+            raise AssertionError("unmined metadata rejected or reinterpreted the exact zero hook salt")
+    finalized = asyncio.run(prepare_pool_bound_lifecycle_plan(client, unmined))
+    if finalized.plan.nonce != plan.nonce or predict_launch_token(client, finalized.plan).lower() != token.lower():
+        raise AssertionError("local salt finalization changed the exporter nonce or deterministic token")
+    if encode_launch_plan(finalized.plan) != encode_launch_plan(plan):
+        raise AssertionError("Python local mining did not reproduce the exporter's exact finalized V3 plan")
+    evidence = []
+    for deployment in finalized.deployments:
+        actual = read_pool_bound_hook_deployment(client, finalized.plan, market_index=deployment.market_index)
+        if actual != exported[deployment.market_index]:
+            raise AssertionError("Python local mining did not reproduce the exporter's exact deployment tuple")
+        evidence.append(asdict(deployment))
+    if exercise_remine:
+        first = finalized.deployments[0]
+        mined = asyncio.run(mine_pool_bound_hook_salt(deployer=first.deployer, init_code_hash=first.init_code_hash, start_salt=int(first.salt, 16) + 1))
+        config = decode_lifecycle_pool_bound_v4_market_config(finalized.plan.markets[first.market_index].config)
+        markets = list(finalized.plan.markets)
+        markets[first.market_index] = replace(markets[first.market_index], config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=mined.salt)))
+        remined_plan = replace(finalized.plan, markets=tuple(markets))
+        actual = read_pool_bound_hook_deployment(client, remined_plan, market_index=first.market_index)
+        if actual.init_code_hash != first.init_code_hash or actual.predicted_hook != mined.predicted_hook or actual.salt != mined.salt or actual.predicted_hook == first.predicted_hook or predict_launch_token(client, remined_plan).lower() != token.lower():
+            raise AssertionError("remining failed exact CREATE2/token-identity parity")
+        evidence[0]["remine"] = asdict(actual)
+    return finalized.plan, evidence
 
 
 def execution_limits(manifest: dict, row: dict) -> LifecycleLimitResolver:
@@ -103,13 +206,15 @@ def execution_limits(manifest: dict, row: dict) -> LifecycleLimitResolver:
         "rpcTotalSimulationGasLimit": "rpc_total_simulation_gas_limit",
     }
     def resolve(client: Web3, context: LaunchLimitContext) -> LaunchExecutionLimits:
-        raw = {**manifest.get("executionLimits", {}), **row.get("limits", {})}
+        raw = dict(manifest.get("executionLimits", {}))
+        if row.get("expectationMode") != "measured-policy":
+            raw.update(row.get("limits", {}))
         names = {field.name for field in fields(LaunchExecutionLimits)}
         values = {}
         for key, value in raw.items():
             name = aliases.get(key, key)
             if name not in names:
-                if key in row.get("limits", {}):
+                if row.get("expectationMode") != "measured-policy" and key in row.get("limits", {}):
                     raise ValueError(f"unknown execution limit {key}")
                 continue  # Deployment metrics are not admission configuration.
             values[name] = value if name in {"source", "observed_block_hash", "account", "orchestrator"} else int(value)
@@ -128,38 +233,187 @@ def send(client: Web3, transaction: dict) -> dict:
 
 def read_balance(client: Web3, asset: str, creator: str) -> int:
     return client.eth.contract(address=Web3.to_checksum_address(asset), abi=ERC20_ABI).functions.balanceOf(creator).call()
+def restore_fixture(client: Web3, fork: ControlledLaunchFork, snapshot, baseline: dict, account: str, funding: list[dict]) -> None:
+    """Restore existing funded inputs exactly; never mint/top up or relax the full plan."""
+    if request(client, "evm_revert", [snapshot]) is not True:
+        raise AssertionError("fixture failed to restore its local source snapshot")
+    head = request(client, "eth_getBlockByNumber", ["latest", False])
+    if head["hash"] != baseline["hash"] or head["stateRoot"] != baseline["stateRoot"]:
+        raise AssertionError("fixture did not restore its exact baseline block/state")
+    for item in funding:
+        if read_balance(client, item["inputAsset"], account) != item["availableBalance"]:
+            raise AssertionError("fixture changed an original funding-input balance after rollback")
+    request(fork.client, "anvil_reset", [{"forking": {"jsonRpcUrl": fork.source_rpc_url, "blockNumber": int(baseline["number"], 16)}}])
 
-INTENTIONAL_REFUSALS = {"gas-cap-refusal"}
+
+def selected_v4_pool(client: Web3, plan, row: dict) -> tuple[int, dict]:
+    # buys[0] of an old mixed stress plan targets Abyss. Never use it to infer V4.
+    index = int(row.get("selectedV4MarketIndex", next(
+        (index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) in {
+            hex_bytes(V4_LIFECYCLE_PROFILE_ID), hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)}), -1)))
+    if index < 0 or index >= len(plan.markets):
+        raise AssertionError("fixture has no explicit selectable V4 market")
+    market = plan.markets[index]
+    profile = read_lifecycle_profiles(client, orchestrator=plan.orchestrator, profile_ids=[market.profile_id])[0]
+    adapter = client.eth.contract(address=Web3.to_checksum_address(profile.adapter["implementation"]), abi=LAUNCH_MARKET_ADAPTER_V1_ABI)
+    values = adapter.functions.resolve(
+        bytes.fromhex(launch_id_of(plan)[2:]), predict_launch_token(client, plan), to_launch_plan_tuple(plan)[7][index]
+    ).call()
+    identity = {component["name"]: hex_bytes(value) if component["type"].startswith("bytes") else value
+                for component, value in zip(MARKET_IDENTITY_COMPONENTS_V1, values)}
+    for field in ("poolId", "hook", "currency0", "currency1", "manager"):
+        expected = row.get("selectedV4Pool", {}).get(field)
+        if expected is not None and identity[field].lower() != expected.lower():
+            raise AssertionError(f"selected V4 pool {field} differs from exact Solidity export")
+    return index, identity
+
+
+
+
+def factory_binding_proof(client: Web3, launch, fork: ControlledLaunchFork) -> dict:
+    """Reject factory runtime drift even when token/hook predictions stay exact."""
+    plan = launch.plan
+    indices = [index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)]
+    if not indices or launch.token_factory is None or launch.token_factory_code_hash is None:
+        raise AssertionError("factory binding proof requires a reviewed fresh bound launch")
+    factory = launch.token_factory
+    code = hex_bytes(request(client, "eth_getCode", [factory, "latest"]))
+    modified = code + "00"
+    before = {index: read_pool_bound_hook_deployment(client, plan, market_index=index) for index in indices}
+    def assert_predictions_unchanged():
+        if predict_launch_token(client, plan).lower() != launch.predicted_token.lower():
+            raise AssertionError("append-STOP proof changed prediction instead of isolating runtime provenance")
+        for index, expected in before.items():
+            if read_pool_bound_hook_deployment(client, plan, market_index=index) != expected:
+                raise AssertionError("factory-only mutation changed exact hook deployment metadata")
+    snapshot = request(client, "evm_snapshot", [])
+    try:
+        request(client, "anvil_setCode", [factory, modified])
+        assert_predictions_unchanged()
+        try:
+            build_next_transaction(client, launch, account=launch.account, fork=fork)
+        except ValueError as error:
+            reviewed_reason = str(error)
+            if "token factory" not in reviewed_reason.lower():
+                raise AssertionError(f"reviewed write refused for unrelated reason: {reviewed_reason}") from error
+        else:
+            raise AssertionError("changed factory runtime yielded a reviewed wallet command")
+    finally:
+        if request(client, "evm_revert", [snapshot]) is not True or hex_bytes(request(client, "eth_getCode", [factory, "latest"])) != code:
+            raise AssertionError("factory mutation proof failed to restore source runtime")
+    markets = list(plan.markets)
+    first = indices[0]
+    deployment = before[first]
+    start = 0
+    while int(predict_pool_bound_hook_address(deployer=deployment.deployer, init_code_hash=deployment.init_code_hash, salt=start.to_bytes(32, "big")), 16) & 0x3FFF == 0x1AFC:
+        start += 1
+    config = decode_lifecycle_pool_bound_v4_market_config(markets[first].config)
+    markets[first] = replace(markets[first], config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=start.to_bytes(32, "big"))))
+    draft = replace(plan, markets=tuple(markets))
+    changed = False
+    def mutate_during_mining(_):
+        nonlocal changed
+        if not changed:
+            request(client, "anvil_setCode", [factory, modified])
+            changed = True
+    snapshot = request(client, "evm_snapshot", [])
+    try:
+        try:
+            asyncio.run(prepare_pool_bound_lifecycle_plan(client, draft, on_progress=mutate_during_mining))
+        except ValueError as error:
+            preparation_reason = str(error)
+            if not changed or "token factory" not in preparation_reason.lower():
+                raise AssertionError(f"salt finalization refused for unrelated reason: {preparation_reason}") from error
+        else:
+            raise AssertionError("changed factory runtime yielded a finalized pool-bound plan")
+        assert_predictions_unchanged()
+    finally:
+        if request(client, "evm_revert", [snapshot]) is not True or hex_bytes(request(client, "eth_getCode", [factory, "latest"])) != code:
+            raise AssertionError("mining mutation proof failed to restore source runtime")
+    return {"factory": factory, "reviewedCodeHash": launch.token_factory_code_hash,
+            "changedCodeHash": Web3.to_hex(Web3.keccak(bytes.fromhex(modified[2:]))),
+            "tokenAndHookPredictionsUnchanged": True, "reviewedWriteRejected": reviewed_reason,
+            "miningFinalizationRejected": preparation_reason, "sourceRuntimeRestored": True}
+
+INTENTIONAL_REFUSALS = {"gas-cap-refusal", "sdk-policy-refusal"}
+
+
+def _receipt_refusal_kind(launch) -> str:
+    evidence = launch.simulation.evidence
+    transactions = launch.simulation.transactions
+    cap = launch.limits.gas_cap(launch.simulation.block)
+    if evidence is None or evidence.confidence != "stateful" or evidence.backend != "controlled-fork-ceiling-receipts" or cap <= 0:
+        return "unclassified"
+    failed = next((index for index, call in enumerate(evidence.calls) if not call.success), None)
+    if failed is not None:
+        if failed < len(transactions):
+            transaction, call = transactions[failed], evidence.calls[failed]
+            if transaction.kind in {"activate", "atomic"} and transaction.gas_limit == cap and call.error is not None and call.error.get("outOfGas") is True:
+                return "terminal-oog"
+        return "unclassified"
+    if len(evidence.calls) == len(transactions):
+        for transaction, call in zip(transactions, evidence.calls):
+            if transaction.kind in {"activate", "atomic"} and transaction.gas_limit == cap and launch.limits.buffered_gas(call.gas_used) > cap:
+                return "headroom-only"
+    return "unclassified"
 
 
 def refusal_outcome(launch) -> str:
-    """Fail closed unless the actual indivisible step has numeric cap evidence."""
-    simulation = launch.simulation
-    reason_text = "; ".join(simulation.reasons) or "unknown refusal"
-    evidence = simulation.evidence
-    cap = launch.limits.gas_cap(simulation.block)
-    if evidence is not None and evidence.confidence == "stateful":
-        for index, (transaction, call) in enumerate(zip(simulation.transactions, evidence.calls)):
-            if not all(previous.success for previous in evidence.calls[:index]):
-                break
-            if transaction.kind not in {"activate", "atomic"}:
-                continue
-            exhausted_trace = evidence.backend == "controlled-fork-ceiling-receipts" and call.error is not None and call.error.get("outOfGas") is True
-            if not call.success and transaction.gas_limit == cap and (call.gas_used >= cap - cap // 64 or exhausted_trace):
-                return "gas-cap-refusal"
-            required = call.gas_required if call.gas_required is not None else call.gas_used
-            if call.success and launch.limits.buffered_gas(required) > cap and any(
-                reason.startswith("a measured transaction does not fit current limits with conservative headroom")
-                for reason in simulation.reasons
-            ):
-                return "gas-cap-refusal"
-    return f"failure:{reason_text}"
+    """Accept only actual matched-cap receipt headroom or terminal-chain OOG."""
+    if _receipt_refusal_kind(launch) in {"terminal-oog", "headroom-only"}:
+        return "gas-cap-refusal"
+    return "failure:" + ("; ".join(launch.simulation.reasons) or "unmeasured refusal")
 
 
-def refusal_evidence(client: Web3, launch, fork: ControlledLaunchFork):
+def sdk_policy_refusal_evidence(original, receipt_proof) -> dict | None:
+    """Keep a refused SDK envelope distinct from a successful exact-ceiling receipt."""
+    simulation = original.simulation
+    sdk = simulation.evidence
+    probe = receipt_proof.simulation.evidence
+    cap = original.limits.gas_cap(simulation.block)
+    if (simulation.admitted or simulation.confidence != "stateful" or sdk is None
+        or sdk.backend not in {"controlled-fork", "eth_simulateV1"} or not sdk.successful
+        or sdk.block != simulation.block or original.limits.unknown_constraints()
+        or simulation.unknown_constraints or receipt_proof.limits != original.limits
+        or probe is None or probe.backend != "controlled-fork-ceiling-receipts"
+        or not probe.successful or probe.block != sdk.block or cap <= 0
+        or len(sdk.calls) != len(simulation.transactions) or len(probe.calls) != len(sdk.calls)
+        or tuple(replace(transaction, gas_limit=cap) for transaction in simulation.transactions)
+            != receipt_proof.simulation.transactions
+        or any(original.limits.buffered_gas(call.gas_used) > cap for call in probe.calls)):
+        return None
+    required = next(((index, transaction, call) for index, (transaction, call) in
+        enumerate(zip(simulation.transactions, sdk.calls))
+        if transaction.kind in {"atomic", "activate"} and call.gas_required is not None
+        and original.limits.buffered_gas(call.gas_required) > cap), None)
+    if required is None:
+        return None
+    index, transaction, call = required
+    return {
+        "classification": "sdk-envelope-headroom", "backend": sdk.backend,
+        "blockNumber": sdk.block.number, "blockHash": sdk.block.block_hash,
+        "transactionId": transaction.step_id, "transactionIndex": index,
+        "executionGasCeiling": cap, "headroomBps": original.limits.headroom_bps,
+        "requiredEnvelopeGas": call.gas_required,
+        "bufferedRequiredEnvelopeGas": original.limits.buffered_gas(call.gas_required),
+        "originalSdkReasons": simulation.reasons,
+        "originalSdkCalls": [
+            {"transactionId": item.step_id, "kind": item.kind, "to": item.to,
+             "inputKeccak": Web3.to_hex(Web3.keccak(hexstr=item.data)), "success": measured.success,
+             "gasUsed": measured.gas_used, "gasRequired": measured.gas_required}
+            for item, measured in zip(simulation.transactions, sdk.calls)
+        ],
+        "receiptComparison": {
+            "outcome": "successful-exact-ceiling-probe",
+            "gasUsed": probe.calls[index].gas_used,
+            "bufferedReceiptGas": original.limits.buffered_gas(probe.calls[index].gas_used),
+            "sourceSubmissionAdmitted": False,
+        },
+    }
+
+
+def refusal_evidence(client: Web3, launch, fork: ControlledLaunchFork, *, receipts: list[dict] | None = None):
     """Obtain receipt/terminal-trace evidence on the already-owned separate fork."""
-    if refusal_outcome(launch) == "gas-cap-refusal":
-        return launch
     block = launch.simulation.block
     cap = launch.limits.gas_cap(block)
     transactions = tuple(replace(transaction, gas_limit=cap) for transaction in launch.simulation.transactions)
@@ -181,6 +435,13 @@ def refusal_evidence(client: Web3, launch, fork: ControlledLaunchFork):
             transaction_hash = fork.client.eth.send_transaction(transaction.as_transaction())
             receipt = fork.client.eth.wait_for_transaction_receipt(transaction_hash, timeout=180)
             success = receipt["status"] == 1
+            if receipts is not None:
+                canonical = fork.client.eth.get_block(receipt["blockNumber"])
+                if canonical["hash"] != receipt["blockHash"]:
+                    raise AssertionError("refusal receipt must be canonical when captured")
+                receipts.append({"kind": transaction.kind, "transactionHash": Web3.to_hex(transaction_hash),
+                    "blockHash": Web3.to_hex(receipt["blockHash"]), "gasUsed": int(receipt["gasUsed"]),
+                    "gasLimit": cap, "status": int(receipt["status"]), "canonicalAtCapture": True})
             failure_trace = []
             if not success:
                 frame = request(fork.client, "debug_traceTransaction", [Web3.to_hex(transaction_hash), {"tracer": "callTracer"}])
@@ -200,8 +461,10 @@ def refusal_evidence(client: Web3, launch, fork: ControlledLaunchFork):
         if request(client, "eth_getBlockByNumber", [block.tag, False])["hash"].lower() != block.block_hash:
             raise AssertionError("refusal proof must not outlive its canonical source block")
     proof = LaunchRpcSimulation("stateful", "controlled-fork-ceiling-receipts", block, tuple(calls), None, len(transactions))
-    reasons = ("Exact ceiling receipt failure" if any(not call.success for call in proof.calls)
-        else "Exact ceiling sequence succeeded; original refusal is not proven gas exhaustion",)
+    kind = _receipt_refusal_kind(replace(launch, simulation=replace(launch.simulation, evidence=proof, transactions=transactions)))
+    reasons = ("Exact ceiling terminal call-chain OOG" if kind == "terminal-oog"
+        else "Successful matched-cap receipts exceed explicit headroom" if kind == "headroom-only"
+        else "Exact ceiling receipt result does not prove gas exhaustion or headroom failure",)
     return replace(launch, simulation=replace(launch.simulation, evidence=proof, backend=proof.backend,
         confidence=proof.confidence, transactions=transactions, reasons=reasons))
 
@@ -305,13 +568,29 @@ def run(manifest_path: Path) -> dict:
     fork_client = Web3(Web3.HTTPProvider(os.environ["LAUNCH_LIFECYCLE_FORK_RPC_URL"], request_kwargs={"timeout": 180}))
     fork = create_controlled_launch_fork(client, fork_client, isolated=True)
     rows = load_rows(manifest, manifest_path)
+    snapshot = request(client, "evm_snapshot", [])
+    try:
+        return _run_rows(client, fork, manifest, account, rows)
+    finally:
+        if request(client, "evm_revert", [snapshot]) is not True:
+            raise AssertionError("fixture smoke failed to restore its initial local source")
 
 
+def _run_rows(client: Web3, fork: ControlledLaunchFork, manifest: dict, account: str, rows: list[dict]) -> dict:
     observations = []
     coverage = set()
     venue_coverage = set()
     recovery_observed = False
+    bound_coverage = set()
+    shared_coverage = set()
+    remine_observed = False
+    factory_binding_observed = False
     for row in rows:
+        baseline = request(client, "eth_getBlockByNumber", ["latest", False])
+        funding = [{"inputAsset": item["inputAsset"], "inputAmount": item["inputAmount"],
+                    "availableBalance": read_balance(client, item["inputAsset"], account)}
+                   for item in row["plan"]["funding"]]
+        snapshot = request(client, "evm_snapshot", [])
         plan = launch_plan_from_dict(row["plan"])
         if plan.creator.lower() != account.lower() or plan.orchestrator.lower() != manifest["addresses"]["orchestrator"].lower():
             raise ValueError("fixture identity differs from its real deployment manifest")
@@ -323,38 +602,67 @@ def run(manifest_path: Path) -> dict:
             raise AssertionError("Python domain identity differs from deployed Solidity fixture")
         if row.get("predictedToken") and predict_launch_token(client, plan).lower() != row["predictedToken"].lower():
             raise AssertionError("Python deterministic prediction differs from Solidity fixture")
+        exported_plan_hash = hash_launch_plan(plan)
+        plan, hook_deployments = finalize_bound_fixture(client, plan, row, exercise_remine=not remine_observed)
+        remine_observed = remine_observed or any("remine" in item for item in hook_deployments)
+        selected_index, selected_pool = selected_v4_pool(client, plan, row)
         limits = execution_limits(manifest, row)
         batch_size = int(row.get("prepareBatchSize", row.get("batchSize", 1)))
         launch = plan_launch(client, plan, account=account, mode=row["mode"], limits=limits, prepare_batch_size=batch_size, fork=fork)
+        measured_policy = row.get("expectationMode") == "measured-policy"
         expected_atomic = row.get("expectedAdmitted")
         expected_staged = row.get("expectedStagedAdmitted")
-        if expected_atomic is None and expected_staged is None:
-            raise AssertionError(f"fixture {row.get('name')} lacks an explicit exporter expectation")
+        if not measured_policy and expected_atomic is None and expected_staged is None:
+            raise AssertionError(f"fixture {row.get('name')} lacks an explicit exporter expectation or measured-policy mode")
         observation = {"name": row.get("name", str(plan.nonce)), "mode": launch.mode, "tokenKind": int(plan.token.kind), "planHash": launch.plan_hash, "launchId": launch.launch_id, "predictedToken": launch.predicted_token, "admitted": launch.admitted, "confidence": launch.confidence, "backend": launch.simulation.backend, "blockNumber": launch.simulation.block.number, "blockHash": launch.simulation.block.block_hash, "atomicAdmitted": launch.atomic_simulation.admitted if launch.atomic_simulation else None, "expectedAdmitted": expected_atomic, "expectedStagedAdmitted": expected_staged}
+        observation.update({"exportedPlanHash": exported_plan_hash, "hookDeployments": hook_deployments,
+                            "expectationMode": row.get("expectationMode"), "gasCap": launch.limits.gas_cap(launch.simulation.block),
+                            "headroomBps": launch.limits.headroom_bps})
+        observation.update({"workload": row.get("workload"), "shapeName": row.get("shapeName"),
+            "catalogueProfile": row.get("catalogueProfile"), "corePositionCount": row.get("corePositionCount"),
+            "openingBuyCount": len(plan.buys), "selectedV4MarketIndex": selected_index,
+            "selectedV4Pool": selected_pool, "policy": manifest.get("executionLimits", {}),
+            "scenarioIsolation": {"method": "independent-local-snapshot", "sourceRestored": True,
+                "baselineBlockHash": baseline["hash"], "baselineStateRoot": baseline["stateRoot"],
+                "funding": funding, "receiptEvidence": "observed-before-rollback"}})
         if not launch.admitted:
-            evidence_launch = refusal_evidence(client, launch, fork)
+            refusal_receipts = []
+            evidence_launch = refusal_evidence(client, launch, fork, receipts=refusal_receipts)
             outcome = refusal_outcome(evidence_launch)
+            sdk_policy = sdk_policy_refusal_evidence(launch, evidence_launch)
+            if sdk_policy is not None:
+                outcome = "sdk-policy-refusal"
+                observation["sdkPolicyEvidence"] = sdk_policy
             observation["reasons"] = launch.simulation.reasons
             observation["outcome"] = outcome
             evidence = evidence_launch.simulation.evidence
-            observation["gasEvidence"] = {"backend": evidence.backend, "blockNumber": evidence.block.number, "blockHash": evidence.block.block_hash, "calls": [
+            observation["gasEvidence"] = {"backend": evidence.backend, "blockNumber": evidence.block.number, "blockHash": evidence.block.block_hash, "refusalKind": _receipt_refusal_kind(evidence_launch), "calls": [
                 {"kind": transaction.kind, "success": call.success, "gasUsed": call.gas_used, "gasLimit": transaction.gas_limit, "gasRequired": call.gas_required, "error": call.error}
                 for transaction, call in zip(evidence_launch.simulation.transactions, evidence.calls)
             ]}
+            observation["gasEvidence"]["receipts"] = refusal_receipts
+            if sdk_policy is not None:
+                observation["gasEvidence"]["refusalKind"] = "none-receipts-succeeded"
+                observation["gasEvidence"]["receiptOutcome"] = "successful-exact-ceiling-probe"
             observations.append(observation)
-            if expected_atomic is True:
+            requested_expected = expected_atomic if row["mode"] == "atomic" else expected_staged
+            if not measured_policy and requested_expected is True:
                 raise AssertionError(f"required fixture unsupported: {observation}")
             expected_outcome = row.get("expectedOutcome") if row["mode"] == "atomic" else row.get("expectedStagedOutcome")
-            if expected_outcome != outcome:
+            if not measured_policy and expected_outcome != outcome:
                 raise AssertionError(f"refusal must be the exporter's expected intentional outcome, got {outcome!r} for {observation['name']}; {observation['gasEvidence']}")
             if outcome not in INTENTIONAL_REFUSALS:
-                raise AssertionError(f"refusal is not an intentional known gas-cap refusal: {observation}")
+                raise AssertionError(f"refusal lacks an authenticated receipt or SDK policy basis: {observation}")
+            restore_fixture(client, fork, snapshot, baseline, account, funding)
             continue
         # This is a second real invocation of the public simulation API, not a
         # wrapper returning the stored launch's old confidence/counters.
         resimulation = simulate_launch_plan(client, launch, account=account, fork=fork)
         if not resimulation.admitted or resimulation.block.block_hash != launch.simulation.block.block_hash:
             raise AssertionError("public simulation API did not prove this actual canonical sequence")
+        if hook_deployments and not factory_binding_observed:
+            observation["factoryBindingProof"] = factory_binding_proof(client, launch, fork)
+            factory_binding_observed = True
         receipts = []
         activation_receipt = None
         transaction_hashes = []
@@ -383,12 +691,27 @@ def run(manifest_path: Path) -> dict:
         if progress.phase != LifecyclePhase.ACTIVE or progress.token.lower() != launch.predicted_token.lower() or progress.prepared_markets != len(plan.markets):
             raise AssertionError("actual SDK sequence did not activate the full deterministic launch")
         if any(receipt.status != "confirmed" for receipt in progress.receipts):
-            raise AssertionError("actual retained SDK receipts are not canonical confirmed commands")
+            raise AssertionError("actual SDK receipts are not canonical confirmed commands before fixture rollback")
         markets = read_launch_markets(client, plan)
         if len(markets) != len(plan.markets) or sum(len(market["positions"]) for market in markets) != progress.position_count:
             raise AssertionError("canonical discovery omitted an activated market or position")
         if activation_receipt is None:
-            raise AssertionError("full activation did not retain its actual atomic/staged receipt")
+            raise AssertionError("full activation did not produce its actual atomic/staged receipt")
+        buy_events = [event.args for event in decode_lifecycle_events(plan, activation_receipt["logs"])
+                      if event.name == "InitialBuyExecuted"]
+        if len(buy_events) != len(plan.buys):
+            raise AssertionError("actual activation receipt omitted a committed opening buy")
+        for index, (event, buy) in enumerate(zip(buy_events, plan.buys)):
+            if (event["buyIndex"] != index or event["marketIndex"] != buy.market_index
+                or event["recipient"].lower() != buy.recipient.lower()
+                or event["quoteSpent"] > buy.quote_amount_in or event["tokenOut"] < buy.min_token_out):
+                raise AssertionError("actual opening receipts changed the committed buy order/economics")
+        selected_market = next(market for market in markets if market["marketIndex"] == selected_index)
+        if selected_market["identity"]["poolId"].lower() != selected_pool["poolId"].lower():
+            raise AssertionError("actual manager selected V4 pool differs from the exact exported identity")
+        if row.get("workload") == "representative-one-opening-swap":
+            if len(markets) != 1 or len(plan.buys) != 1 or plan.buys[0].market_index != selected_index or progress.position_count != row["corePositionCount"]:
+                raise AssertionError("representative catalogue changed its full core/one-buy/one-pool plan")
         oracle_block = client.eth.get_block(activation_receipt["blockHash"])
         oracle_history = []
         for market in markets:
@@ -402,42 +725,67 @@ def run(manifest_path: Path) -> dict:
             identity = market["identity"]
             opening_tick = get_tick_at_sqrt_ratio(int(identity["openingSqrtPriceX96"]))
             normalized_tick = opening_tick if identity["currency0"].lower() == progress.token.lower() else -opening_tick
-            current = observe_market_oracle(client, manifest["addresses"]["v4Hook"], identity, 0, activation_receipt["blockNumber"])
+            current = observe_market_oracle(client, identity, 0, activation_receipt["blockNumber"])
             if current.get("error") is not None:
                 raise AssertionError(f"real pool-local oracle read failed: {current['error']}")
             ticks, seconds_per_liquidity = abi_decode(["int56[]", "uint160[]"], bytes.fromhex(current["result"][2:]))
             if ticks[0] != normalized_tick * elapsed or seconds_per_liquidity[0] != elapsed << 128:
                 raise AssertionError("actual oracle omitted quote-normalized empty history through full activation")
-            older = observe_market_oracle(client, manifest["addresses"]["v4Hook"], identity, elapsed + 1, activation_receipt["blockNumber"])
+            older = observe_market_oracle(client, identity, elapsed + 1, activation_receipt["blockNumber"])
             if older.get("error", {}).get("data") != Web3.to_hex(Web3.keccak(text="ObservationTooOld()")[:4]):
                 raise AssertionError(f"oracle fabricated history before its actual genesis: {older}")
             oracle_history.append({"marketIndex": market["marketIndex"], "venue": identity["venue"], "initializedAt": market["live"]["oracleReadyAt"], "blockHash": Web3.to_hex(activation_receipt["blockHash"]), "tickCumulative": str(ticks[0]), "secondsPerLiquidityCumulativeX128": str(seconds_per_liquidity[0]), "beforeGenesisRejected": True})
             for position in market["positions"]:
                 if position["liveLiquidity"] != int(position["liquidity"]) or position["liveOwner"].lower() != market["custody"].lower():
                     raise AssertionError("live canonical position is not in its permanent custody")
+            committed = plan.markets[market["marketIndex"]]
+            if hex_bytes(committed.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+                config = decode_lifecycle_pool_bound_v4_market_config(committed.config)
+                metadata = read_pool_bound_hook_deployment(client, plan, market_index=market["marketIndex"])
+                if metadata.predicted_hook.lower() != identity["hook"].lower() or market["positionCount"] != len(config.positions):
+                    raise AssertionError("prepared bound metadata lost the actual hook or committed position count")
+                for actual, expected_position in zip(market["positions"], config.positions):
+                    if actual["tickLower"] != expected_position.tick_lower or actual["tickUpper"] != expected_position.tick_upper or int(actual["liquidity"]) != expected_position.liquidity or actual["salt"] != hex_bytes(expected_position.salt):
+                        raise AssertionError("bound permanent position differs from exact committed economics")
+                bound_coverage.add((launch.mode, int(plan.token.kind), len(plan.markets)))
+            elif hex_bytes(committed.profile_id) == hex_bytes(V4_LIFECYCLE_PROFILE_ID):
+                shared_coverage.add((launch.mode, int(plan.token.kind)))
         payments = preview_lifecycle_fees(client, progress.fee_hub, executor=account)
         if [payment["asset"].lower() for payment in payments] != [policy.asset.lower() for policy in plan.fee_assets]:
             raise AssertionError("claimAndSplit preview did not preserve all canonical fee assets including zeros")
         if build_next_transaction(client, launch, account=account, fork=fork) is not None:
             raise AssertionError("terminal active launch yielded another economic command")
         coverage.add((launch.mode, int(plan.token.kind)))
-        observation.update({"outcome": "active", "transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "feePreview": payments, "recovery": recovery, "oracleHistory": oracle_history})
+        observation.update({"outcome": "active", "transactions": receipts, "phase": progress.phase.name, "marketCount": len(markets), "positionCount": progress.position_count, "orderedBuys": len(buy_events), "buyEvents": buy_events, "feePreview": payments, "recovery": recovery, "oracleHistory": oracle_history})
         observations.append(observation)
+        restore_fixture(client, fork, snapshot, baseline, account, funding)
     required = {("atomic", 0), ("staged", 0), ("staged", 1)}
-    refused_atomic_404 = any(item["mode"] == "atomic" and item["tokenKind"] == 1 and not item["admitted"] for item in observations)
     for observation in observations:
-        if observation.get("expectedAdmitted") is True:
-            if not observation["admitted"]:
-                raise AssertionError(f"expected admission missing for {observation['name']}")
-        if observation.get("expectedAdmitted") is True and observation["mode"] == "atomic" and not observation["admitted"]:
-            raise AssertionError(f"expected atomic admission missing for {observation['name']}")
-        if observation.get("expectedStagedAdmitted") is True and observation["mode"] == "staged" and not observation["admitted"]:
-            raise AssertionError(f"expected staged admission missing for {observation['name']}")
-        if observation.get("expectedStagedAdmitted") is False and observation["mode"] == "staged" and observation["admitted"]:
-            raise AssertionError(f"unexpected staged admission for {observation['name']}")
-    if not required <= coverage or not refused_atomic_404 or venue_coverage != {0, 1} or not recovery_observed:
-        raise AssertionError(f"real fixture coverage incomplete: modes/kinds={coverage}, atomic404Refused={refused_atomic_404}, venues={venue_coverage}, recovery={recovery_observed}")
-    return {"sdk": "black-market-python-sdk", "chainId": client.eth.chain_id, "coverage": sorted(coverage), "venues": sorted(venue_coverage), "fixtures": observations}
+        if observation.get("expectationMode") == "measured-policy":
+            continue
+        expected = observation.get("expectedAdmitted") if observation["mode"] == "atomic" else observation.get("expectedStagedAdmitted")
+        if expected is not None and observation["admitted"] is not expected:
+            raise AssertionError(f"requested-mode admission differs from the explicit expectation for {observation['name']}")
+    if not required <= coverage or venue_coverage != {0, 1} or not recovery_observed:
+        raise AssertionError(f"real fixture coverage incomplete: modes/kinds={coverage}, venues={venue_coverage}, recovery={recovery_observed}")
+    if any(item.get("hookDeployments") for item in observations):
+        expected_bound = {(item["mode"], item["tokenKind"], item["marketCount"]) for item in observations if item.get("hookDeployments") and item.get("outcome") == "active"}
+        if not bound_coverage or not expected_bound <= bound_coverage or not shared_coverage or not remine_observed or not factory_binding_observed:
+            raise AssertionError(f"bound/shared coexistence coverage incomplete: bound={bound_coverage}, expected={expected_bound}, shared={shared_coverage}, remined={remine_observed}, factoryBinding={factory_binding_observed}")
+    catalogue_rows = [row for row in rows if row.get("workload") == "representative-one-opening-swap"]
+    for profile in range(8):
+        pairs = [row for row in catalogue_rows if row["catalogueProfile"] == profile]
+        if len(pairs) != 4 or len({row["predictedToken"].lower() for row in pairs}) != 1:
+            raise AssertionError("catalogue modes/offerings lost their identical paired token identity")
+        for offering in ("shared-v4", "pool-bound-v4"):
+            atomic = next(row for row in pairs if row["offering"] == offering and row["mode"] == "atomic")
+            staged = next(row for row in pairs if row["offering"] == offering and row["mode"] == "staged")
+            if atomic["encodedPlan"].lower() != staged["encodedPlan"].lower():
+                raise AssertionError("explicit staged alternate changed the full atomic plan/economics")
+            actual = next(item for item in observations if item["name"] == staged["name"])
+            if not actual["admitted"] or actual.get("orderedBuys") != 1 or actual.get("positionCount") != staged["corePositionCount"]:
+                raise AssertionError("full one-buy catalogue staged path did not reach actual Active")
+    return {"schema": "black-market.launch-lifecycle-sdk-smoke.v1", "sdk": "black-market-python-sdk", "chainId": client.eth.chain_id, "executionLimits": manifest.get("executionLimits", {}), "scenarioIsolation": {"method": "independent-local-snapshot", "sourceRestored": True, "receiptEvidence": "observed-before-rollback"}, "coverage": sorted(coverage), "venues": sorted(venue_coverage), "boundCoverage": sorted(bound_coverage), "sharedCoverage": sorted(shared_coverage), "fixtures": observations}
 
 
 def main() -> None:

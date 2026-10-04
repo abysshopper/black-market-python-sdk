@@ -136,6 +136,12 @@ unversioned Atomic ABI exports retain their historical meaning.
 publish a package, or rebind an existing launcher. The new orchestrator and
 creator are explicit in every economic plan.
 
+Quote and external fee assets and direct ERC20/native-wrap funding are permissionless:
+the planner checks deployed contract code, not administrator approval. Deployment quote
+metadata is not an allowlist. Only ERC20 inputs to swap conversions use the registry's
+`fundingInputAllowed` admission; target/spender and codehash checks remain mandatory.
+Exact transfers, balances, budgets and native-wrap bindings remain enforced.
+
 | Public API | Behavior |
 | --- | --- |
 | `plan_launch(client, plan, account=..., mode=...)` | Resolve current approved adapter/profile identities, exact funding-escrow approvals, atomic-first gas admission, and an explicitly chosen atomic or staged sequence |
@@ -144,11 +150,15 @@ creator are explicit in every economic plan.
 | `read_launch_progress(client, plan, confirmations=..., transaction_hashes=...)` | Recover the authoritative phase, deterministic token, exact preparation count and canonical/reorged/replaced receipt evidence |
 | `read_launch_markets(client, plan, offset=..., limit=...)` | Paginated full canonical pool/position identities plus actual manager, liquidity, permanent-custody owner and activation-time oracle reads |
 | `preview_lifecycle_fees(client, hub, executor=...)` | Run the hub's exact non-view, **no-argument** `claimAndSplit()` through `eth_call` with the intended executor |
+| `prepare_pool_bound_lifecycle_plan(client, plan, cancel_event=..., on_progress=...)` | Async offchain salt finalization of config-3 markets with exact certified factory/initcode/source-chain checks; returns a new immutable plan |
+| `read_pool_bound_hook_deployment(client, plan, market_index=...)` | Read verified factory/initcode/salt/predicted-hook metadata even for an unmined draft |
+| `build_pool_bound_hook_deployment_transaction(client, plan, market_index=...)` | Build optional typed permissionless predeployment calldata; does not sign, bind or initialize a pool |
 
 All are exported from `black_market_sdk`. Pure helpers include
 `launch_plan_from_dict`, `launch_plan_to_dict`, `encode_launch_plan`,
 `hash_launch_plan`, `launch_id_of`, `build_lifecycle_calldata`, and the exact
-`encode_lifecycle_v4_market_config` / `encode_lifecycle_abyss_market_config`
+`encode_lifecycle_v4_market_config`, `encode_lifecycle_pool_bound_v4_market_config`
+and `encode_lifecycle_abyss_market_config`
 encoders. Public immutable input types are `LaunchPlanV1`,
 `LifecycleTokenConfig`, `LifecycleAssetFunding`, `LifecycleFeeAssetPolicy`,
 `LifecycleMarketConfig`, `LifecycleInitialBuy`, and the venue-specific
@@ -158,9 +168,11 @@ encoders. Public immutable input types are `LaunchPlanV1`,
 `version`, `lp_fee_pips`, `tick_spacing`, `sqrt_price_x96`, `hook_fee_pips`,
 `fee_mode`, `protocol_fee_denominator`, `treasury`, `external_liquidity_disabled`,
 `oracle_config_id`, then unchanged positions (ticks/liquidity/salt/token maximum).
-The only lifecycle V4 profile is `keccak256("black-market.v4-lifecycle-market.v3")`.
-Outer market `config_version=2` and inner `version=2` are mandatory; retired profile
-and old versions are rejected, with no compatibility path. Exact ABI:
+Shared V4 remains fully supported with profile
+`V4_LIFECYCLE_PROFILE_ID = keccak256("black-market.v4-lifecycle-market.v3")`,
+outer `config_version=2` and inner `version=2`. The `.v3` profile suffix is not
+config version 3. Retired lifecycle profiles/old versions are rejected, not
+reinterpreted; fee-only V1 remains a separate unchanged deployment. Exact shared ABI:
 
 ```text
 (uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,(int24,int24,uint128,bytes32,uint256)[])
@@ -178,13 +190,157 @@ encoded_config = encode_lifecycle_v4_market_config(config)
 # Commit encoded_config with outer config_version=2 and the approved V2 profile.
 ```
 
-The root is new `SharedLaunchFeeHookV2` / `SharedLaunchFeeHookDeployerV2`, with
-new `fees/v2/V4FeeCollectorV2` and new `launch/fees/v2/V4FeeLiquidityLockerV2` custody. Independent
-fee-only V1 contracts and historical hooks stay unchanged. The root constructor
-binds manager, adapter registrar and canonical Abyss factory oracle authority.
+### Additive pool-bound selection and offchain finalization
+
+`LifecyclePoolBoundV4MarketConfig` uses inner `version=3` and outer
+`config_version=3`, adding `hook_salt` immediately before the unchanged positions.
+Use `V4_POOL_BOUND_LIFECYCLE_PROFILE_ID =
+keccak256("black-market.v4-pool-bound-lifecycle-market.v1")` and
+`V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID =
+keccak256("black-market.adapter.v4-pool-bound-lifecycle.v1")`. Exact ABI:
+
+```text
+(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,(int24,int24,uint128,bytes32,uint256)[])
+```
+
+The certified bound profile's zero hook address means the exact typed factory
+derives the root, not arbitrary hook selection. Each immutable root serves one
+token/quote/fee PoolKey; every position of that market uses it, foreign IDs/keys
+are rejected and different bound quotes get different roots. At most one V4
+market per quote is permitted across shared/bound offerings, fees and salts;
+put all ranges for that quote in one market's positions. Abyss may share the quote.
+
+The following callable example converts a complete reviewed draft's selected
+market using a valid `LifecycleV4MarketConfig`. It retains that market's quote,
+token budget and reviewed position economics. Prices/ranges must already be
+valid for the predicted token's actual orientation and require zero quote deposit:
+
+```python
+import asyncio
+from dataclasses import fields, replace
+from black_market_sdk import (
+    LaunchPlanV1, LifecycleV4MarketConfig, LifecyclePoolBoundV4MarketConfig,
+    V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID, V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
+    encode_lifecycle_pool_bound_v4_market_config,
+    prepare_pool_bound_lifecycle_plan,
+)
+
+async def finalize_bound_market(
+    client, draft: LaunchPlanV1, market_index: int,
+    reviewed_config: LifecycleV4MarketConfig,
+    cancel_event: asyncio.Event | None = None,
+):
+    if not 0 <= market_index < len(draft.markets):
+        raise ValueError("market index outside plan")
+    economics = {
+        field.name: getattr(reviewed_config, field.name)
+        for field in fields(reviewed_config) if field.name != "version"
+    }
+    config = LifecyclePoolBoundV4MarketConfig(
+        **economics, version=3, hook_salt=bytes(32),
+    )
+    markets = list(draft.markets)
+    markets[market_index] = replace(
+        markets[market_index],
+        adapter_id=V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID,
+        profile_id=V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
+        config_version=3,
+        config=encode_lifecycle_pool_bound_v4_market_config(config),
+    )
+    return await prepare_pool_bound_lifecycle_plan(
+        client, replace(draft, markets=tuple(markets)),
+        cancel_event=cancel_event,
+        on_progress=lambda p: print(
+            p.market_index, p.attempts, p.salt, p.predicted_hook,
+        ),
+    )
+```
+
+All quantities are integer base units, never floats: `1_000_000` represents
+one token only for six decimals; liquidity is uint128, and `1 << 96` is a
+Q64.96 raw-unit price ratio of 1, not an arbitrary valid opening-price choice.
+Freeze chain/core/creator/nonce, token configuration, sorted fee policies
+including the predicted token, positions, budgets, funding and ordered buys
+before mining. Call `cancel_event.set()` to stop local mining
+(`asyncio.CancelledError`), not to cancel an onchain launch.
+
+The async helper is draft-only and returns `PreparedPoolBoundLifecyclePlan`.
+Persist its **returned** `.plan` through `launch_plan_to_dict`; review `.deployments`,
+not an old draft salt. Economic edits change the constructor/initcode commitment
+and invalidate mining. A salt-only edit preserves normalized market commitment
+and deterministic token identity, while the signed plan commits the real salt.
+Never re-finalize a begun launch's immutable economic commitment.
+
+Exact source-chain certification covers registry topology, adapter/core/dependency
+runtime hashes, typed factory, STOP-prefixed creation-code chunks, locally
+reconstructed initcode and CREATE2 prediction. The 18-word constructor binds
+manager/registrar/oracle factory/core/owning locker, token/quote, fees/spacing/
+opening price, policies, market commitment and position count. `hook_salt` is
+used verbatim with that factory/initcode, not passed to the constructor. Required
+callback bits `0x1afc` under mask `0x3fff` do not establish topology by themselves.
+There is no onchain search; shared deployment already mines offchain too,
+so this does not establish a newly saved mining-gas cost.
+
+In an async application, use the finalized result with the normal planner:
+
+```python
+from black_market_sdk import (
+    build_pool_bound_hook_deployment_transaction, plan_launch,
+    build_next_transaction, read_launch_progress,
+)
+
+async def review_bound_launch(
+    client, draft, market_index, reviewed_config, limits, fork,
+):
+    cancel_event = asyncio.Event()
+    finalized = await finalize_bound_market(
+        client, draft, market_index, reviewed_config, cancel_event,
+    )
+    # Optional calldata for a not-yet-deployed exact hook; no broadcast here.
+    predeploy = build_pool_bound_hook_deployment_transaction(
+        client, finalized.plan, market_index=market_index,
+    )
+    print(predeploy.as_transaction(), predeploy.deployment)
+    # Application separately reviews/admits/signs any predeploy transaction.
+    # Omit predeploy entirely to let adapter preparation deploy the hook.
+    launch = plan_launch(
+        client, finalized.plan, account=finalized.plan.creator,
+        mode="staged", limits=limits, fork=fork,
+    )
+    progress = read_launch_progress(client, finalized.plan)
+    step = build_next_transaction(
+        client, launch, account=finalized.plan.creator, fork=fork,
+    )
+    return launch, progress, step
+```
+
+The next-step builder compares the reviewed token factory address/runtime hash
+and each bound market's exact deployment metadata again. A changed binding
+requires a new explicit review; it is not silently replaced. Optional predeploy
+is permissionless and may precede token creation, but preparation adopts only
+exact typed-factory provenance: nonzero `deployedCodeHash(hook)` equals live
+runtime hash, exact constructor/key/commitment, and unregistered/uninitialized/
+empty bindings. Code presence or self-reported getters alone are insufficient.
+Predeployment does not register a collector, initialize a pool, seal custody
+or activate a launch, and its gas/code-deposit cost is not erased.
+
+The current graph has three adapters/six profiles: shared V4, pool-bound V4 and
+four Abyss profiles. It retains the shared root, adds bound typed deployer/code
+chunks, its owning locker and adapter, and uses the common collector factory.
+Stack deployment does not create a per-launch bound root. Offering switches are
+explicit `sharedV4`, `poolBoundV4`, `abyss`; quote/fee permissionlessness and
+funding-conversion restrictions above are unchanged.
+
+
+The shared root is `SharedLaunchFeeHookV2` / `SharedLaunchFeeHookDeployerV2`.
+The independent bound root is `PoolBoundLaunchFeeHookV1` /
+`PoolBoundLaunchFeeHookDeployerV1`. Both reuse `fees/v2/V4FeeCollectorV2` and
+`launch/fees/v2/V4FeeLiquidityLockerV2` custody with each adapter's own locker.
+Fee-only V1 contracts and historical hooks stay unchanged. Each root binds
+manager, adapter registrar and canonical Abyss factory oracle authority.
 Registration snapshots `oracleConfigs(id)` once, with movement **1..887272** and
-cardinality cap **2..4096**. The unchanged real `TruncatedOracle` maintains independent
-full-PoolId state and observations; pre-swap/pre-active-liquidity sampling is once
+cardinality cap **2..4096**. On shared V4, the unchanged real `TruncatedOracle`
+maintains independent full-PoolId state and observations; pre-swap/pre-active-liquidity sampling is once
 per block, before zero/wrong-currency fee returns, with quote-normalized clamping.
 
 Root APIs are `observeTruncated(poolId, secondsAgos)`,
@@ -199,15 +355,21 @@ the committed `externalLiquidityDisabled` policy applies unchanged, so `False` p
 external-liquidity support. `openingCompletedAt` is not oracle genesis or maturity.
 Trader deltas, ERC6909/liabilities, floored treasury accrual and exact burn/take
 settlement/permanent custody remain preserved.
+Bound V4 preserves the same indexed oracle/custody/fee selectors with exact-bound-ID
+checks rather than multipool state. Pull owner credits and rewards below are reused.
+The lending `UniswapV4PriceFeed` remains unchanged: exact key, maturity, depth and
+recency checks are still required; genesis is not lending readiness.
 
-Current restoration evidence is in the sibling application's
+### Prior shared-V2 restoration evidence
+
+The following counts are prior runs, not final bound Python/UI verification:
 [review](../black-market/docs/launch-lifecycle-v1-review.md#lifecycle-v4-oracle-restoration-evidence),
 [contract results](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/contract-proof-results.json)
 and [non-test runtime JSON](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-non-test-oracle-launch-lifecycle-v4-oracle-proof-7.json).
-The 147 unique named tests have final passing evidence across runs (146 initial
+The 147 unique named tests had final passing evidence across those runs (146 initial
 passes plus one targeted test-ordering correction), not a single all-green 147 run;
 fresh live Kyber proof separately passed **9/9** at block **78750379**.
-The primary complete graph is
+The complete graph for that prior run was
 [`launch-lifecycle-v4-oracle-proof-7`](../black-market/contracts/deployments/local/launch-lifecycle-v4-oracle-proof-7/manifest.json).
 Its [actual runner](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/sdk-runtime-attempt7.command.json)
 exited **0**, including both SDKs, actual Chromium, cross-block ordinary router swaps
@@ -216,10 +378,11 @@ and rollback-negative deployment capture. The
 records Python **13 plans: 3 Active (atomic ERC20, staged ERC20, staged ERC404),
 10 refusals**, real orphan acknowledgement/recovery and cancellation after revocation,
 and both venues' genesis/pre-genesis reads. The full offline Python suite passed
-**133/133**. Oversized indivisible activations remain truthful refusals under the
-unchanged **16,000,000** account/RPC gas envelope, not launch successes.
-Normal runtime/initcode limits remained **24,576 / 49,152 bytes**, chain transaction
-gas **16,777,216**, block gas **30,000,000**. Actual browser proof passed **2/2,
+**133/133** in that prior run. Oversized indivisible activations were truthful refusals
+under its local **16,000,000** account/RPC stress envelope, not production constraints
+or topology-wide unsupported claims. Historical Ethereum portability bounds were
+**24,576 / 49,152 bytes**, chain transaction gas **16,777,216**, block gas **30,000,000**.
+That run's actual browser proof passed **2/2,
 exit 0, zero console/page errors**: atomic Active and staged ERC404 Ready/reload → Active
 with all buys/NFTs; exact submitted calldata and explicit fresh identity differences
 are retained in the summary. Ordinary non-test swaps in blocks **92/93** observed
@@ -230,7 +393,83 @@ Older V1 graphs/browser results and intermediate -5/-6 attempts remain historica
 The [operations recipe](../black-market/docs/launch-lifecycle-v1-operations.md#settled-oracle-restoration-proof--7)
 discloses removed verification-only callbacks while retaining exact command metadata.
 The [final summary](../black-market/contracts/evidence/lifecycle-v4-oracle-restoration/final-summary.json)
-records **no proof blockers**, no production broadcast/default rebinding.
+recorded **no proof blockers** for that run, no production broadcast/default rebinding.
+
+### Completed non-UI named-topology proof
+
+The **actual Python SDK entrypoint** now completed all **61 original-plus-catalogue
+fixtures**: **50 Active, ten authenticated terminal OOG stress refusals, one distinct
+SDK-policy refusal**. **All32 one-opening-swap catalogue rows reached Active**:
+Anchor/Ladder/Orbit/Rocket/Cruise/Spread/Depth/Bundle, each on shared/config2 and scalar
+pool-bound/config3 in explicitly requested atomic/staged modes. Each core keeps its
+complete inventory allocation and mandatory tail, one V4 market, exact token/nonce,
+positions, funding and one-buy economics across offerings. Optional Abyss is a separate
+pool, not an extra V4 LP or required mixed-venue substitute.
+
+Python captured **212 actual command receipts plus34 refusal-probe receipts**, actual
+orphan acknowledgement/recovery, cancellation after revocation, and deployment evidence
+rejection after real rollback. Per-fixture exact state-root/funding restoration preserves
+source account state without top-ups or reducing economics. The changed smoke's boundary
+regressions passed **13/13**.
+
+The original synthetic `atomic-erc404-q1` is **SDK-policy-refusal**, not receipt OOG or
+actual receipt-headroom exhaustion: original SDK required envelope **30,562,386** buffers
+to **33,618,625 > 32M**, while the successful exact-ceiling probe consumes **27,253,523**
+buffered to **29,978,876 < 32M**. Original stateful calls/required gas and same-block,
+same-transaction actual receipts are archived separately; the original plan stays
+unadmitted. Probe success neither bypasses the SDK nor silently changes mode.
+
+The completed paired gas report has **16/16 one-swap pairs /32 Active offerings,
+96 launch receipts /300 locked manager positions**; bound marginal cost was
+**5,154,553–5,185,959 gas higher per pool**. Its code deposit is already included.
+Full graph setup **121,446,084 gas** is not separately measured standalone bound-only
+provisioning. The actual Node smoke also completed all32 catalogue rows Active;
+Python was not substituted with Node execution of Python-labelled fixtures.
+See [exact gas/SDK outcomes and source evidence](../black-market/docs/launch-lifecycle-v1-operations.md#completed-one-opening-swap-topology-proof).
+
+Successful gas/Node evidence was preserved in retry2, whose runner later exited1 at
+Python. Only incomplete Python/reorg phases were rerun on a fresh captured graph:
+python-recovery2 exited0 with `sdks=["python"]`, `gasComparison=null` and deployment-reorg
+rejection. **No single uninterrupted both-SDK runner success is claimed.** Both owned
+ports28735/28736 closed. The controlled Cancun31337 policy remains **32M for block,
+chain transaction, RPC and account plus separate1,000-bps headroom**, with24KB/48KB
+Ethereum portability rather than Robinhood96KiB/192KiB limits. Normalized preset
+characteristics are not absolute USD market-cap proof. No UI/browser/app or live
+broadcast occurred; pinned getters do not prove live provider/account/Nitro admission.
+
+#### Retained diagnostic and synthetic stress scope
+
+The earlier [canonical-32M original-topology diagnostic](../black-market/contracts/deployments/local/pool-bound-runtime-20261003-canonical-probe-b/canonical-mixed-measurement.json) deployed/captured real AMMs
+and executed **72 exact original-mode rows: 52 Active, 20 genuine atomic OutOfGas**;
+**all 48 staged paths reached Active**. These are built Node executions of both
+fixture origins, **not actual Python executions or final browser proof**.
+Final rebuilt-SDK/browser and paired-gas verification is not established by that
+diagnostic. No gas-saving total is claimed. Paired reporting must cover all 12
+position pairs and original mixed pairs, including actual setup/CREATE2 code
+deposit and maximum individual transaction; shared full-graph setup is not a
+separately measured standalone bound-only architecture cost.
+
+**Historical synthetic multi-buy cost caveat:** the completed final-c stress measurement recorded
+**30 pairs (24 complete, 6 with refusals), 50 Active / 10 atomic OutOfGas,
+329 receipts and 607 creations**. Full captured-graph setup was
+**121,446,084 gas**. Successful **V4-only** bound launches added approximately
+**5.12–5.23 million gas per V4 root** versus matched shared launches. Original
+mixed two-quote pairs instead added approximately **10.82 million gas across
+two V4 roots** (about **5.41 million per root**); the V4-only range is not universal.
+Bound cost more in every successful matched pair: it is an isolation/topology
+choice, not a demonstrated gas optimization. The bound hook's
+**24,564-byte runtime / 4,912,800-gas code deposit** is already included in
+preparation/atomic receipts and must not be added twice.
+V4-only q1/q2/q3 plans contain 3/4/5 opening buys; mixed plans contain 4/6/8.
+These retained stress rows are not exactly-one-opening-swap product gas comparisons.
+
+See the durable [paired gas results](../black-market/docs/launch-lifecycle-v1-operations.md#measured-sharedbound-gas-on-the-captured-graph)
+for exact setup/launch, maximum-transaction and marginal costs; mixed atomic
+refusals have no invented complete-launch totals/deltas. The shared full graph
+is not separately measured standalone bound-only provisioning. These controlled
+EVM receipts are **not actual Python or final browser proof**, full Nitro
+execution or proven live RPC/account admission. Current 32M policy/provenance
+and independent headroom qualifications below remain mandatory.
 
 ### Commitment and execution
 
@@ -291,7 +530,8 @@ actual custody and cumulative-counter limits; the economic tuple/hash is unchang
 separate required approvals). `mode="staged"` means `beginLaunch(plan,1)`,
 ordered contiguous `prepareMarkets(plan,first,count)` calls, then **one**
 indivisible `activateLaunch(plan)`. Mode and preparation grouping do not change
-economics. An atomic plan is never silently converted to staged. Only oversized
+economics. An atomic refusal requires separate explicit staged consent; an atomic
+plan is never silently converted to staged. Only oversized
 preparation groups are partitioned; the SDK never splits final mint/lock/buys
 or opens a partial set of markets. Both canonical venues support atomic and
 staged execution with the identical capability mask
@@ -333,6 +573,26 @@ postconditions, estimate block number/hash, confidence, gas estimate/limit,
 current gas price, estimated/maximum execution fee and optional data fee.
 `data_fee_estimator` is caller-supplied for chains exposing a genuine data-fee
 quote; unsupported data fees are `None`, never zero-valued fake estimates.
+
+The current manifest copies `limitsProvenance` to `executionLimits.provenance`.
+Review it alongside every cap. The chain-31337 controlled Anvil policy explicitly
+sets block/chain-transaction/RPC/account limits to **32,000,000** gas with separate
+**1,000-bps** headroom. This is a controlled Cancun EVM model, not full Nitro
+execution or proof of live RPC/account ceilings.
+
+Read-only Robinhood chain-4663 block **79595428**, hash
+`0x563abc99145d922ae21aaa08e21fcc7d04e3cbe8781d89beacdd975085534f83`,
+reported ArbOS **116** and ArbGasInfo `getMaxTxGasLimit()` /
+`getMaxBlockGasLimit()` both **32,000,000**. Live RPC/account ceilings remain
+**unknown**, not inferred from getters. Nitro separates L1 poster-data gas from
+compute gas; ArbOS >=50 block accounting permits `PerBlock + PerTx`, so getters
+are neither a universal RPC envelope nor a strict aggregate receipt-gas limit.
+See [Nitro block accounting, lines 514–547](https://github.com/OffchainLabs/nitro/blob/master/arbos/block_processor.go#L514-L547)
+and [Robinhood gas and fees](https://docs.robinhood.com/chain/gas-and-fees/).
+Ethereum **24,576 / 49,152-byte** runtime/initcode bounds are retained only for
+portability; Robinhood documents **96 KiB / 192 KiB**. Prior 16M/16,777,216
+archives are optional local stress evidence, never production limits.
+
 
 If stateful simulation is unavailable, the result is `confidence="provisional"`
 and `admitted=False`; dependent `eth_call`/`eth_estimateGas` calls are not
@@ -393,13 +653,16 @@ fork_client = Web3(Web3.HTTPProvider(os.environ["LAUNCH_LIFECYCLE_FORK_RPC_URL"]
 fork = create_controlled_launch_fork(client, fork_client, isolated=True)
 
 def limits(client: Web3, context: LaunchLimitContext) -> LaunchExecutionLimits:
-    # These operator-declared caps describe the exclusively owned local nodes.
+    # Reviewed provenance describes the exclusively owned local nodes only.
     caps = manifest["executionLimits"]
+    if caps["provenance"]["scope"] != "controlled-local-measurement":
+        raise ValueError("this resolver requires controlled-local policy")
     return LaunchExecutionLimits(
         chain_transaction_gas_limit=int(caps["chainTransactionGasLimit"]),
         rpc_transaction_gas_limit=int(caps["rpcTransactionGasLimit"]),
         account_transaction_gas_limit=int(caps["accountTransactionGasLimit"]),
         max_calldata_bytes=int(caps["maxCalldataBytes"]),
+        headroom_bps=int(caps["headroomBps"]),
         observed_block_number=context.block.number,
         observed_block_hash=context.block.block_hash,
         chain_id=context.chain_id, orchestrator=context.orchestrator,
@@ -500,10 +763,19 @@ cancel = build_next_transaction(
 ```
 
 Cancellation remains available after deadline expiry or registry retirement and
-does not call retired adapters. It refunds only unspent external escrow to the
+does not call retired adapters or require renewed market/profile/funding admission.
+Keep the original reviewed `launch` (or pass its exact persisted plan and explicit
+mode to the builder); do not require a successful fresh `plan_launch` to expose Cancel.
+Current cancellation gas/limit admission and confirmation safety still apply.
+It refunds only unspent external escrow to the
 creator; setup gas/deployed contracts are irreversible. Launch-token inventory
 stays inactive or burns according to committed `burnOnCancel`; it is not a
 funding refund. `Active` and `Cancelled` are terminal.
+In preparation the bound hook/pool may be deployed, bound and initialized empty,
+but minting, custody sealing, all ordered buys and final opening are one atomic
+activation. A failure rolls those activation effects back together and retains
+Ready/retry/cancel safety; retry uses the same commitment. Local mining cancellation
+is separate and never substitutes for `action="cancel"` on a pending launch.
 
 Versioned ABI fragments and components live in `lifecycle_abis`: lifecycle core,
 registry, directory/lens, token factory, funding escrow, ordinary-call adapter and

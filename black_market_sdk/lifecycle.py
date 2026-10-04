@@ -8,6 +8,7 @@ requires actual sequential execution, not disconnected calls to future pools.
 
 from __future__ import annotations
 
+import asyncio
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -24,11 +25,16 @@ from .lifecycle_abis import (
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI,
     LAUNCH_LIFECYCLE_V1_ABI, LAUNCH_MARKET_ADAPTER_V1_ABI, LAUNCH_PLAN_COMPONENTS_V1,
     LAUNCH_PROGRESS_COMPONENTS_V1, LAUNCH_RECEIPT_COMPONENTS_V1,
+    LAUNCH_TOKEN_FACTORY_V1_ABI,
     ADAPTER_REGISTRATION_COMPONENTS_V1, MARKET_IDENTITY_COMPONENTS_V1,
-    PROFILE_REGISTRATION_COMPONENTS_V1, V4_MARKET_CONFIG_COMPONENTS_V2,
+    POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI,
+    POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI,
+    POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, PROFILE_TOPOLOGY_COMPONENTS_V1,
+    PROFILE_REGISTRATION_COMPONENTS_V1, V4_FEE_COLLECTOR_FACTORY_V1_ABI,
+    V4_MARKET_CONFIG_COMPONENTS_V2, V4_MARKET_CONFIG_COMPONENTS_V3,
 )
 from .lifecycle_rpc import (
-    ControlledLaunchFork, LaunchBlock, LaunchExecutionLimits, LaunchLimitContext, LaunchRpcSimulation,
+    ControlledLaunchFork, LaunchBlock, LaunchExecutionLimits, LaunchLimitContext, LaunchRpcError, LaunchRpcSimulation,
     LaunchStateChanged, assert_canonical, create_controlled_launch_fork, hex_bytes, quantity, read_block, rpc, simulate_transactions,
 )
 
@@ -77,6 +83,12 @@ class LifecyclePhase(IntEnum):
     ACTIVATING = 3
     ACTIVE = 4
     CANCELLED = 5
+
+
+class LifecycleHookTopology(IntEnum):
+    NONE = 0
+    SHARED_V4 = 1
+    POOL_BOUND_V4 = 2
 
 
 @dataclass(frozen=True)
@@ -171,6 +183,107 @@ class LifecycleV4MarketConfig:
 
 
 @dataclass(frozen=True)
+class LifecyclePoolBoundV4MarketConfig:
+    version: Literal[3]
+    lp_fee_pips: int
+    tick_spacing: int
+    sqrt_price_x96: int
+    hook_fee_pips: int
+    fee_mode: int
+    protocol_fee_denominator: int
+    treasury: str
+    external_liquidity_disabled: bool
+    oracle_config_id: bytes | str
+    hook_salt: bytes | str
+    positions: tuple[LifecycleV4Position, ...]
+
+
+@dataclass(frozen=True)
+class PoolBoundHookParametersV1:
+    pool_manager: str
+    registrar: str
+    oracle_factory: str
+    core: str
+    liquidity_locker: str
+    token: str
+    quote_currency: str
+    lp_fee_pips: int
+    tick_spacing: int
+    sqrt_price_x96: int
+    hook_fee_pips: int
+    fee_mode: int
+    protocol_fee_denominator: int
+    treasury: str
+    external_liquidity_disabled: bool
+    oracle_config_id: bytes | str
+    market_commitment: bytes | str
+    expected_position_count: int
+
+
+@dataclass(frozen=True)
+class ProfileTopologyV1:
+    hook_topology: LifecycleHookTopology | Literal[0, 1, 2]
+    config_version: int
+    hook_deployer: str
+    hook_creation_code_hash: str
+
+
+@dataclass(frozen=True)
+class LifecycleProfile:
+    id: str
+    registration: Mapping[str, Any]
+    adapter: Mapping[str, Any]
+    topology: ProfileTopologyV1
+    venue_kind: Literal["uniswap-v4", "abyss", "unknown"]
+    admitted: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PoolBoundHookDeployment:
+    deployer: str
+    init_code_hash: str
+    salt: str
+    predicted_hook: str
+
+
+@dataclass(frozen=True)
+class PoolBoundLifecycleDeployment(PoolBoundHookDeployment):
+    market_index: int
+
+
+@dataclass(frozen=True)
+class PoolBoundHookMiningProgress:
+    attempts: int
+    salt: str
+    predicted_hook: str
+    market_index: int | None = None
+
+
+@dataclass(frozen=True)
+class PoolBoundHookSalt:
+    salt: str
+    predicted_hook: str
+
+
+@dataclass(frozen=True)
+class PreparedPoolBoundLifecyclePlan:
+    plan: LaunchPlanV1
+    deployments: tuple[PoolBoundLifecycleDeployment, ...]
+
+
+@dataclass(frozen=True)
+class PoolBoundHookDeploymentTransaction:
+    to: str
+    data: str
+    value: Literal[0]
+    deployment: PoolBoundHookDeployment
+
+    def as_transaction(self) -> dict[str, Any]:
+        return {"to": self.to, "data": self.data, "value": self.value}
+
+
+@dataclass(frozen=True)
 class LifecycleAbyssPosition:
     tick_lower: int
     tick_upper: int
@@ -204,6 +317,13 @@ def _tuple_type(components: Sequence[Mapping[str, Any]]) -> str:
 LAUNCH_PLAN_V1_ABI_TYPE = _tuple_type(LAUNCH_PLAN_COMPONENTS_V1)
 V4_LIFECYCLE_PROFILE_ID = keccak(text="black-market.v4-lifecycle-market.v3")
 V4_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V2))
+V4_POOL_BOUND_LIFECYCLE_PROFILE_ID = keccak(text="black-market.v4-pool-bound-lifecycle-market.v1")
+V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID = keccak(text="black-market.adapter.v4-pool-bound-lifecycle.v1")
+V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V3))
+ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(ABYSS_MARKET_CONFIG_COMPONENTS_V1))
+POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1 = keccak(text="black-market.v4-pool-bound-market-economics.v1")
+V4_LIFECYCLE_HOOK_PERMISSION_MASK = 0x3FFF
+V4_LIFECYCLE_HOOK_PERMISSIONS = 0x1AFC
 
 
 def _uint(value: Any, bits: int, name: str) -> int:
@@ -360,6 +480,7 @@ def to_launch_plan_tuple(plan: LaunchPlanV1) -> tuple[Any, ...]:
         raise ValueError("market token budgets exceed the one committed supply")
     fee_assets = {policy.asset.lower() for policy in plan.fee_assets}
     requirements: dict[str, int] = {}
+    v4_quotes: set[str] = set()
     for market in plan.markets:
         _address(market.quote_asset, "quoteAsset", nonzero=True)
         if market.token_budget == 0 or market.config_version == 0 or hex_bytes(market.adapter_id) == ZERO_HASH or hex_bytes(market.profile_id) == ZERO_HASH:
@@ -368,6 +489,11 @@ def to_launch_plan_tuple(plan: LaunchPlanV1) -> tuple[Any, ...]:
             raise ValueError("market config must fit its nonempty bounded versioned schema")
         if market.quote_asset.lower() not in fee_assets:
             raise ValueError("every market quote must belong to the committed fee-asset set")
+        if hex_bytes(market.profile_id) in {hex_bytes(V4_LIFECYCLE_PROFILE_ID), hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)}:
+            quote = market.quote_asset.lower()
+            if quote in v4_quotes:
+                raise ValueError("one V4 market per quote is allowed across shared and pool-bound offerings")
+            v4_quotes.add(quote)
     for buy in plan.buys:
         _address(buy.recipient, "buy recipient", nonzero=True)
         if buy.market_index >= len(plan.markets) or buy.quote_amount_in == 0 or buy.min_token_out == 0 or buy.recipient.lower() == plan.orchestrator.lower():
@@ -403,6 +529,56 @@ def encode_lifecycle_v4_market_config(config: LifecycleV4MarketConfig | Mapping[
     return abi_encode([_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V2)], [values])
 
 
+def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4MarketConfig | Mapping[str, Any]) -> bytes:
+    values = _struct_tuple(V4_MARKET_CONFIG_COMPONENTS_V3, config)
+    if values[0] != 3:
+        raise ValueError("pool-bound V4 lifecycle market config version must be 3")
+    return abi_encode([_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V3)], [values])
+
+
+def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str) -> LifecyclePoolBoundV4MarketConfig:
+    values = abi_decode([_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V3)], bytes.fromhex(hex_bytes(data)[2:]))[0]
+    config = LifecyclePoolBoundV4MarketConfig(*values[:-1], tuple(LifecycleV4Position(*position) for position in values[-1]))
+    if encode_lifecycle_pool_bound_v4_market_config(config) != bytes.fromhex(hex_bytes(data)[2:]):
+        raise ValueError("pool-bound V4 config is not its exact canonical V3 encoding")
+    return config
+
+
+def encode_pool_bound_hook_parameters(parameters: PoolBoundHookParametersV1 | Mapping[str, Any]) -> bytes:
+    return abi_encode([_tuple_type(POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)], [_struct_tuple(POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1, parameters)])
+
+
+def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: str, market_index: int) -> str:
+    """Commit every market economic field, normalizing only the mined hook salt."""
+    _uint(market_index, 32, "marketIndex")
+    if market_index >= len(plan.markets):
+        raise ValueError("market_index is outside the economic plan")
+    market = plan.markets[market_index]
+    if hex_bytes(market.profile_id) != hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID) or market.config_version != 3:
+        raise ValueError("market is not the exact pool-bound V4 V3 offering")
+    config = decode_lifecycle_pool_bound_v4_market_config(market.config)
+    config_hash = keccak(encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=ZERO_HASH)))
+    return hex_bytes(keccak(abi_encode(
+        ["bytes32", "uint256", "address", "address", "address", "bytes32", "bytes32", "address", "uint256", "uint32", "bytes32"],
+        [POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1, _uint(plan.chain_id, 256, "chainId"),
+         _address(plan.orchestrator, "core", nonzero=True), _address(registrar, "registrar", nonzero=True),
+         _address(token, "token", nonzero=True), bytes.fromhex(hex_bytes(market.adapter_id)[2:]),
+         bytes.fromhex(hex_bytes(market.profile_id)[2:]), _address(market.quote_asset, "quoteAsset", nonzero=True),
+         _uint(market.token_budget, 256, "tokenBudget"), _uint(market.config_version, 32, "configVersion"), config_hash],
+    )))
+
+
+def predict_pool_bound_hook_address(*, deployer: str, init_code_hash: bytes | str, salt: bytes | str) -> str:
+    deployer = _address(deployer, "deployer")
+    init_hash = _abi_value({"name": "initCodeHash", "type": "bytes32"}, init_code_hash)
+    salt_bytes = _abi_value({"name": "salt", "type": "bytes32"}, salt)
+    return to_checksum_address(keccak(b"\xff" + bytes.fromhex(deployer[2:]) + salt_bytes + init_hash)[12:])
+
+
+def valid_pool_bound_hook_address(hook: str) -> bool:
+    return int(_address(hook, "hook"), 16) & V4_LIFECYCLE_HOOK_PERMISSION_MASK == V4_LIFECYCLE_HOOK_PERMISSIONS
+
+
 def encode_lifecycle_abyss_market_config(config: LifecycleAbyssMarketConfig | Mapping[str, Any]) -> bytes:
     return abi_encode([_tuple_type(ABYSS_MARKET_CONFIG_COMPONENTS_V1)], [_struct_tuple(ABYSS_MARKET_CONFIG_COMPONENTS_V1, config)])
 
@@ -425,6 +601,305 @@ def _call(client: Web3, target: str, abi: Sequence[Mapping[str, Any]], name: str
     outputs = _entry(abi, name)["outputs"]
     values = abi_decode([canonical_abi_type(item) for item in outputs], bytes.fromhex(hex_bytes(raw)[2:]))
     return values[0] if len(values) == 1 else values
+
+
+def _read_token_factory_binding(client: Web3, orchestrator: str, block: LaunchBlock) -> tuple[str, str]:
+    factory = _address(_call(client, orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "tokenFactory", [], block), "token factory", nonzero=True)
+    code = bytes.fromhex(hex_bytes(rpc(client, "eth_getCode", [factory, block.tag]))[2:])
+    if not code or _call(client, factory, LAUNCH_TOKEN_FACTORY_V1_ABI, "core", [], block).lower() != orchestrator.lower():
+        raise ValueError("token factory code or core binding differs from the selected lifecycle orchestrator")
+    return factory, hex_bytes(keccak(code))
+
+
+_PROFILE_DEPENDENCY_ABI = [*POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI] + [
+    {"type": "function", "name": name, "stateMutability": "view", "inputs": [], "outputs": [{"name": "", "type": "address"}]}
+    for name in ("hookRoot", "factory")
+]
+_PROFILE_DEPENDENCY_ABI += [
+    {"type": "function", "name": "profileId", "stateMutability": "view", "inputs": [{"name": "profile", "type": "uint8"}], "outputs": [{"name": "", "type": "bytes32"}]},
+]
+
+
+def _profile_topology(client: Web3, registry: str, profile_id: bytes, profile: Sequence[Any], adapter: Sequence[Any], block: LaunchBlock) -> ProfileTopologyV1:
+    transaction = {"to": registry, "data": _encode_function(LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "profileTopology", [profile_id])}
+    try:
+        raw = hex_bytes(rpc(client, "eth_call", [transaction, block.tag]))
+    except LaunchRpcError as error:
+        # Old deployed registries revert at the missing selector. Transport
+        # failures or a meaningful contract revert never become certification.
+        if "revert" not in error.rpc_message.lower() or error.data not in (None, "0x"):
+            raise
+        raw = "0x"
+    if raw != "0x":
+        values = abi_decode([_tuple_type(PROFILE_TOPOLOGY_COMPONENTS_V1)], bytes.fromhex(raw[2:]))[0]
+        if values[0] not in (0, 1, 2):
+            raise ValueError("registry reports an unknown certified hook topology")
+        return ProfileTopologyV1(LifecycleHookTopology(values[0]), values[1], to_checksum_address(values[2]), hex_bytes(values[3]))
+    if profile_id == V4_LIFECYCLE_PROFILE_ID and profile[1] == V4_LIFECYCLE_CONFIG_SCHEMA and adapter[3] == 2:
+        return ProfileTopologyV1(LifecycleHookTopology.SHARED_V4, 2, ZERO_ADDRESS, ZERO_HASH)
+    if profile[1] == ABYSS_LIFECYCLE_CONFIG_SCHEMA and adapter[3] == 1:
+        known = any(_call(client, adapter[0], _PROFILE_DEPENDENCY_ABI, "profileId", [kind], block) == profile_id for kind in range(4))
+        if known:
+            return ProfileTopologyV1(LifecycleHookTopology.NONE, 1, ZERO_ADDRESS, ZERO_HASH)
+    raise ValueError("legacy registry cannot certify this profile; pool-bound V4 requires recorded topology")
+
+
+def _certified_profile(client: Web3, registry: str, orchestrator: str, profile_id: bytes, block: LaunchBlock, required: int) -> tuple[tuple[Any, ...], tuple[Any, ...], ProfileTopologyV1]:
+    profile = tuple(_call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "profile", [profile_id], block))
+    adapter = tuple(_call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "adapter", [profile[0]], block))
+    implementation = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "requireEligible", [profile[0], profile_id, adapter[3], required], block)
+    code = bytes.fromhex(hex_bytes(rpc(client, "eth_getCode", [adapter[0], block.tag]))[2:])
+    if not profile[7] or not adapter[4] or profile[6] & required != required or adapter[2] & required != required or implementation.lower() != adapter[0].lower() or not code or keccak(code) != adapter[1]:
+        raise ValueError("profile or adapter no longer has its exact immutable registry approval")
+    if _call(client, implementation, LAUNCH_MARKET_ADAPTER_V1_ABI, "core", [], block).lower() != orchestrator.lower() or _call(client, implementation, LAUNCH_MARKET_ADAPTER_V1_ABI, "dependencyDigest", [], block) != profile[2]:
+        raise ValueError("adapter authority or dependency graph differs from its approved profile")
+    topology = _profile_topology(client, registry, profile_id, profile, adapter, block)
+    if topology.config_version != adapter[3]:
+        raise ValueError("certified topology config version differs from its immutable adapter")
+    schema = profile[1]
+    if schema in (V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA) or profile_id in (V4_LIFECYCLE_PROFILE_ID, V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+        bound = profile_id == V4_POOL_BOUND_LIFECYCLE_PROFILE_ID
+        expected_schema = V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA if bound else V4_LIFECYCLE_CONFIG_SCHEMA
+        expected_version = 3 if bound else 2
+        expected_topology = LifecycleHookTopology.POOL_BOUND_V4 if bound else LifecycleHookTopology.SHARED_V4
+        if schema != expected_schema or profile_id != (V4_POOL_BOUND_LIFECYCLE_PROFILE_ID if bound else V4_LIFECYCLE_PROFILE_ID) or adapter[3] != expected_version or topology.hook_topology != expected_topology:
+            raise ValueError("V4 profile ID, config schema, version and certified topology must match exactly")
+        if int(profile[4], 16) != 0 or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "poolManager", [], block).lower() != profile[3].lower():
+            raise ValueError("certified V4 venue/factory graph differs from the approved profile")
+        if _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "PROFILE_ID", [], block) != profile_id or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "CONFIG_SCHEMA", [], block) != schema:
+            raise ValueError("V4 adapter does not implement the approved profile and schema")
+        if bound:
+            if int(profile[5], 16) != 0 or int(topology.hook_deployer, 16) == 0 or topology.hook_creation_code_hash == ZERO_HASH or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "CONFIG_VERSION", [], block) != 3:
+                raise ValueError("pool-bound profile must certify a derived hook with its exact deployer/code hash")
+            if _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "hookDeployer", [], block).lower() != topology.hook_deployer.lower():
+                raise ValueError("pool-bound adapter deployer differs from its certified topology")
+            if hex_bytes(rpc(client, "eth_getCode", [topology.hook_deployer, block.tag])) == "0x" or hex_bytes(_call(client, topology.hook_deployer, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, "creationCodeHash", [], block)) != topology.hook_creation_code_hash:
+                raise ValueError("pool-bound deployer creation bytecode differs from its certification")
+        elif topology.hook_deployer.lower() != ZERO_ADDRESS or topology.hook_creation_code_hash != ZERO_HASH or int(profile[5], 16) == 0 or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "hookRoot", [], block).lower() != profile[5].lower() or hex_bytes(rpc(client, "eth_getCode", [profile[5], block.tag])) == "0x":
+            raise ValueError("shared V4 profile requires its exact reusable deployed hook root")
+    else:
+        if topology.hook_topology != LifecycleHookTopology.NONE or topology.hook_deployer.lower() != ZERO_ADDRESS or topology.hook_creation_code_hash != ZERO_HASH:
+            raise ValueError("non-V4 profile cannot claim a V4 hook topology")
+        if schema == ABYSS_LIFECYCLE_CONFIG_SCHEMA:
+            if adapter[3] != 1 or profile[3].lower() != profile[4].lower() or int(profile[4], 16) == 0 or int(profile[5], 16) != 0 or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "factory", [], block).lower() != profile[4].lower():
+                raise ValueError("Abyss profile must retain its exact canonical factory and zero hook")
+    return adapter, profile, topology
+
+
+def read_lifecycle_profiles(client: Web3, *, orchestrator: str, profile_ids: Sequence[bytes | str] | None = None, offset: int = 0, limit: int = 100, block: LaunchBlock | None = None) -> tuple[LifecycleProfile, ...]:
+    """Discover current eligible offerings without inferring topology from a hook."""
+    orchestrator = _address(orchestrator, "orchestrator", nonzero=True)
+    _uint(offset, 256, "offset")
+    _uint(limit, 256, "limit")
+    pinned = block or read_block(client)
+    registry = _address(_call(client, orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "registry", [], pinned), "registry", nonzero=True)
+    if _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "core", [], pinned).lower() != orchestrator.lower():
+        raise ValueError("registry is not bound to the selected lifecycle orchestrator")
+    ids = profile_ids if profile_ids is not None else _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "profileIds", [offset, limit], pinned)
+    result = []
+    for item in ids:
+        profile_id = _abi_value({"name": "profileId", "type": "bytes32"}, item)
+        profile = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "profile", [profile_id], pinned)
+        adapter = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "adapter", [profile[0]], pinned)
+        topology = _profile_topology(client, registry, profile_id, profile, adapter, pinned)
+        reason = None
+        try:
+            adapter, profile, topology = _certified_profile(client, registry, orchestrator, profile_id, pinned, LAUNCH_REQUIRED_CAPABILITIES_V1)
+        except (ValueError, LaunchRpcError) as error:
+            reason = str(error)
+        venue_kind = "uniswap-v4" if profile[1] in (V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA) else "abyss" if profile[1] == ABYSS_LIFECYCLE_CONFIG_SCHEMA else "unknown"
+        result.append(LifecycleProfile(hex_bytes(profile_id), _json_tuple(PROFILE_REGISTRATION_COMPONENTS_V1, profile), _json_tuple(ADAPTER_REGISTRATION_COMPONENTS_V1, adapter), topology, venue_kind, reason is None, reason))
+    assert_canonical(client, pinned)
+    return tuple(result)
+
+
+def _pool_bound_creation_code(client: Web3, topology: ProfileTopologyV1, block: LaunchBlock) -> bytes:
+    chunks = []
+    for name in ("codeChunk0", "codeChunk1"):
+        address = _call(client, topology.hook_deployer, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, name, [], block)
+        if int(address, 16) == 0:
+            if name == "codeChunk0":
+                raise ValueError("pool-bound deployer has no immutable creation-code chunk")
+            continue
+        code = bytes.fromhex(hex_bytes(rpc(client, "eth_getCode", [address, block.tag]))[2:])
+        if not 1 < len(code) <= 24_576 or code[0] != 0:
+            raise ValueError("pool-bound creation-code chunk is not its bounded STOP-prefixed runtime")
+        chunks.append(code[1:])
+    creation_code = b"".join(chunks)
+    if hex_bytes(keccak(creation_code)) != topology.hook_creation_code_hash:
+        raise ValueError("actual pool-bound creation-code chunks differ from certified typed hook bytecode")
+    return creation_code
+
+
+def _pool_bound_deployment(client: Web3, plan: LaunchPlanV1, index: int, token: str, adapter: Sequence[Any], profile: Sequence[Any], topology: ProfileTopologyV1, block: LaunchBlock) -> tuple[PoolBoundHookDeployment, PoolBoundHookParametersV1]:
+    if topology.hook_topology != LifecycleHookTopology.POOL_BOUND_V4:
+        raise ValueError("market is not a certified pool-bound V4 offering")
+    market = plan.markets[index]
+    config = decode_lifecycle_pool_bound_v4_market_config(market.config)
+    implementation = adapter[0]
+    if market.config_version != topology.config_version or bytes.fromhex(hex_bytes(market.adapter_id)[2:]) != profile[0]:
+        raise ValueError("market adapter/config version differs from its certified pool-bound profile")
+    metadata = _call(client, implementation, POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, "hookDeploymentMetadata", [token, _market_tuple(plan, index)], block)
+    deployer, init_code_hash, salt, predicted_hook = metadata
+    if deployer.lower() != topology.hook_deployer.lower() or salt != bytes.fromhex(hex_bytes(config.hook_salt)[2:]) or hex_bytes(init_code_hash) == ZERO_HASH:
+        raise ValueError("pool-bound deployment metadata differs from its certified deployer and exact committed salt")
+    prediction = predict_pool_bound_hook_address(deployer=deployer, init_code_hash=init_code_hash, salt=salt)
+    if predicted_hook.lower() != prediction.lower():
+        raise ValueError("pool-bound metadata prediction is not its exact CREATE2 address")
+    oracle_factory = _call(client, implementation, POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, "oracleFactory", [], block)
+    locker = _call(client, implementation, POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, "locker", [], block)
+    collector_factory = _call(client, implementation, POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, "collectorFactory", [], block)
+    parameters = PoolBoundHookParametersV1(
+        profile[3], implementation, oracle_factory, plan.orchestrator, locker, token, market.quote_asset,
+        config.lp_fee_pips, config.tick_spacing, config.sqrt_price_x96, config.hook_fee_pips, config.fee_mode,
+        config.protocol_fee_denominator, config.treasury, config.external_liquidity_disabled, config.oracle_config_id,
+        pool_bound_market_commitment(plan, token=token, registrar=implementation, market_index=index), len(config.positions),
+    )
+    encoded_parameters = encode_pool_bound_hook_parameters(parameters)
+    actual_parameters, actual_salt = _call(client, collector_factory, V4_FEE_COLLECTOR_FACTORY_V1_ABI, "poolBoundHookParameters", [implementation, token, _market_tuple(plan, index)], block)
+    if actual_salt != salt or abi_encode([_tuple_type(POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)], [actual_parameters]) != encoded_parameters:
+        raise ValueError("pool-bound constructor tuple differs from the exact salt-normalized market economics")
+    creation_code = _pool_bound_creation_code(client, topology, block)
+    if keccak(creation_code + encoded_parameters) != init_code_hash:
+        raise ValueError("pool-bound initcode hash differs from certified bytecode plus all 18 constructor fields")
+    parameter_tuple = _struct_tuple(POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1, parameters)
+    if _call(client, deployer, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, "initCodeHash", [parameter_tuple], block) != init_code_hash or _call(client, deployer, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, "predict", [parameter_tuple, salt], block).lower() != prediction.lower():
+        raise ValueError("typed deployer initcode/prediction differs from exact local derivation")
+    hook_code = bytes.fromhex(hex_bytes(rpc(client, "eth_getCode", [prediction, block.tag]))[2:])
+    if hook_code:
+        recorded_hash = _call(client, deployer, POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, "deployedCodeHash", [prediction], block)
+        if recorded_hash == bytes(32) or recorded_hash != keccak(hook_code):
+            raise ValueError("existing pool-bound hook lacks exact typed-deployer runtime provenance")
+        for name, expected in (("deploymentConfigHash", keccak(encoded_parameters)), ("marketCommitment", bytes.fromhex(hex_bytes(parameters.market_commitment)[2:]))):
+            if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, name, [], block) != expected:
+                raise ValueError("existing pool-bound hook differs from its exact immutable economic commitment")
+        for name, expected in (("poolManager", parameters.pool_manager), ("registrar", parameters.registrar), ("oracleFactory", parameters.oracle_factory), ("core", parameters.core), ("liquidityLocker", parameters.liquidity_locker), ("token", parameters.token)):
+            if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, name, [], block).lower() != expected.lower():
+                raise ValueError("existing pool-bound hook differs from its exact immutable dependency graph")
+        currency0, currency1 = sorted((token, market.quote_asset), key=lambda address: int(address, 16))
+        pool_id = keccak(abi_encode(["address", "address", "uint24", "int24", "address"], [currency0, currency1, config.lp_fee_pips, config.tick_spacing, prediction]))
+        if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "boundPoolId", [], block) != pool_id or _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "openingSqrtPriceX96", [], block) != config.sqrt_price_x96 or _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "expectedPositionCount", [], block) != len(config.positions):
+            raise ValueError("existing pool-bound hook differs from its exact key, opening price or position count")
+    return PoolBoundHookDeployment(to_checksum_address(deployer), hex_bytes(init_code_hash), hex_bytes(salt), prediction), parameters
+
+
+def _read_pool_bound_deployment(client: Web3, plan: LaunchPlanV1, market_index: int, block: LaunchBlock) -> tuple[PoolBoundHookDeployment, PoolBoundHookParametersV1]:
+    _uint(market_index, 32, "marketIndex")
+    if market_index >= len(plan.markets):
+        raise ValueError("market_index is outside the economic plan")
+    market = plan.markets[market_index]
+    if hex_bytes(market.profile_id) != hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID) or market.config_version != 3:
+        raise ValueError("market is not the exact pool-bound V4 V3 offering")
+    token = predict_launch_token(client, plan, block=block)
+    registry = _call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "registry", [], block)
+    if _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "core", [], block).lower() != plan.orchestrator.lower():
+        raise ValueError("registry is not bound to the committed lifecycle orchestrator")
+    required = LAUNCH_REQUIRED_CAPABILITIES_V1 | (LAUNCH_ERC404_CAPABILITY_V1 if int(plan.token.kind) == 1 else 0)
+    adapter, profile, topology = _certified_profile(client, registry, plan.orchestrator, bytes.fromhex(hex_bytes(market.profile_id)[2:]), block, required)
+    return _pool_bound_deployment(client, plan, market_index, token, adapter, profile, topology, block)
+
+
+def read_pool_bound_hook_deployment(client: Web3, plan: LaunchPlanV1, *, market_index: int, block: LaunchBlock | None = None) -> PoolBoundHookDeployment:
+    """Read exact metadata even with unmined salts or an already prepared pool."""
+    _check_client_identity(client, plan)
+    pinned = block or read_block(client)
+    deployment, _ = _read_pool_bound_deployment(client, plan, market_index, pinned)
+    assert_canonical(client, pinned)
+    return deployment
+
+
+def build_pool_bound_hook_deployment_transaction(client: Web3, plan: LaunchPlanV1, *, market_index: int) -> PoolBoundHookDeploymentTransaction:
+    """Build optional permissionless predeployment without accepting arbitrary code."""
+    _check_client_identity(client, plan)
+    block = read_block(client)
+    deployment, parameters = _read_pool_bound_deployment(client, plan, market_index, block)
+    if not valid_pool_bound_hook_address(deployment.predicted_hook):
+        raise ValueError("mine and finalize the pool-bound hook salt before predeployment")
+    if hex_bytes(rpc(client, "eth_getCode", [deployment.predicted_hook, block.tag])) != "0x":
+        raise ValueError("the exact pool-bound hook is already deployed")
+    data = _encode_function(POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI, "deploy", [_struct_tuple(POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1, parameters), bytes.fromhex(deployment.salt[2:])])
+    assert_canonical(client, block)
+    return PoolBoundHookDeploymentTransaction(deployment.deployer, data, 0, deployment)
+
+
+def _check_mining_cancelled(cancel_event: asyncio.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise asyncio.CancelledError("pool-bound hook salt mining cancelled")
+
+
+async def mine_pool_bound_hook_salt(*, deployer: str, init_code_hash: bytes | str, start_salt: int = 0, cancel_event: asyncio.Event | None = None, on_progress: Callable[[PoolBoundHookMiningProgress], None] | None = None) -> PoolBoundHookSalt:
+    """Mine exact 0x1afc permission bits locally, yielding for cancellation/UI work."""
+    deployer = _address(deployer, "deployer")
+    init_hash = _abi_value({"name": "initCodeHash", "type": "bytes32"}, init_code_hash)
+    counter = _uint(start_salt, 256, "startSalt")
+    prefix = b"\xff" + bytes.fromhex(deployer[2:])
+    attempts = 0
+    while counter < 1 << 256:
+        _check_mining_cancelled(cancel_event)
+        salt = counter.to_bytes(32, "big")
+        digest = keccak(prefix + salt + init_hash)
+        attempts += 1
+        valid = int.from_bytes(digest[-2:], "big") & V4_LIFECYCLE_HOOK_PERMISSION_MASK == V4_LIFECYCLE_HOOK_PERMISSIONS
+        if valid or attempts % 256 == 0:
+            progress = PoolBoundHookMiningProgress(attempts, hex_bytes(salt), to_checksum_address(digest[-20:]))
+            if on_progress is not None:
+                on_progress(progress)
+            _check_mining_cancelled(cancel_event)
+            if valid:
+                return PoolBoundHookSalt(progress.salt, progress.predicted_hook)
+            await asyncio.sleep(0)
+        counter += 1
+    raise ValueError("pool-bound hook salt search exhausted uint256 without a permissioned address")
+
+
+async def prepare_pool_bound_lifecycle_plan(client: Web3, plan: LaunchPlanV1, *, cancel_event: asyncio.Event | None = None, on_progress: Callable[[PoolBoundHookMiningProgress], None] | None = None) -> PreparedPoolBoundLifecyclePlan:
+    """Finalize only bound salts, then re-read every exact final deployment tuple."""
+    to_launch_plan_tuple(plan)
+    indices = [index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)]
+    if not indices:
+        return PreparedPoolBoundLifecyclePlan(plan, ())
+    _check_mining_cancelled(cancel_event)
+    await asyncio.to_thread(_check_client_identity, client, plan)
+    progress = await asyncio.to_thread(read_launch_progress, client, plan)
+    if progress.phase != LifecyclePhase.NONE:
+        raise ValueError("a begun launch is already committed; pool-bound salt finalization is draft-only")
+    initial_block = progress.head_block
+    token_factory_binding = await asyncio.to_thread(_read_token_factory_binding, client, plan.orchestrator, initial_block)
+    token = await asyncio.to_thread(predict_launch_token, client, plan, block=initial_block)
+    markets = list(plan.markets)
+    expected: dict[int, PoolBoundHookDeployment] = {}
+    for index in indices:
+        _check_mining_cancelled(cancel_event)
+        draft = replace(plan, markets=tuple(markets))
+        deployment = await asyncio.to_thread(read_pool_bound_hook_deployment, client, draft, market_index=index)
+        if not valid_pool_bound_hook_address(deployment.predicted_hook):
+            def report(item: PoolBoundHookMiningProgress) -> None:
+                if on_progress is not None:
+                    on_progress(replace(item, market_index=index))
+            mined = await mine_pool_bound_hook_salt(deployer=deployment.deployer, init_code_hash=deployment.init_code_hash, start_salt=int(deployment.salt, 16), cancel_event=cancel_event, on_progress=report)
+            config = decode_lifecycle_pool_bound_v4_market_config(markets[index].config)
+            markets[index] = replace(markets[index], config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=mined.salt)))
+            deployment = replace(deployment, salt=mined.salt, predicted_hook=mined.predicted_hook)
+        expected[index] = deployment
+    finalized = replace(plan, markets=tuple(markets))
+    _check_mining_cancelled(cancel_event)
+    block = await asyncio.to_thread(read_block, client)
+    if await asyncio.to_thread(_read_token_factory_binding, client, finalized.orchestrator, block) != token_factory_binding:
+        raise ValueError("token factory address or runtime code changed during pool-bound salt mining")
+    if await asyncio.to_thread(predict_launch_token, client, finalized, block=block) != token:
+        raise ValueError("hook salt finalization changed the deterministic launch-token identity")
+    if (await asyncio.to_thread(_progress_values, client, finalized, block))[5] != int(LifecyclePhase.NONE):
+        raise ValueError("the launch began while mining; its committed economic plan cannot be rewritten")
+    deployments = []
+    for index in indices:
+        _check_mining_cancelled(cancel_event)
+        actual = await asyncio.to_thread(read_pool_bound_hook_deployment, client, finalized, market_index=index, block=block)
+        if actual != expected[index] or not valid_pool_bound_hook_address(actual.predicted_hook):
+            raise ValueError("final pool-bound initcode, salt or CREATE2 prediction changed during mining")
+        deployments.append(PoolBoundLifecycleDeployment(actual.deployer, actual.init_code_hash, actual.salt, actual.predicted_hook, index))
+    await asyncio.to_thread(assert_canonical, client, block)
+    _check_mining_cancelled(cancel_event)
+    return PreparedPoolBoundLifecyclePlan(finalized, tuple(deployments))
 
 
 def build_lifecycle_calldata(plan: LaunchPlanV1, command: str, *, first_market: int = 0, count: int = 0) -> str:
@@ -727,6 +1202,8 @@ class PlannedLaunch:
     limits_source: LaunchExecutionLimits | LifecycleLimitResolver | None = None
     confirmations: int = 1
     transaction_hashes: tuple[str, ...] = ()
+    token_factory: str | None = None
+    token_factory_code_hash: str | None = None
 
     @property
     def admitted(self) -> bool:
@@ -792,14 +1269,15 @@ def _live_admission(client: Web3, plan: LaunchPlanV1, progress: LaunchProgress, 
         if policy.burn_bps and policy.asset.lower() != predicted.lower():
             raise ValueError("only the deterministic launch token can have a burn disposition")
         if policy.asset.lower() != predicted.lower():
-            registry = _call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "registry", [], block)
-            if not _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "assetAllowed", [policy.asset], block):
-                raise ValueError("a committed external fee asset has been disabled")
+            if hex_bytes(rpc(client, "eth_getCode", [policy.asset, block.tag])) == "0x":
+                raise ValueError("a committed external fee asset has no contract code")
     if any(market.quote_asset.lower() == predicted.lower() for market in plan.markets):
         raise ValueError("a market cannot pair the launch token with itself")
     if predicted.lower() not in {policy.asset.lower() for policy in plan.fee_assets}:
         raise ValueError("feeAssets must include the exact deterministic launch token, not a sentinel")
     registry = _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "registry", [], block), "registry", nonzero=True)
+    if _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "core", [], block).lower() != plan.orchestrator.lower():
+        raise ValueError("registry is not bound to the committed lifecycle orchestrator")
     spender = _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "fundingEscrow", [], block), "funding escrow", nonzero=True)
     if block.timestamp > plan.deadline:
         raise ValueError("the committed launch deadline has expired; only cancellation is available")
@@ -809,26 +1287,36 @@ def _live_admission(client: Web3, plan: LaunchPlanV1, progress: LaunchProgress, 
     for index, market in enumerate(plan.markets):
         adapter_id = bytes.fromhex(hex_bytes(market.adapter_id)[2:])
         profile_id = bytes.fromhex(hex_bytes(market.profile_id)[2:])
-        implementation = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "requireEligible", [adapter_id, profile_id, market.config_version, required], block)
-        adapter = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "adapter", [adapter_id], block)
-        profile = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "profile", [profile_id], block)
+        adapter, profile, topology = _certified_profile(client, registry, plan.orchestrator, profile_id, block, required)
+        if profile[0] != adapter_id or adapter[3] != market.config_version:
+            raise ValueError("market adapter/config version differs from its immutable approved profile")
+        implementation = adapter[0]
         identity = _call(client, implementation, LAUNCH_MARKET_ADAPTER_V1_ABI, "resolve", [bytes.fromhex(launch_id_of(plan)[2:]), predicted, _market_tuple(plan, index)], block)
         _verify_market_identity(plan, predicted, index, identity)
-        if identity[3].lower() != profile[4].lower() or identity[11].lower() != profile[5].lower() or (identity[2] if identity[0] == 0 else identity[3]).lower() != profile[3].lower():
-            raise ValueError("resolved venue/factory/hook differs from its immutable approved profile")
+        if identity[3].lower() != profile[4].lower() or (identity[2] if identity[0] == 0 else identity[3]).lower() != profile[3].lower():
+            raise ValueError("resolved venue/factory differs from its immutable approved profile")
+        deployment = None
+        if topology.hook_topology == LifecycleHookTopology.POOL_BOUND_V4:
+            deployment, _ = _pool_bound_deployment(client, plan, index, predicted, adapter, profile, topology, block)
+            if identity[0] != 0 or identity[11].lower() != deployment.predicted_hook.lower() or not valid_pool_bound_hook_address(identity[11]):
+                raise ValueError("resolved pool-bound hook differs from its exact certified deployment metadata")
+        elif identity[11].lower() != profile[5].lower() or (identity[0] == 0 and topology.hook_topology != LifecycleHookTopology.SHARED_V4):
+            raise ValueError("resolved hook differs from its immutable approved profile topology")
         if any(previous[1] == identity[1] for previous in resolved):
             raise ValueError("the plan repeats one canonical market")
+        if identity[0] == 0 and any(previous[0] == 0 and plan.markets[prior_index].quote_asset.lower() == market.quote_asset.lower() for prior_index, previous in enumerate(resolved)):
+            raise ValueError("one V4 market per quote is allowed across all offering IDs")
         resolved.append(tuple(identity))
-        admissions.append({"marketIndex": index, "implementation": to_checksum_address(implementation), "adapter": _json_tuple(ADAPTER_REGISTRATION_COMPONENTS_V1, adapter), "profile": _json_tuple(PROFILE_REGISTRATION_COMPONENTS_V1, profile), "identity": _json_tuple(MARKET_IDENTITY_COMPONENTS_V1, identity)})
-        if not _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "assetAllowed", [market.quote_asset], block):
-            raise ValueError("a committed quote asset has been disabled")
+        admissions.append({"marketIndex": index, "implementation": to_checksum_address(implementation), "adapter": _json_tuple(ADAPTER_REGISTRATION_COMPONENTS_V1, adapter), "profile": _json_tuple(PROFILE_REGISTRATION_COMPONENTS_V1, profile), "topology": _json_tuple(PROFILE_TOPOLOGY_COMPONENTS_V1, _struct_tuple(PROFILE_TOPOLOGY_COMPONENTS_V1, topology)), "identity": _json_tuple(MARKET_IDENTITY_COMPONENTS_V1, identity), "hookDeployment": deployment})
+        if hex_bytes(rpc(client, "eth_getCode", [market.quote_asset, block.tag])) == "0x":
+            raise ValueError("a committed quote asset has no contract code")
     for item in plan.funding:
         if item.asset.lower() == predicted.lower() or item.input_asset.lower() == predicted.lower():
             raise ValueError("launch-token inventory cannot be counted as external funding")
-        if int(item.kind) == 2 and int(item.input_asset, 16) != 0 and not _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "assetAllowed", [item.input_asset], block):
+        if int(item.kind) == 2 and int(item.input_asset, 16) != 0 and not _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "fundingInputAllowed", [item.input_asset], block):
             raise ValueError("a committed funding conversion input asset has been disabled")
-        if not _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI, "assetAllowed", [item.asset], block):
-            raise ValueError("a funding output asset has been disabled")
+        if hex_bytes(rpc(client, "eth_getCode", [item.asset, block.tag])) == "0x":
+            raise ValueError("a funding output asset has no contract code")
         if int(item.kind) == 1:
             wrapped = _call(client, spender, LAUNCH_FUNDING_ESCROW_V1_ABI, "wrappedNative", [], block)
             if wrapped.lower() != item.asset.lower():
@@ -1053,6 +1541,7 @@ def plan_launch(
         return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, (), (), progress, empty, None, limits, batch_size, (), (), limits_source=limits_source, confirmations=confirmations, transaction_hashes=tuple(transaction_hashes))
     _assert_confirmed_account_state(client, plan, progress)
     predicted, _, approvals, admissions = _live_admission(client, plan, progress, block)
+    token_factory, token_factory_code_hash = _read_token_factory_binding(client, plan.orchestrator, block)
     nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, block.tag]))
     pending_nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"]))
     gas_price = quantity(rpc(client, "eth_gasPrice", []))
@@ -1063,7 +1552,7 @@ def plan_launch(
         reason = "direct contract-account execution is not a verified EOA route" if pending_nonce == nonce else "the account has unresolved pending/replaced transactions; wait and recover canonical state"
         evidence = LaunchRpcSimulation("provisional", None, block, (), reason)
         simulation = LaunchSimulation("provisional", False, block, None, transactions, (reason,), evidence)
-        return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, transactions, approvals, progress, simulation, None, limits, batch_size, ("Preparation gas and deployed infrastructure cannot be recovered",), admissions, limits_source)
+        return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, transactions, approvals, progress, simulation, None, limits, batch_size, ("Preparation gas and deployed infrastructure cannot be recovered",), admissions, limits_source, token_factory=token_factory, token_factory_code_hash=token_factory_code_hash)
     atomic: LaunchSimulation | None = None
     if progress.phase == LifecyclePhase.NONE:
         atomic_transactions = _make_transactions(plan, "atomic", progress, approvals, (), nonce=nonce, gas_cap=cap, gas_price=gas_price)
@@ -1102,11 +1591,26 @@ def plan_launch(
         if atomic is not None:
             atomic = replace(atomic, admitted=False, reasons=(*atomic.reasons, limits_failure))
     assert_canonical(client, block)
-    return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, simulation.transactions, approvals, progress, simulation, atomic, limits, batch_size, ("Preparation gas and setup deployments are irreversible", "Cancellation refunds only unspent launch-isolated external funding, not launch-token inventory or gas"), admissions, limits_source, confirmations=confirmations, transaction_hashes=tuple(transaction_hashes))
+    return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, simulation.transactions, approvals, progress, simulation, atomic, limits, batch_size, ("Preparation gas and setup deployments are irreversible", "Cancellation refunds only unspent launch-isolated external funding, not launch-token inventory or gas"), admissions, limits_source, confirmations=confirmations, transaction_hashes=tuple(transaction_hashes), token_factory=token_factory, token_factory_code_hash=token_factory_code_hash)
 
 def _assert_planned_identity(launch: PlannedLaunch) -> None:
     if hash_launch_plan(launch.plan) != hex_bytes(launch.plan_hash) or launch_id_of(launch.plan) != hex_bytes(launch.launch_id) or launch.chain_id != launch.plan.chain_id or launch.account.lower() != launch.plan.creator.lower():
         raise ValueError("the reviewed economic plan/identity changed; create a new explicit plan")
+
+
+def _assert_reviewed_deployments(reviewed: PlannedLaunch, current: PlannedLaunch) -> None:
+    if not current.simulation.transactions:
+        return
+    if reviewed.predicted_token.lower() != current.predicted_token.lower():
+        raise ValueError("the reviewed deterministic token changed; create a new explicit plan")
+    if reviewed.token_factory is None or reviewed.token_factory_code_hash is None or reviewed.token_factory != current.token_factory or reviewed.token_factory_code_hash != current.token_factory_code_hash:
+        raise ValueError("the reviewed token factory address or runtime code changed; create a new explicit plan")
+    previous = {item["marketIndex"]: item.get("hookDeployment") for item in reviewed.market_admissions}
+    latest = {item["marketIndex"]: item.get("hookDeployment") for item in current.market_admissions}
+    for index, market in enumerate(reviewed.plan.markets):
+        if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+            if not isinstance(previous.get(index), PoolBoundHookDeployment) or previous[index] != latest.get(index):
+                raise ValueError("the reviewed pool-bound deployer, initcode, salt or prediction changed; create a new explicit plan")
 
 
 
@@ -1130,7 +1634,10 @@ def simulate_launch_plan(client: Web3, launch: PlannedLaunch | LaunchPlanV1, *, 
         if mode is None:
             raise ValueError("simulation requires an explicitly selected execution mode")
         selected, plan = mode, launch
-    return plan_launch(client, plan, account=account, mode=selected, **options).simulation
+    current = plan_launch(client, plan, account=account, mode=selected, **options)
+    if isinstance(launch, PlannedLaunch):
+        _assert_reviewed_deployments(launch, current)
+    return current.simulation
 
 
 def build_next_transaction(
@@ -1184,6 +1691,8 @@ def build_next_transaction(
             proof = replace(proof, admitted=False, reasons=(*proof.reasons, limits_failure))
     else:
         planned = plan_launch(client, plan, account=account, mode=selected, limits=limits, prepare_batch_size=prepare_batch_size, confirmations=confirmations, transaction_hashes=transaction_hashes, fork=fork, data_fee_estimator=data_fee_estimator)
+        if isinstance(launch, PlannedLaunch):
+            _assert_reviewed_deployments(launch, planned)
         proof = planned.simulation
     if not proof.admitted:
         raise ValueError("the next transaction has no verified admission: " + "; ".join(proof.reasons))
@@ -1191,16 +1700,20 @@ def build_next_transaction(
 
 
 def _verify_market_identity(plan: LaunchPlanV1, token: str, index: int, identity: Sequence[Any]) -> None:
-    venue, canonical_id, manager, factory, pool, pool_id, profile_id, currency0, currency1, fee, spacing, hook, _ = identity
+    venue, canonical_id, manager, factory, pool, pool_id, profile_id, currency0, currency1, fee, spacing, hook, opening_price = identity
     market = plan.markets[index]
-    if venue not in (0, 1) or int(currency0, 16) >= int(currency1, 16) or {currency0.lower(), currency1.lower()} != {token.lower(), market.quote_asset.lower()} or hex_bytes(profile_id) != hex_bytes(market.profile_id):
+    if venue not in (0, 1) or int(manager, 16) == 0 or opening_price <= 0 or spacing <= 0 or int(currency0, 16) >= int(currency1, 16) or {currency0.lower(), currency1.lower()} != {token.lower(), market.quote_asset.lower()} or hex_bytes(profile_id) != hex_bytes(market.profile_id):
         raise ValueError("directory market does not have the exact canonical currency/profile identity")
     expected = keccak(abi_encode(["uint256", "uint8", "address", "address", "address", "bytes32", "bytes32"], [plan.chain_id, venue, manager, factory, pool, pool_id, profile_id]))
     if canonical_id != expected:
         raise ValueError("directory canonical market ID is not chain/venue/manager/factory bound")
     if venue == 0:
-        if int(pool, 16) != 0 or pool_id != keccak(abi_encode(["address", "address", "uint24", "int24", "address"], [currency0, currency1, fee, spacing, hook])):
+        if int(factory, 16) != 0 or int(pool, 16) != 0 or int(hook, 16) == 0 or pool_id != keccak(abi_encode(["address", "address", "uint24", "int24", "address"], [currency0, currency1, fee, spacing, hook])):
             raise ValueError("V4 identity is not the full PoolKey at its authoritative singleton manager")
+        if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+            config = decode_lifecycle_pool_bound_v4_market_config(market.config)
+            if market.config_version != 3 or fee != config.lp_fee_pips or spacing != config.tick_spacing or opening_price != config.sqrt_price_x96 or not valid_pool_bound_hook_address(hook):
+                raise ValueError("pool-bound identity differs from its committed V3 economics or exact hook permissions")
     elif int(pool, 16) == 0 or int(factory, 16) == 0:
         raise ValueError("Abyss identity requires its actual pool and factory")
 
@@ -1221,6 +1734,11 @@ def read_launch_markets(client: Web3, plan: LaunchPlanV1, *, offset: int = 0, li
         adapter, prepared = _call(client, directory, LAUNCH_DIRECTORY_V1_ABI, "market", [bytes.fromhex(progress.launch_id[2:]), index], block)
         identity = prepared[0]
         _verify_market_identity(plan, progress.token, index, identity)
+        if hex_bytes(plan.markets[index].profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+            deployer, init_code_hash, salt, predicted_hook = _call(client, adapter, POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI, "hookDeploymentMetadata", [progress.token, _market_tuple(plan, index)], block)
+            config = decode_lifecycle_pool_bound_v4_market_config(plan.markets[index].config)
+            if salt != bytes.fromhex(hex_bytes(config.hook_salt)[2:]) or predicted_hook.lower() != identity[11].lower() or predict_pool_bound_hook_address(deployer=deployer, init_code_hash=init_code_hash, salt=salt).lower() != identity[11].lower():
+                raise ValueError("prepared pool-bound identity differs from exact committed CREATE2 metadata")
         live = _call(client, adapter, LAUNCH_MARKET_ADAPTER_V1_ABI, "readMarket", [bytes.fromhex(progress.launch_id[2:]), index], block)
         positions = _call(client, directory, LAUNCH_DIRECTORY_V1_ABI, "positions", [bytes.fromhex(progress.launch_id[2:]), index, position_offset, position_limit], block)
         position_reads = []
@@ -1252,6 +1770,17 @@ __all__ = [
     "LAUNCH_TOKEN_ONLY_CAPABILITY_V1", "LAUNCH_EMPTY_PREPARE_CAPABILITY_V1",
     "LAUNCH_PERMANENT_CUSTODY_CAPABILITY_V1", "LAUNCH_CANONICAL_FEES_CAPABILITY_V1",
     "LAUNCH_ERC404_CAPABILITY_V1", "LAUNCH_MULTI_POSITION_CAPABILITY_V1",
+    "V4_LIFECYCLE_PROFILE_ID", "V4_LIFECYCLE_CONFIG_SCHEMA", "ABYSS_LIFECYCLE_CONFIG_SCHEMA",
+    "V4_POOL_BOUND_LIFECYCLE_PROFILE_ID", "V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA", "V4_POOL_BOUND_LIFECYCLE_ADAPTER_ID",
+    "POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1", "V4_LIFECYCLE_HOOK_PERMISSION_MASK", "V4_LIFECYCLE_HOOK_PERMISSIONS",
+    "LifecycleHookTopology", "ProfileTopologyV1", "LifecycleProfile",
+    "LifecyclePoolBoundV4MarketConfig", "PoolBoundHookParametersV1",
+    "PoolBoundHookDeployment", "PoolBoundLifecycleDeployment", "PoolBoundHookMiningProgress", "PoolBoundHookSalt",
+    "PreparedPoolBoundLifecyclePlan", "PoolBoundHookDeploymentTransaction",
+    "encode_lifecycle_pool_bound_v4_market_config", "decode_lifecycle_pool_bound_v4_market_config",
+    "encode_pool_bound_hook_parameters", "pool_bound_market_commitment", "predict_pool_bound_hook_address", "valid_pool_bound_hook_address",
+    "read_lifecycle_profiles", "read_pool_bound_hook_deployment", "mine_pool_bound_hook_salt",
+    "prepare_pool_bound_lifecycle_plan", "build_pool_bound_hook_deployment_transaction",
     "LaunchPlanV1", "LaunchProgress", "LaunchSimulation", "PlannedLaunch",
     "LifecycleTokenKind", "LifecycleRewardMode", "LifecycleFundingKind", "LifecyclePhase",
     "LifecycleTokenConfig", "LifecycleAssetFunding", "LifecycleFeeAssetPolicy", "LifecycleMarketConfig", "LifecycleInitialBuy",

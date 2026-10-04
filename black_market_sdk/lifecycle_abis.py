@@ -109,6 +109,10 @@ PROFILE_REGISTRATION_COMPONENTS_V1 = [
     _argument("factory", "address"), _argument("hook", "address"),
     _argument("capabilities", "uint64"), _argument("enabled", "bool"),
 ]
+PROFILE_TOPOLOGY_COMPONENTS_V1 = [
+    _argument("hookTopology", "uint8"), _argument("configVersion", "uint32"),
+    _argument("hookDeployer", "address"), _argument("hookCreationCodeHash", "bytes32"),
+]
 MARKET_LIVE_STATE_COMPONENTS_V1 = [
     _argument("sqrtPriceX96", "uint160"), _argument("tick", "int24"), _argument("liquidity", "uint128"),
     _argument("publicTrading", "bool"), _argument("oracleReadyAt", "uint256"),
@@ -124,6 +128,26 @@ V4_MARKET_CONFIG_COMPONENTS_V2 = [
     _argument("externalLiquidityDisabled", "bool"),
     _argument("oracleConfigId", "bytes32"),
     _argument("positions", "tuple[]", components=V4_POSITION_CONFIG_COMPONENTS_V1),
+]
+V4_MARKET_CONFIG_COMPONENTS_V3 = [
+    *V4_MARKET_CONFIG_COMPONENTS_V2[:-1],
+    _argument("hookSalt", "bytes32"),
+    _argument("positions", "tuple[]", components=V4_POSITION_CONFIG_COMPONENTS_V1),
+]
+POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1 = [
+    _argument("poolManager", "address"), _argument("registrar", "address"),
+    _argument("oracleFactory", "address"), _argument("core", "address"),
+    _argument("liquidityLocker", "address"), _argument("token", "address"),
+    _argument("quoteCurrency", "address"), _argument("lpFeePips", "uint24"),
+    _argument("tickSpacing", "int24"), _argument("sqrtPriceX96", "uint160"),
+    _argument("hookFeePips", "uint24"), _argument("feeMode", "uint8"),
+    _argument("protocolFeeDenominator", "uint8"), _argument("treasury", "address"),
+    _argument("externalLiquidityDisabled", "bool"), _argument("oracleConfigId", "bytes32"),
+    _argument("marketCommitment", "bytes32"), _argument("expectedPositionCount", "uint32"),
+]
+POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1 = [
+    _argument("deployer", "address"), _argument("initCodeHash", "bytes32"),
+    _argument("salt", "bytes32"), _argument("predictedHook", "address"),
 ]
 ABYSS_POSITION_CONFIG_COMPONENTS_V1 = [
     _argument("tickLower", "int24"), _argument("tickUpper", "int24"),
@@ -172,13 +196,14 @@ LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI = [
     _function("registerAdapter", [_argument("id", "bytes32"), _argument("implementation", "address"), _argument("capabilities", "uint64"), _argument("configVersion", "uint32")], [], "nonpayable"),
     _function("registerProfile", [_argument("id", "bytes32"), _argument("registration", "tuple", components=PROFILE_REGISTRATION_COMPONENTS_V1)], [], "nonpayable"),
     *[_function(name, [_argument("id", "bytes32")], [], "nonpayable") for name in ("disableAdapter", "disableProfile")],
-    _function("setAssetAllowed", [_argument("asset", "address"), _argument("allowed", "bool")], [], "nonpayable"),
+    _function("setFundingInputAllowed", [_argument("asset", "address"), _argument("allowed", "bool")], [], "nonpayable"),
     _function("registerFundingTarget", [_argument("target", "address"), _argument("spender", "address")], [], "nonpayable"),
     _function("disableFundingTarget", [_argument("target", "address")], [], "nonpayable"),
     *[_function(name, [], [_argument("", "uint256")]) for name in ("adapterCount", "profileCount")],
     _function("adapter", [_argument("adapterId", "bytes32")], [_argument("", "tuple", components=ADAPTER_REGISTRATION_COMPONENTS_V1)]),
     _function("profile", [_argument("profileId", "bytes32")], [_argument("", "tuple", components=PROFILE_REGISTRATION_COMPONENTS_V1)]),
-    _function("assetAllowed", [_argument("asset", "address")], [_argument("", "bool")]),
+    _function("profileTopology", [_argument("profileId", "bytes32")], [_argument("", "tuple", components=PROFILE_TOPOLOGY_COMPONENTS_V1)]),
+    _function("fundingInputAllowed", [_argument("asset", "address")], [_argument("", "bool")]),
     _function("requireEligible", [_argument("adapterId", "bytes32"), _argument("profileId", "bytes32"), _argument("configVersion", "uint32"), _argument("requiredCapabilities", "uint64")], [_argument("", "address")]),
     _function("fundingTarget", [_argument("target", "address")], [_argument("spender", "address"), _argument("codeHash", "bytes32"), _argument("enabled", "bool")]),
     *[_function(name, [_argument("offset", "uint256"), _argument("limit", "uint256")], [_argument("", "bytes32[]")]) for name in ("adapterIds", "profileIds")],
@@ -204,6 +229,37 @@ LAUNCH_MARKET_ADAPTER_V1_ABI = [
     _function("authorizeTokenTransfer", [_ID, _argument("marketIndex", "uint32"), _argument("operation", "uint8"), _argument("caller", "address"), _argument("from", "address"), _argument("to", "address"), _argument("amount", "uint256"), _argument("nft", "bool")], [_argument("", "bool")]),
     _function("readMarket", [_ID, _argument("marketIndex", "uint32")], [_argument("", "tuple", components=MARKET_LIVE_STATE_COMPONENTS_V1)]),
     _function("readPosition", [_POSITION], [_argument("liquidity", "uint128"), _argument("owner", "address")]),
+]
+POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument(name, "address") for name in ("core_", "manager_", "oracleFactory_", "locker_", "hookDeployer_", "collectorFactory_")]},
+    *LAUNCH_MARKET_ADAPTER_V1_ABI,
+    *[_function(name, [], [_argument("", "address")]) for name in ("poolManager", "oracleFactory", "locker", "hookDeployer", "collectorFactory")],
+    *[_function(name, [], [_argument("", "bytes32")]) for name in ("PROFILE_ID", "CONFIG_SCHEMA")],
+    _function("CONFIG_VERSION", [], [_argument("", "uint32")]),
+    _function("hookDeploymentMetadata", [_argument("token", "address"), _MARKET], POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1),
+]
+POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)]},
+    *[_function(name, [], [_argument("", "address")]) for name in ("poolManager", "registrar", "oracleFactory", "core", "liquidityLocker", "token")],
+    *[_function(name, [], [_argument("", "bytes32")]) for name in ("boundPoolId", "deploymentConfigHash", "marketCommitment")],
+    _function("openingSqrtPriceX96", [], [_argument("", "uint160")]),
+    _function("expectedPositionCount", [], [_argument("", "uint32")]),
+    *[_function(name, [_argument("poolId", "bytes32")], [_argument("", "bool")]) for name in ("registered", "initialized")],
+    _function("openingCompletedAt", [_argument("poolId", "bytes32")], [_argument("", "uint256")]),
+]
+POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": []},
+    _function("creationCodeHash", [], [_argument("", "bytes32")]),
+    *[_function(name, [], [_argument("", "address")]) for name in ("codeChunk0", "codeChunk1")],
+    _function("deployedCodeHash", [_argument("hook", "address")], [_argument("", "bytes32")]),
+    _function("initCodeHash", [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)], [_argument("", "bytes32")]),
+    _function("predict", [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1), _argument("salt", "bytes32")], [_argument("", "address")]),
+    _function("validHookAddress", [_argument("hook", "address")], [_argument("", "bool")], "pure"),
+    _function("deploy", [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1), _argument("salt", "bytes32")], [_argument("hook", "address")], "nonpayable"),
+]
+V4_FEE_COLLECTOR_FACTORY_V1_ABI = [
+    _function("decodePoolBoundAndValidate", [_argument("oracleFactory", "address"), _argument("token", "address"), _MARKET], [_argument("config", "tuple", components=V4_MARKET_CONFIG_COMPONENTS_V3)]),
+    _function("poolBoundHookParameters", [_argument("registrar", "address"), _argument("token", "address"), _MARKET], [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1), _argument("salt", "bytes32")]),
 ]
 LAUNCH_TOKEN_FACTORY_V1_ABI = [
     _function("core", [], [_argument("", "address")]),
@@ -303,4 +359,4 @@ LAUNCH_FUNDING_ESCROW_V1_ABI += [
 
 
 
-__all__ = [name for name in globals() if name.endswith(("_V1", "_V2", "_V1_ABI", "_V2_ABI"))]
+__all__ = [name for name in globals() if name.endswith(("_V1", "_V2", "_V3", "_V1_ABI", "_V2_ABI"))]
