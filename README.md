@@ -308,6 +308,21 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## 0.2.0 migration
+
+- Breaking cutover to explicit lifecycle plans and signed V2 registry profiles.
+  Historical Atomic/Unified builders, template catalogs and old-name aliases are removed.
+- Shared V4 config 4 and pool-bound V4 config 5 require frozen author terms and an
+  explicit developer rate. Retired configs are rejected, not converted.
+- Registry admission uses `registerProfile`, reads use `profileEnvelope` / `profileId`,
+  and the EIP-712 domain is `Black Market Launch Registry`, version `2`.
+  Regenerate author consent for the exact new deployment graph.
+- Current exports include `LaunchEnvelopeV2`, `LaunchBoundsV2`, `LaunchGraphV2`,
+  `POOL_HOOK_DEPLOYER_V1_ABI`, `POOL_MARKET_ADAPTER_V1_ABI` and
+  `POOL_FEE_COLLECTOR_FACTORY_V1_ABI`. Profile/dependency hash preimages and current
+  economic tuples remain unchanged.
+- No production launch deployment or author authorization is bundled with this release.
+
 ## Releasing
 
 Releases use GitHub Actions [trusted publishing](https://docs.pypi.org/trusted-publishers/)
