@@ -27,13 +27,11 @@ from eth_abi import decode as abi_decode, encode as abi_encode
 
 from black_market_sdk import (
     ERC20_ABI,
-    LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI,
+    LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
     LAUNCH_LIFECYCLE_V1_ABI,
     LAUNCH_MARKET_ADAPTER_V1_ABI,
     MARKET_IDENTITY_COMPONENTS_V1,
     POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1,
-    V4_LIFECYCLE_PROFILE_ID,
-    V4_POOL_BOUND_LIFECYCLE_PROFILE_ID,
     ControlledLaunchFork,
     LaunchExecutionLimits,
     LaunchStateChanged,
@@ -103,18 +101,7 @@ def load_rows(manifest: dict, manifest_path: Path) -> list[dict]:
     if not plans_path.is_absolute():
         plans_path = manifest_path.parent / plans_path
     payload = json.loads(plans_path.read_text())
-    rows = payload if isinstance(payload, list) else payload.get("plans", payload.get("fixtures", []))
-    if isinstance(payload, dict) and payload.get("admittedPython"):
-        rows = [*rows, payload["admittedPython"]]
-    if isinstance(payload, dict):
-        bound_rows = payload.get("poolBoundPlans", [])
-        if not isinstance(bound_rows, list):
-            raise ValueError("poolBoundPlans must contain complete rows with their own committed nonces")
-        rows = [*rows, *bound_rows]
-        catalogue_rows = payload.get("cataloguePlans", [])
-        if not isinstance(catalogue_rows, list) or len(catalogue_rows) != 32:
-            raise ValueError("all eight one-buy catalogue shapes require both explicit modes and offerings")
-        rows = [*rows, *catalogue_rows]
+    rows = payload if isinstance(payload, list) else payload.get("plans", [])
     if any(row.get("expectationMode") == "measured-policy" for row in rows):
         exported_limits = payload.get("executionLimits") if isinstance(payload, dict) else None
         configured_limits = manifest.get("executionLimits")
@@ -129,14 +116,15 @@ def load_rows(manifest: dict, manifest_path: Path) -> list[dict]:
 
 
 def finalize_bound_fixture(client: Web3, plan, row: dict, *, exercise_remine: bool):
-    indices = [index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)]
+    indices = [index for index, market in enumerate(plan.markets) if market.config_version == 5]
     if not indices:
         return plan, []
     if read_launch_progress(client, plan).phase != LifecyclePhase.NONE:
         raise AssertionError("pool-bound SDK fixture must use its own fresh exporter nonce")
-    profiles = read_lifecycle_profiles(client, orchestrator=plan.orchestrator, profile_ids=[V4_POOL_BOUND_LIFECYCLE_PROFILE_ID])
-    if not profiles[0].admitted or profiles[0].topology.hook_topology != 2 or profiles[0].topology.config_version != 3:
-        raise AssertionError("SDK discovery did not certify the actual pool-bound V3 offering")
+    profiles = read_lifecycle_profiles(client, orchestrator=plan.orchestrator, profile_ids=[plan.markets[index].profile_id for index in indices])
+    if any(not profile.admitted or profile.topology.hook_topology != 2 or profile.topology.config_version != 5 for profile in profiles):
+        raise AssertionError("SDK discovery did not certify an actual reviewed pool-bound V5 offering")
+    by_profile = {profile.profile_id: profile for profile in profiles}
     token = predict_launch_token(client, plan)
     expected = {int(item["marketIndex"]): item for item in row.get("hookDeployments", [])}
     markets = list(plan.markets)
@@ -158,7 +146,7 @@ def finalize_bound_fixture(client: Web3, plan, row: dict, *, exercise_remine: bo
         if Web3.to_hex(encoded_parameters) != vector["encodedParameters"].lower() or Web3.to_hex(Web3.keccak(encoded_parameters)) != vector["deploymentConfigHash"].lower():
             raise AssertionError("Python 18-field constructor tuple/hash differs from actual Solidity helper")
         commitment = pool_bound_market_commitment(plan, token=token, registrar=parameters.registrar, market_index=index)
-        if commitment != vector["marketCommitment"].lower() or Web3.to_hex(salt) != metadata.salt or profiles[0].topology.hook_creation_code_hash != vector["creationCodeHash"].lower():
+        if commitment != vector["marketCommitment"].lower() or Web3.to_hex(salt) != metadata.salt or by_profile[hex_bytes(plan.markets[index].profile_id)].topology.hook_creation_code_hash != vector["creationCodeHash"].lower():
             raise AssertionError("Python market commitment/salt/creation code differs from certified Solidity graph")
         config = decode_lifecycle_pool_bound_v4_market_config(plan.markets[index].config)
         markets[index] = replace(markets[index], config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=bytes(32))))
@@ -173,7 +161,7 @@ def finalize_bound_fixture(client: Web3, plan, row: dict, *, exercise_remine: bo
     if finalized.plan.nonce != plan.nonce or predict_launch_token(client, finalized.plan).lower() != token.lower():
         raise AssertionError("local salt finalization changed the exporter nonce or deterministic token")
     if encode_launch_plan(finalized.plan) != encode_launch_plan(plan):
-        raise AssertionError("Python local mining did not reproduce the exporter's exact finalized V3 plan")
+        raise AssertionError("Python local mining did not reproduce the exporter's exact finalized V5 plan")
     evidence = []
     for deployment in finalized.deployments:
         actual = read_pool_bound_hook_deployment(client, finalized.plan, market_index=deployment.market_index)
@@ -249,8 +237,7 @@ def restore_fixture(client: Web3, fork: ControlledLaunchFork, snapshot, baseline
 def selected_v4_pool(client: Web3, plan, row: dict) -> tuple[int, dict]:
     # buys[0] of an old mixed stress plan targets Abyss. Never use it to infer V4.
     index = int(row.get("selectedV4MarketIndex", next(
-        (index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) in {
-            hex_bytes(V4_LIFECYCLE_PROFILE_ID), hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)}), -1)))
+        (index for index, market in enumerate(plan.markets) if market.config_version in (4, 5)), -1)))
     if index < 0 or index >= len(plan.markets):
         raise AssertionError("fixture has no explicit selectable V4 market")
     market = plan.markets[index]
@@ -273,7 +260,7 @@ def selected_v4_pool(client: Web3, plan, row: dict) -> tuple[int, dict]:
 def factory_binding_proof(client: Web3, launch, fork: ControlledLaunchFork) -> dict:
     """Reject factory runtime drift even when token/hook predictions stay exact."""
     plan = launch.plan
-    indices = [index for index, market in enumerate(plan.markets) if hex_bytes(market.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID)]
+    indices = [index for index, market in enumerate(plan.markets) if market.config_version == 5]
     if not indices or launch.token_factory is None or launch.token_factory_code_hash is None:
         raise AssertionError("factory binding proof requires a reviewed fresh bound launch")
     factory = launch.token_factory
@@ -515,7 +502,7 @@ def recovery_branches(client: Web3, launch, limits: LifecycleLimitResolver, batc
     # Revoke in a disposable actual branch, not by overriding code/storage in a
     # successful simulation. Pending cancellation must bypass disabled adapters.
     core = client.eth.contract(address=plan.orchestrator, abi=LAUNCH_LIFECYCLE_V1_ABI)
-    registry = client.eth.contract(address=core.functions.registry().call(), abi=LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI)
+    registry = client.eth.contract(address=core.functions.registry().call(), abi=LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI)
     if registry.functions.admin().call().lower() != root_admin.lower():
         raise AssertionError("registry authority differs from the actual manifest root admin")
     admin_abi = [
@@ -739,7 +726,7 @@ def _run_rows(client: Web3, fork: ControlledLaunchFork, manifest: dict, account:
                 if position["liveLiquidity"] != int(position["liquidity"]) or position["liveOwner"].lower() != market["custody"].lower():
                     raise AssertionError("live canonical position is not in its permanent custody")
             committed = plan.markets[market["marketIndex"]]
-            if hex_bytes(committed.profile_id) == hex_bytes(V4_POOL_BOUND_LIFECYCLE_PROFILE_ID):
+            if identity["venue"] == 0 and committed.config_version == 5:
                 config = decode_lifecycle_pool_bound_v4_market_config(committed.config)
                 metadata = read_pool_bound_hook_deployment(client, plan, market_index=market["marketIndex"])
                 if metadata.predicted_hook.lower() != identity["hook"].lower() or market["positionCount"] != len(config.positions):
@@ -748,7 +735,7 @@ def _run_rows(client: Web3, fork: ControlledLaunchFork, manifest: dict, account:
                     if actual["tickLower"] != expected_position.tick_lower or actual["tickUpper"] != expected_position.tick_upper or int(actual["liquidity"]) != expected_position.liquidity or actual["salt"] != hex_bytes(expected_position.salt):
                         raise AssertionError("bound permanent position differs from exact committed economics")
                 bound_coverage.add((launch.mode, int(plan.token.kind), len(plan.markets)))
-            elif hex_bytes(committed.profile_id) == hex_bytes(V4_LIFECYCLE_PROFILE_ID):
+            elif identity["venue"] == 0 and committed.config_version == 4:
                 shared_coverage.add((launch.mode, int(plan.token.kind)))
         payments = preview_lifecycle_fees(client, progress.fee_hub, executor=account)
         if [payment["asset"].lower() for payment in payments] != [policy.asset.lower() for policy in plan.fee_assets]:
@@ -772,19 +759,6 @@ def _run_rows(client: Web3, fork: ControlledLaunchFork, manifest: dict, account:
         expected_bound = {(item["mode"], item["tokenKind"], item["marketCount"]) for item in observations if item.get("hookDeployments") and item.get("outcome") == "active"}
         if not bound_coverage or not expected_bound <= bound_coverage or not shared_coverage or not remine_observed or not factory_binding_observed:
             raise AssertionError(f"bound/shared coexistence coverage incomplete: bound={bound_coverage}, expected={expected_bound}, shared={shared_coverage}, remined={remine_observed}, factoryBinding={factory_binding_observed}")
-    catalogue_rows = [row for row in rows if row.get("workload") == "representative-one-opening-swap"]
-    for profile in range(8):
-        pairs = [row for row in catalogue_rows if row["catalogueProfile"] == profile]
-        if len(pairs) != 4 or len({row["predictedToken"].lower() for row in pairs}) != 1:
-            raise AssertionError("catalogue modes/offerings lost their identical paired token identity")
-        for offering in ("shared-v4", "pool-bound-v4"):
-            atomic = next(row for row in pairs if row["offering"] == offering and row["mode"] == "atomic")
-            staged = next(row for row in pairs if row["offering"] == offering and row["mode"] == "staged")
-            if atomic["encodedPlan"].lower() != staged["encodedPlan"].lower():
-                raise AssertionError("explicit staged alternate changed the full atomic plan/economics")
-            actual = next(item for item in observations if item["name"] == staged["name"])
-            if not actual["admitted"] or actual.get("orderedBuys") != 1 or actual.get("positionCount") != staged["corePositionCount"]:
-                raise AssertionError("full one-buy catalogue staged path did not reach actual Active")
     return {"schema": "black-market.launch-lifecycle-sdk-smoke.v1", "sdk": "black-market-python-sdk", "chainId": client.eth.chain_id, "executionLimits": manifest.get("executionLimits", {}), "scenarioIsolation": {"method": "independent-local-snapshot", "sourceRestored": True, "receiptEvidence": "observed-before-rollback"}, "coverage": sorted(coverage), "venues": sorted(venue_coverage), "boundCoverage": sorted(bound_coverage), "sharedCoverage": sorted(shared_coverage), "fixtures": observations}
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 
 import pytest
@@ -36,7 +35,7 @@ from black_market_sdk.launch_api import (
 CHAIN_ID = 4663
 WALLET = "0x1000000000000000000000000000000000000001"
 TOKEN = "0xAABBccDDeeFF0011223344556677889900AaBbCc"
-UNIFIED_LAUNCHER = "0xa7a4755fb907593f05fd1e289aa780f0d57f3a12"
+ORCHESTRATOR = "0x4000000000000000000000000000000000000004"
 NONCE = "0x" + "aa" * 32
 SIGNATURE = "0x" + "bb" * 65
 IMAGE_SHA256 = "0x" + "cc" * 32
@@ -302,7 +301,7 @@ def test_canonical_hash_and_eip712_helpers_match_fixed_vectors_and_eth_account_s
         idempotency_key="launch-idempotency-key",
         nonce=NONCE,
         deadline=1_800_000_000,
-        verifying_contract=UNIFIED_LAUNCHER,
+        verifying_contract=ORCHESTRATOR,
     )
     assert attribution == {
         "types": {
@@ -329,7 +328,7 @@ def test_canonical_hash_and_eip712_helpers_match_fixed_vectors_and_eth_account_s
             "name": "Abyss Launch Attribution",
             "version": "1",
             "chainId": CHAIN_ID,
-            "verifyingContract": UNIFIED_LAUNCHER,
+            "verifyingContract": ORCHESTRATOR,
         },
         "message": {
             "chainId": CHAIN_ID,
@@ -352,7 +351,7 @@ def test_canonical_hash_and_eip712_helpers_match_fixed_vectors_and_eth_account_s
         expected_version=7,
         nonce=NONCE,
         deadline=1_800_000_000,
-        verifying_contract=UNIFIED_LAUNCHER,
+        verifying_contract=ORCHESTRATOR,
     )
     assert update == {
         "types": {
@@ -376,7 +375,7 @@ def test_canonical_hash_and_eip712_helpers_match_fixed_vectors_and_eth_account_s
             "name": "Abyss Launch Metadata",
             "version": "1",
             "chainId": CHAIN_ID,
-            "verifyingContract": UNIFIED_LAUNCHER,
+            "verifyingContract": ORCHESTRATOR,
         },
         "message": {
             "chainId": CHAIN_ID,
@@ -390,28 +389,16 @@ def test_canonical_hash_and_eip712_helpers_match_fixed_vectors_and_eth_account_s
     assert encode_typed_data(full_message=update).version == b"\x01"
 
 
-def test_omitted_verifier_tracks_the_configured_launch_factory(monkeypatch: pytest.MonkeyPatch):
-    import black_market_sdk.addresses as addresses
-
-    configured_launcher = "0x4000000000000000000000000000000000000004"
-    resolved_chain_ids: list[int] = []
-
-    def configured_addresses(chain_id: int) -> SimpleNamespace:
-        resolved_chain_ids.append(chain_id)
-        return SimpleNamespace(launch_factory=configured_launcher)
-
-    monkeypatch.setattr(addresses, "get_addresses", configured_addresses)
-    typed_data = build_launch_attribution_typed_data(
-        chain_id=CHAIN_ID,
-        wallet=WALLET,
-        metadata=LaunchSessionMetadata(name="Abyss", symbol="ABYSS"),
-        idempotency_key="launch-idempotency-key",
-        nonce=NONCE,
-        deadline=1_800_000_000,
-    )
-
-    assert resolved_chain_ids == [CHAIN_ID]
-    assert typed_data["domain"]["verifyingContract"] == configured_launcher
+def test_metadata_authorization_requires_an_explicit_orchestrator_domain():
+    with pytest.raises(ValueError):
+        build_launch_attribution_typed_data(
+            chain_id=CHAIN_ID,
+            wallet=WALLET,
+            metadata=LaunchSessionMetadata(name="Abyss", symbol="ABYSS"),
+            idempotency_key="launch-idempotency-key",
+            nonce=NONCE,
+            deadline=1_800_000_000,
+        )
 
 
 def test_signed_metadata_replacement_image_flow_reuses_exact_document_and_authorization():

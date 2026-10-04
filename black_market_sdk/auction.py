@@ -1,4 +1,4 @@
-"""Atomic launch supply constants and the paired-asset (quote) catalog."""
+"""Reference supply quantities and the paired-asset (quote) catalog."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
-#: Fixed supply used by Atomic launches.
+#: Reference supply; lifecycle plans commit an explicit caller-chosen supply.
 AUCTION_SUPPLY = 1_000_000_000 * 10**18
 AUCTION_SUPPLY_WHOLE = 1_000_000_000
 
@@ -69,7 +69,7 @@ def _rwa(id: str, name: str, address: str) -> AuctionQuoteOption:
     )
 
 
-#: Supported paired assets for Atomic launches: native ETH, wrapped WETH, USDG, then catalog stocks.
+#: Paired-asset catalog: native ETH, wrapped WETH, USDG, then catalog stocks.
 AUCTION_QUOTE_OPTIONS: list[AuctionQuoteOption] = [
     AuctionQuoteOption(
         id="ETH", symbol="ETH", name="Ether", address=ZERO_ADDRESS, decimals=18, usd_peg=False

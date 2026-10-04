@@ -1,9 +1,4 @@
-"""Versioned ABI fragments for the opt-in LaunchPlanV1 lifecycle stack.
-
-These are the tuple layouts from ``launch/lifecycle/v1/LaunchTypesV1.sol`` and
-``ILaunchLifecycleV1.sol``. Existing Unified and historical Atomic ABIs retain
-their original meaning; no address substitution is performed.
-"""
+"""Exact current lifecycle, reviewed registry and V3 economic ABI fragments."""
 
 from __future__ import annotations
 
@@ -113,6 +108,44 @@ PROFILE_TOPOLOGY_COMPONENTS_V1 = [
     _argument("hookTopology", "uint8"), _argument("configVersion", "uint32"),
     _argument("hookDeployer", "address"), _argument("hookCreationCodeHash", "bytes32"),
 ]
+LAUNCH_BOUNDS_COMPONENTS_V2 = [
+    _argument("maximumHookFeePips", "uint24"), _argument("maximumLpFeePips", "uint24"),
+    _argument("minimumTickSpacing", "int24"), _argument("maximumTickSpacing", "int24"),
+    _argument("maximumPositions", "uint16"), _argument("maximumOracleCardinality", "uint16"),
+    _argument("feeModeFlags", "uint8"), _argument("externalLiquidityDisabled", "bool"),
+    _argument("oracleConfigId", "bytes32"),
+]
+LAUNCH_GRAPH_COMPONENTS_V2 = [
+    *[_argument(name, "address") for name in ("manager", "hookRoot", "oracleFactory", "locker", "collectorFactory", "collectorDeployer", "hookDeployer")],
+    *[_argument(name, "bytes32") for name in ("coreCodeHash", "managerCodeHash", "hookRuntimeCodeHash", "oracleFactoryCodeHash", "lockerCodeHash", "collectorFactoryCodeHash", "collectorDeployerCodeHash", "hookDeployerCodeHash", "hookCreationCodeHash")],
+    _argument("codeChunk0", "address"), _argument("codeChunk0Hash", "bytes32"),
+    _argument("codeChunk1", "address"), _argument("codeChunk1Hash", "bytes32"),
+    _argument("sharedHookSalt", "bytes32"),
+]
+LAUNCH_ENVELOPE_COMPONENTS_V2 = [
+    *[_argument(name, "bytes32") for name in ("artifactDigest", "reviewManifestDigest", "configBoundsDigest", "termsDigest")],
+    _argument("topology", "uint8"), _argument("configVersion", "uint32"),
+    _argument("economicVersion", "uint32"), _argument("capabilities", "uint64"), _argument("flags", "uint64"),
+    _argument("callbackFlags", "uint16"), _argument("callbackMask", "uint16"),
+    _argument("protocolTreasury", "address"), _argument("protocolFeeDenominator", "uint8"),
+    _argument("beneficiary", "address"), _argument("maximumDeveloperFeeBps", "uint16"),
+    _argument("bounds", "tuple", components=LAUNCH_BOUNDS_COMPONENTS_V2),
+    _argument("graph", "tuple", components=LAUNCH_GRAPH_COMPONENTS_V2),
+]
+DEVELOPER_TERMS_COMPONENTS_V3 = [
+    _argument("adapter", "address"), _argument("beneficiary", "address"),
+    _argument("maximumDeveloperFeeBps", "uint16"), _argument("termsDigest", "bytes32"),
+    _argument("enabled", "bool"),
+]
+SOURCE_TERMS_COMPONENTS_V3 = [
+    _argument("adapter", "address"), _argument("profileId", "bytes32"), _argument("termsDigest", "bytes32"),
+    _argument("beneficiary", "address"), _argument("maximumDeveloperFeeBps", "uint16"),
+    _argument("developerFeeBps", "uint16"),
+]
+DEVELOPER_CLAIM_RESULT_COMPONENTS_V3 = [
+    _argument("hub", "address"), _argument("asset", "address"), _argument("amount", "uint256"),
+    _argument("status", "uint8"), _argument("errorSelector", "bytes4"),
+]
 MARKET_LIVE_STATE_COMPONENTS_V1 = [
     _argument("sqrtPriceX96", "uint160"), _argument("tick", "int24"), _argument("liquidity", "uint128"),
     _argument("publicTrading", "bool"), _argument("oracleReadyAt", "uint256"),
@@ -121,18 +154,20 @@ V4_POSITION_CONFIG_COMPONENTS_V1 = [
     _argument("tickLower", "int24"), _argument("tickUpper", "int24"), _argument("liquidity", "uint128"),
     _argument("salt", "bytes32"), _argument("maxTokenAmount", "uint256"),
 ]
-V4_MARKET_CONFIG_COMPONENTS_V2 = [
+V4_MARKET_CONFIG_COMPONENTS_V4 = [
     _argument("version", "uint16"), _argument("lpFeePips", "uint24"), _argument("tickSpacing", "int24"),
     _argument("sqrtPriceX96", "uint160"), _argument("hookFeePips", "uint24"), _argument("feeMode", "uint8"),
     _argument("protocolFeeDenominator", "uint8"), _argument("treasury", "address"),
     _argument("externalLiquidityDisabled", "bool"),
     _argument("oracleConfigId", "bytes32"),
+    _argument("profileId", "bytes32"), _argument("termsDigest", "bytes32"),
+    _argument("developerBeneficiary", "address"), _argument("developerFeeBps", "uint16"),
     _argument("positions", "tuple[]", components=V4_POSITION_CONFIG_COMPONENTS_V1),
 ]
-V4_MARKET_CONFIG_COMPONENTS_V3 = [
-    *V4_MARKET_CONFIG_COMPONENTS_V2[:-1],
+V4_MARKET_CONFIG_COMPONENTS_V5 = [
+    *V4_MARKET_CONFIG_COMPONENTS_V4[:10],
     _argument("hookSalt", "bytes32"),
-    _argument("positions", "tuple[]", components=V4_POSITION_CONFIG_COMPONENTS_V1),
+    *V4_MARKET_CONFIG_COMPONENTS_V4[10:],
 ]
 POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1 = [
     _argument("poolManager", "address"), _argument("registrar", "address"),
@@ -180,7 +215,7 @@ LAUNCH_LIFECYCLE_V1_ABI = [
     _function("isLaunchActive", [_ID], [_argument("", "bool")]),
     _function("escrowBalance", [_ID, _argument("asset", "address")], [_argument("", "uint256")]),
     _function("authorizeTokenTransfer", [_argument("token", "address"), _argument("caller", "address"), _argument("from", "address"), _argument("to", "address"), _argument("amount", "uint256"), _argument("nft", "bool")], [_argument("", "bool")]),
-    *[_function(name, [], [_argument("", "address")]) for name in ("registry", "directory", "tokenFactory", "fundingEscrow")],
+    *[_function(name, [], [_argument("", "address")]) for name in ("registry", "directory", "tokenFactory", "fundingEscrow", "feeFactory")],
     _event("LaunchBegun", [_argument("launchId", "bytes32", indexed=True), _argument("planHash", "bytes32", indexed=True), _argument("creator", "address", indexed=True), _argument("token", "address", indexed=False), _argument("feeHub", "address", indexed=False), _argument("rewards", "address", indexed=False), _argument("mode", "uint8", indexed=False)]),
     _event("MarketPrepared", [_argument("launchId", "bytes32", indexed=True), _argument("marketIndex", "uint32", indexed=True), _argument("canonicalId", "bytes32", indexed=True), _argument("adapter", "address", indexed=False), _argument("feeSource", "address", indexed=False), _argument("positionCount", "uint32", indexed=False)]),
     _event("LaunchReady", [_argument("launchId", "bytes32", indexed=True)]),
@@ -190,7 +225,7 @@ LAUNCH_LIFECYCLE_V1_ABI = [
     _event("AssetRefunded", [_argument("launchId", "bytes32", indexed=True), _argument("asset", "address", indexed=True), _argument("creator", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
 ]
 
-LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI = [
+LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI = [
     _function("core", [], [_argument("", "address")]),
     _function("admin", [], [_argument("", "address")]),
     _function("registerAdapter", [_argument("id", "bytes32"), _argument("implementation", "address"), _argument("capabilities", "uint64"), _argument("configVersion", "uint32")], [], "nonpayable"),
@@ -207,6 +242,16 @@ LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI = [
     _function("requireEligible", [_argument("adapterId", "bytes32"), _argument("profileId", "bytes32"), _argument("configVersion", "uint32"), _argument("requiredCapabilities", "uint64")], [_argument("", "address")]),
     _function("fundingTarget", [_argument("target", "address")], [_argument("spender", "address"), _argument("codeHash", "bytes32"), _argument("enabled", "bool")]),
     *[_function(name, [_argument("offset", "uint256"), _argument("limit", "uint256")], [_argument("", "bytes32[]")]) for name in ("adapterIds", "profileIds")],
+    _function("protocolMaximumDeveloperFeeBps", [], [_argument("", "uint16")]),
+    _function("profileEnvelope", [_argument("profileId", "bytes32")], [_argument("", "tuple", components=LAUNCH_ENVELOPE_COMPONENTS_V2)]),
+    _function("profileId", [_argument("envelope", "tuple", components=LAUNCH_ENVELOPE_COMPONENTS_V2)], [_argument("", "bytes32")], "pure"),
+    _function("developerTerms", [_argument("profileId", "bytes32")], DEVELOPER_TERMS_COMPONENTS_V3),
+    _function("authorPayout", [_argument("authorId", "address")], [_argument("", "address")]),
+    _function("setAuthorPayout", [_argument("authorId", "address"), _argument("payout", "address")], [], "nonpayable"),
+    _function("authorHubCount", [_argument("authorId", "address")], [_argument("", "uint256")]),
+    _function("authorHubs", [_argument("authorId", "address"), _argument("offset", "uint256"), _argument("limit", "uint256")], [_argument("hubs", "address[]"), _argument("nextOffset", "uint256"), _argument("total", "uint256")]),
+    _event("AuthorPayoutUpdated", [_argument("authorId", "address", indexed=True), _argument("previousPayout", "address", indexed=True), _argument("newPayout", "address", indexed=True), _argument("operator", "address", indexed=False)]),
+    _event("AuthorHubRegistered", [_argument("authorId", "address", indexed=True), _argument("hub", "address", indexed=True), _argument("index", "uint256", indexed=False)]),
 ]
 LAUNCH_DIRECTORY_V1_ABI = [
     _function("core", [], [_argument("", "address")]),
@@ -230,13 +275,17 @@ LAUNCH_MARKET_ADAPTER_V1_ABI = [
     _function("readMarket", [_ID, _argument("marketIndex", "uint32")], [_argument("", "tuple", components=MARKET_LIVE_STATE_COMPONENTS_V1)]),
     _function("readPosition", [_POSITION], [_argument("liquidity", "uint128"), _argument("owner", "address")]),
 ]
-POOL_BOUND_V4_MARKET_ADAPTER_V1_ABI = [
-    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument(name, "address") for name in ("core_", "manager_", "oracleFactory_", "locker_", "hookDeployer_", "collectorFactory_")]},
+POOL_MARKET_ADAPTER_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [*[_argument(name, "address") for name in ("core_", "manager_", "oracleFactory_", "locker_", "deployer_", "helper_", "registry_")], _argument("profileId_", "bytes32")]},
     *LAUNCH_MARKET_ADAPTER_V1_ABI,
-    *[_function(name, [], [_argument("", "address")]) for name in ("poolManager", "oracleFactory", "locker", "hookDeployer", "collectorFactory")],
+    *[_function(name, [], [_argument("", "address")]) for name in ("implementationRegistry", "poolManager", "oracleFactory", "locker", "hookDeployer", "hookRoot", "collectorFactory")],
     *[_function(name, [], [_argument("", "bytes32")]) for name in ("PROFILE_ID", "CONFIG_SCHEMA")],
     _function("CONFIG_VERSION", [], [_argument("", "uint32")]),
     _function("hookDeploymentMetadata", [_argument("token", "address"), _MARKET], POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1),
+]
+REVIEWED_SHARED_V4_MARKET_ADAPTER_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [*[_argument(name, "address") for name in ("core_", "manager_", "root_", "locker_", "helper_", "registry_", "deployer_")], _argument("profileId_", "bytes32")]},
+    *[entry for entry in POOL_MARKET_ADAPTER_V1_ABI if entry["type"] != "constructor" and entry.get("name") != "hookDeploymentMetadata"],
 ]
 POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI = [
     {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)]},
@@ -244,11 +293,13 @@ POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI = [
     *[_function(name, [], [_argument("", "bytes32")]) for name in ("boundPoolId", "deploymentConfigHash", "marketCommitment")],
     _function("openingSqrtPriceX96", [], [_argument("", "uint160")]),
     _function("expectedPositionCount", [], [_argument("", "uint32")]),
+    _function("REQUIRED_HOOK_FLAGS", [], [_argument("", "uint160")]),
+    _function("ALL_HOOK_MASK", [], [_argument("", "uint160")]),
     *[_function(name, [_argument("poolId", "bytes32")], [_argument("", "bool")]) for name in ("registered", "initialized")],
     _function("openingCompletedAt", [_argument("poolId", "bytes32")], [_argument("", "uint256")]),
 ]
-POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI = [
-    {"type": "constructor", "stateMutability": "nonpayable", "inputs": []},
+POOL_HOOK_DEPLOYER_V1_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("creationCode", "bytes")]},
     _function("creationCodeHash", [], [_argument("", "bytes32")]),
     *[_function(name, [], [_argument("", "address")]) for name in ("codeChunk0", "codeChunk1")],
     _function("deployedCodeHash", [_argument("hook", "address")], [_argument("", "bytes32")]),
@@ -257,8 +308,10 @@ POOL_BOUND_LAUNCH_FEE_HOOK_DEPLOYER_V1_ABI = [
     _function("validHookAddress", [_argument("hook", "address")], [_argument("", "bool")], "pure"),
     _function("deploy", [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1), _argument("salt", "bytes32")], [_argument("hook", "address")], "nonpayable"),
 ]
-V4_FEE_COLLECTOR_FACTORY_V1_ABI = [
-    _function("decodePoolBoundAndValidate", [_argument("oracleFactory", "address"), _argument("token", "address"), _MARKET], [_argument("config", "tuple", components=V4_MARKET_CONFIG_COMPONENTS_V3)]),
+POOL_FEE_COLLECTOR_FACTORY_V1_ABI = [
+    _function("collectorDeployer", [], [_argument("", "address")]),
+    _function("decodeAndValidate", [_argument("registrar", "address"), _argument("token", "address"), _MARKET], [_argument("config", "tuple", components=V4_MARKET_CONFIG_COMPONENTS_V4)]),
+    _function("poolBoundDeploymentMetadata", [_argument("registrar", "address"), _argument("token", "address"), _MARKET], POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1),
     _function("poolBoundHookParameters", [_argument("registrar", "address"), _argument("token", "address"), _MARKET], [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1), _argument("salt", "bytes32")]),
 ]
 LAUNCH_TOKEN_FACTORY_V1_ABI = [
@@ -267,7 +320,28 @@ LAUNCH_TOKEN_FACTORY_V1_ABI = [
     _function("deployToken", [_ID, _argument("config", "tuple", components=TOKEN_CONFIG_COMPONENTS_V1)], [_argument("token", "address")], "nonpayable"),
     _function("createRewards", [_argument("token", "address"), _argument("hub", "address"), _argument("rewardAssets", "address[]")], [_argument("rewards", "address")], "nonpayable"),
 ]
-LAUNCH_FEE_HUB_V2_ABI = [
+LAUNCH_FEE_OWNER_REGISTRY_V2_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("protocolAdmin_", "address")]},
+    *[{"type": "error", "name": name, "inputs": []} for name in ("ZeroAddress", "Unauthorized", "AlreadyConfigured", "InvalidLauncher", "InvalidLaunch", "AlreadyRegistered", "UnregisteredLaunch", "SameOwner", "InvalidSplitter", "AlreadyBound", "SplitterCannotOwnFees", "NoPendingTransfer")],
+    *[_function(name, [], [_argument("", "address")]) for name in ("protocolAdmin", "launcher")],
+    *[_function(name, [_argument("launch", "address")], [_argument("", "address")]) for name in ("feeOwner", "pendingFeeOwner", "feeSplitter")],
+    _function("setLauncher", [_argument("launcher_", "address")], [], "nonpayable"),
+    _function("registerLaunch", [_argument("launch", "address"), _argument("initialOwner", "address")], [], "nonpayable"),
+    _function("bindSplitter", [_argument("launch", "address"), _argument("splitter", "address")], [], "nonpayable"),
+    _function("transferFeeOwnership", [_argument("launches", "address[]"), _argument("newOwner", "address")], [], "nonpayable"),
+    _function("acceptFeeOwnership", [_argument("launches", "address[]")], [], "nonpayable"),
+    _function("overrideFeeOwner", [_argument("launches", "address[]"), _argument("newOwner", "address")], [], "nonpayable"),
+    _event("LauncherConfigured", [_argument("launcher", "address", indexed=True)]),
+    _event("LaunchRegistered", [_argument("launch", "address", indexed=True), _argument("feeOwner", "address", indexed=True)]),
+    _event("FeeOwnershipTransferStarted", [_argument("launch", "address", indexed=True), _argument("currentOwner", "address", indexed=True), _argument("pendingOwner", "address", indexed=True)]),
+    _event("FeeOwnershipTransferCancelled", [_argument("launch", "address", indexed=True), _argument("pendingOwner", "address", indexed=True)]),
+    _event("FeeOwnershipTransferred", [_argument("launch", "address", indexed=True), _argument("previousOwner", "address", indexed=True), _argument("newOwner", "address", indexed=True)]),
+    _event("FeeSplitterBound", [_argument("launch", "address", indexed=True), _argument("splitter", "address", indexed=True)]),
+]
+LAUNCH_FEE_HUB_V3_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("launchToken_", "address"), _argument("feeOwnerRegistry_", "address"), _argument("policies_", "tuple[]", components=FEE_ASSET_POLICY_COMPONENTS_V2), _argument("executorFeeBps_", "uint16"), _argument("configurator_", "address"), _argument("implementationRegistry_", "address")]},
+    *[{"type": "error", "name": name, "inputs": []} for name in ("InvalidBinding", "InvalidPolicy", "InvalidExecutorFee", "InvalidSourceTerms", "InvalidAssetCount", "InvalidSourceCount", "UnsupportedAsset", "IncompatibleRewards", "InexactCollection", "InexactTransfer", "InexactBurn", "TransferFailed", "Unauthorized", "AlreadyConfigured", "NotConfigured", "InvalidRecipient", "NothingToClaim", "AuthorPayoutChanged", "NativeCurrencyUnsupported")],
+    *[_function(name, [], [_argument("", "uint256")]) for name in ("BPS_DENOMINATOR", "MAX_ASSETS", "MAX_SOURCES")],
     *[_function(name, [], [_argument("", "address")]) for name in ("launchToken", "feeOwnerRegistry", "configurator", "rewards")],
     *[_function(name, [], [_argument("", "bool")]) for name in ("requiresOwner", "requiresRewards", "finalized")],
     _function("executorFeeBps", [], [_argument("", "uint16")]),
@@ -292,6 +366,35 @@ LAUNCH_FEE_HUB_V2_ABI = [
     _function("claimOwnerFees", [_argument("asset", "address"), _argument("recipient", "address")], [_argument("amount", "uint256")], "nonpayable"),
     _event("OwnerFeesCredited", [_argument("owner", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
     _event("OwnerFeesClaimed", [_argument("owner", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("recipient", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+]
+LAUNCH_FEE_HUB_V3_ABI += [
+    _function("economicVersion", [], [_argument("", "uint16")]),
+    _function("implementationRegistry", [], [_argument("", "address")]),
+    _function("protocolMaximumDeveloperFeeBps", [], [_argument("", "uint16")]),
+    _function("sourceTerms", [_argument("source", "address")], [_argument("", "tuple", components=SOURCE_TERMS_COMPONENTS_V3)]),
+    _function("bindSourceTerms", [_argument("source", "address"), _argument("profileId", "bytes32"), _argument("termsDigest", "bytes32"), _argument("developerFeeBps", "uint16")], [], "nonpayable"),
+    _function("claimableDeveloperFees", [_argument("authorId", "address"), _argument("asset", "address")], [_argument("", "uint256")]),
+    _function("reservedDeveloperFees", [_argument("asset", "address")], [_argument("", "uint256")]),
+    _function("claimDeveloperFees", [_argument("authorId", "address"), _argument("asset", "address")], [_argument("amount", "uint256")], "nonpayable"),
+    _event("SourcesConfigured", [_argument("sources", "address[]", indexed=False), _argument("rewards", "address", indexed=True)]),
+    _event("SourceTermsBound", [_argument("source", "address", indexed=True), _argument("profileId", "bytes32", indexed=True), _argument("beneficiary", "address", indexed=True), _argument("adapter", "address", indexed=False), _argument("termsDigest", "bytes32", indexed=False), _argument("maximumDeveloperFeeBps", "uint16", indexed=False), _argument("developerFeeBps", "uint16", indexed=False)]),
+    _event("DeveloperFeesCredited", [_argument("authorId", "address", indexed=True), _argument("source", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+    _event("DeveloperFeesClaimed", [_argument("authorId", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("payout", "address", indexed=True), _argument("amount", "uint256", indexed=False)]),
+    _event("Distributed", [_argument("asset", "address", indexed=True), _argument("owner", "address", indexed=True), _argument("executor", "address", indexed=True), *[_argument(name, "uint256", indexed=False) for name in ("newlyCollected", "executorAmount", "ownerAmount", "developerAmount", "rewardsAmount", "burnAmount")]]),
+]
+LAUNCH_FEE_HUB_FACTORY_V3_ABI = [
+    {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("registry_", "address"), _argument("core_", "address"), _argument("implementationRegistry_", "address")]},
+    *[{"type": "error", "name": name, "inputs": []} for name in ("ZeroAddress", "InvalidRegistry", "InvalidImplementationRegistry", "InvalidConfigurator", "Unauthorized", "RegistryNotBound", "ExistingLaunchBinding", "InvalidPageLimit", "InvalidAssetList", "InsufficientPageGas")],
+    *[_function(name, [], [_argument("", "uint256")]) for name in ("MAX_CLAIM_HUBS", "MAX_CLAIM_ASSETS", "DEVELOPER_CLAIM_GAS")],
+    _function("createHub", [_argument("launchToken", "address"), _argument("initialOwner", "address"), _argument("policies", "tuple[]", components=FEE_ASSET_POLICY_COMPONENTS_V2), _argument("executorFeeBps", "uint16"), _argument("configurator", "address")], [_argument("hub", "address")], "nonpayable"),
+    _event("HubCreated", [_argument("launchToken", "address", indexed=True), _argument("hub", "address", indexed=True), _argument("initialOwner", "address", indexed=True), _argument("configurator", "address", indexed=False), _argument("executorFeeBps", "uint16", indexed=False)]),
+    _function("deploymentAuthority", [], [_argument("", "address")]),
+    _function("implementationRegistry", [], [_argument("", "address")]),
+    _function("registry", [], [_argument("", "address")]),
+    _function("isHub", [_argument("hub", "address")], [_argument("", "bool")]),
+    _function("claimDeveloperFeesPage", [_argument("authorId", "address"), _argument("offset", "uint256"), _argument("limit", "uint256"), _argument("assets", "address[]")], [_argument("results", "tuple[]", components=DEVELOPER_CLAIM_RESULT_COMPONENTS_V3), _argument("nextOffset", "uint256"), _argument("total", "uint256")], "nonpayable"),
+    _event("DeveloperClaimResult", [_argument("authorId", "address", indexed=True), _argument("hub", "address", indexed=True), _argument("asset", "address", indexed=True), _argument("amount", "uint256", indexed=False), _argument("status", "uint8", indexed=False), _argument("errorSelector", "bytes4", indexed=False)]),
+    _event("DeveloperClaimPage", [_argument("authorId", "address", indexed=True), _argument("offset", "uint256", indexed=False), _argument("nextOffset", "uint256", indexed=False), _argument("total", "uint256", indexed=False)]),
 ]
 
 # Claim amounts and RewardPaid are net beneficiary receipts; earned is gross entitlement.
@@ -348,9 +451,9 @@ LAUNCH_LIFECYCLE_V1_ABI += [
         "IneligibleImplementation",
     )
 ]
-LAUNCH_IMPLEMENTATION_REGISTRY_V1_ABI += [
+LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI += [
     {"type": "error", "name": name, "inputs": []}
-    for name in ("Unauthorized", "InvalidRegistration", "AlreadyRegistered", "IneligibleImplementation", "InvalidPage")
+    for name in ("Unauthorized", "InvalidRegistration", "InvalidAuthorization", "AlreadyRegistered", "IneligibleImplementation", "InvalidPage")
 ]
 LAUNCH_FUNDING_ESCROW_V1_ABI += [
     {"type": "error", "name": name, "inputs": []}
@@ -359,4 +462,4 @@ LAUNCH_FUNDING_ESCROW_V1_ABI += [
 
 
 
-__all__ = [name for name in globals() if name.endswith(("_V1", "_V2", "_V3", "_V1_ABI", "_V2_ABI"))]
+__all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]

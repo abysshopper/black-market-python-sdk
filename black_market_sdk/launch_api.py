@@ -749,26 +749,10 @@ def _eip712_domain_types() -> list[dict[str, str]]:
 
 
 def _resolve_verifying_contract(chain_id: int, verifying_contract: Optional[str]) -> str:
-    if verifying_contract is not None:
-        _validate_address(verifying_contract, "verifying_contract")
-        return verifying_contract
-    try:
-        # Resolve only when a caller asks to build typed data. This keeps API
-        # client construction side-effect free while binding signatures to the
-        # same configured launch target as transaction construction.
-        from .addresses import get_addresses
-
-        contract = get_addresses(chain_id).launch_factory
-    except KeyError:
-        raise ValueError(
-            "verifying_contract is required for chains without a configured UnifiedLauncher"
-        ) from None
-    if not isinstance(contract, str) or contract.lower() == _ZERO_ADDRESS:
-        raise ValueError(
-            "verifying_contract is required for chains without a configured UnifiedLauncher"
-        )
-    _validate_address(contract, "verifying_contract")
-    return contract
+    if verifying_contract is None:
+        raise ValueError("verifying_contract must explicitly name the reviewed lifecycle orchestrator")
+    _validate_address(verifying_contract, "verifying_contract")
+    return verifying_contract
 
 
 def _session_create_payload(request: LaunchSessionCreateRequest) -> dict[str, Any]:

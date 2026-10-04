@@ -103,6 +103,7 @@ image = LaunchSessionImageDescriptor(
 )
 typed_data = build_launch_attribution_typed_data(
     chain_id=CHAIN_ID,
+    verifying_contract="0x4000000000000000000000000000000000000004",
     wallet=WALLET,
     metadata=metadata,
     image=image,

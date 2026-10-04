@@ -1,4 +1,4 @@
-"""Atomic launch supply constants and quote catalog tests."""
+"""Reference supply constants and quote catalog tests."""
 
 from black_market_sdk import (
     AUCTION_QUOTE_OPTIONS,

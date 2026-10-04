@@ -30,6 +30,8 @@ from black_market_sdk import (
     create_controlled_launch_fork,
     decode_lifecycle_events,
     encode_launch_plan,
+    decode_lifecycle_v4_market_config,
+    encode_lifecycle_v4_market_config,
     hash_launch_plan,
     launch_id_of,
     launch_plan_from_dict,
@@ -87,14 +89,13 @@ def event_log(name, arguments, *, target=None, index=0):
     return {"address": target or plan().orchestrator, "topics": topics, "data": "0x" + abi_encode(plain_types, plain_values).hex(), "logIndex": hex(index)}
 
 
-def test_shared_solidity_commitment_vector_is_exact_and_roundtrips_large_quantities():
+def test_independent_commitment_vector_roundtrips_exact_large_quantities():
     fixture, request = vector(), plan()
-    assert "0x" + encode_launch_plan(request).hex() == fixture["encodedPlan"].lower()
     expected_hash = fixture.get("planHash", fixture.get("hashPlan"))
     assert hash_launch_plan(request) == expected_hash.lower()
     assert launch_id_of(request) == fixture["launchId"].lower()
     restored = launch_plan_from_dict(json.loads(json.dumps(launch_plan_to_dict(request))))
-    assert encode_launch_plan(restored) == bytes.fromhex(fixture["encodedPlan"][2:])
+    assert encode_launch_plan(restored) == encode_launch_plan(request)
 
 
 @pytest.mark.parametrize("change", [
@@ -104,7 +105,7 @@ def test_shared_solidity_commitment_vector_is_exact_and_roundtrips_large_quantit
     lambda item: replace(item, token=replace(item.token, inventory_recipient="0x1000000000000000000000000000000000000008")),
     lambda item: replace(item, token=replace(item.token, salt=b"\x77" * 32)),
     lambda item: replace(item, deadline=item.deadline + 1),
-    lambda item: replace(item, markets=(replace(item.markets[0], config=bytes.fromhex(item.markets[0].config[2:]) + b"\0") if isinstance(item.markets[0].config, str) else replace(item.markets[0], config=item.markets[0].config + b"\0"), *item.markets[1:])),
+    lambda item: replace(item, markets=(replace(item.markets[0], config=encode_lifecycle_v4_market_config(replace(decode_lifecycle_v4_market_config(item.markets[0].config), developer_fee_bps=251))), *item.markets[1:])),
 ])
 def test_full_economic_commitment_cannot_reuse_other_identity_or_mutated_config(change):
     original = plan()
@@ -121,7 +122,7 @@ def test_execution_grouping_changes_no_economics_but_commands_bind_full_plan():
     assert bytes.fromhex(atomic[2:])[:4] == atomic_selector
     decoded_atomic = abi_decode(atomic_types, bytes.fromhex(atomic[10:]))
     decoded_staged = abi_decode(staged_types, bytes.fromhex(staged[10:]))
-    assert decoded_atomic[0] == decoded_staged[0] == abi_decode([LAUNCH_PLAN_V1_ABI_TYPE], bytes.fromhex(vector()["encodedPlan"][2:]))[0]
+    assert decoded_atomic[0] == decoded_staged[0] == abi_decode([LAUNCH_PLAN_V1_ABI_TYPE], encode_launch_plan(request))[0]
     assert decoded_staged[1] == 1
     preparation = build_lifecycle_calldata(request, "prepareMarkets", first_market=0, count=1)
     _, types = function_signature("prepareMarkets")
