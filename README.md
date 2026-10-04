@@ -713,8 +713,12 @@ Always reread progress after a receipt, replacement, wallet change or reload.
 The SDK checks receipt block hashes against canonical blocks and validates the
 actual encoded full-plan transaction; local counters never advance a step.
 
-Submit one confirmed step, retain its hash, and gate the next step on canonical
-confirmation evidence:
+Submit one step, retain both its submitted and mined hashes **before** receipt
+validation, and gate the next step on canonical confirmation evidence. This
+continues the local manifest example above (`client`, `plan`, `launch`, `fork`).
+The list below is in-memory example state, **not durable storage**. The caller's
+wallet/application must persist each newly retained hash before waiting or
+validating, and reload its reviewed active references before resuming.
 
 ```python
 from web3 import Web3
@@ -722,27 +726,63 @@ from black_market_sdk import (
     decode_lifecycle_events, build_next_transaction, read_launch_progress,
 )
 
-step = build_next_transaction(client, launch, account=plan.creator, fork=fork)
+# Start with the caller's previously retained, reviewed active references.
+# Preserve receipt history separately; a failed attempt is not successful progress.
+transaction_hashes = list(launch.transaction_hashes)
+
+step = build_next_transaction(
+    client, launch, account=plan.creator, confirmations=2,
+    transaction_hashes=transaction_hashes, fork=fork,
+)
 if step is not None:
-    # Signing/broadcast is caller-owned; the SDK only builds the exact call.
+    # Signing/broadcast is caller-owned; this local example uses unlocked Anvil.
     sent = client.eth.send_transaction(step.as_transaction())
+    sent_hash = Web3.to_hex(sent)
+    if sent_hash not in transaction_hashes:
+        transaction_hashes.append(sent_hash)  # retain before waiting
     receipt = client.eth.wait_for_transaction_receipt(sent, timeout=180)
-    if receipt["status"] != 1:
-        raise RuntimeError("lifecycle step reverted; reread canonical progress")
-    # Lifecycle events are validated against this plan's identity/hash/creator.
-    events = decode_lifecycle_events(plan, receipt["logs"])
-    assert events, "the mined step emitted no matching lifecycle event"
     tx_hash = Web3.to_hex(receipt["transactionHash"])
-    # The next builder refuses while this receipt is not sufficiently confirmed;
-    # a reorged or replaced hash surfaces as such, never as silent progress.
+    if tx_hash not in transaction_hashes:
+        transaction_hashes.append(tx_hash)  # retain before any validation
+    if receipt["status"] != 1:
+        raise RuntimeError("step reverted; hash retained; reread canonical progress")
+    if step.kind not in {"approval", "approval-reset"}:
+        # Only lifecycle calls require events; decoder validates plan/creator.
+        events = decode_lifecycle_events(plan, receipt["logs"])
+        if not events:
+            raise RuntimeError("the mined lifecycle call emitted no matching event")
+    # The SDK validates approval/reset target, spender, creator and calldata too.
+    # Approval logs are not evidence of market preparation or activation.
     progress = read_launch_progress(
-        client, plan, confirmations=2, transaction_hashes=[tx_hash],
+        client, plan, confirmations=2, transaction_hashes=transaction_hashes,
     )
     next_step = build_next_transaction(
         client, launch, account=plan.creator, confirmations=2,
-        transaction_hashes=[tx_hash], fork=fork,
+        transaction_hashes=transaction_hashes, fork=fork,
     )
 ```
+
+A successful approval or `approval-reset` has no orchestrator lifecycle event;
+the SDK rereads allowance and canonical progress to choose the next transaction.
+There is no local step increment. On a timeout, revert, insufficient confirmations,
+event/identity error or reorg, retain the references and reread
+`read_launch_progress(..., transaction_hashes=transaction_hashes)` before deciding
+whether to retry; never treat those outcomes as success. Keep a durable receipt
+history separate from the **active recovery references** passed to the SDK.
+A confirmed `reverted` receipt records a failed attempt, not a completed step:
+after reviewing it, the caller can retry using canonical state and reviewed active
+references, without requiring every historical attempt to have succeeded.
+Likewise, independently review an invalid reference before removing it from the
+active set; preserve it in history rather than letting it poison every future read.
+
+Missing receipts remain `pending-or-replaced`: absence alone is not proof of a
+replacement or orphan, and unresolved references must continue to gate recovery.
+`wait_for_transaction_receipt` does not discover wallet replacements. Retain a
+wallet-reported effective hash immediately; independently verify its creator,
+nonce, intended calldata/value and canonical receipt before acknowledging the
+original as replaced in the active set. Keep both hashes in durable history and
+pass the effective hash plus all other unresolved/active references to recovery.
+A different cancellation call is not a successful replacement of the launch step.
 
 The SDK checks receipt block hashes against canonical blocks and validates the
 actual encoded full-plan transaction; local counters never advance a step.
@@ -758,7 +798,8 @@ activation remains retryable `Ready`. For a pending staged launch:
 
 ```python
 cancel = build_next_transaction(
-    client, launch, account=plan.creator, action="cancel", fork=fork,
+    client, launch, account=plan.creator, action="cancel", confirmations=2,
+    transaction_hashes=transaction_hashes, fork=fork,
 )
 ```
 
