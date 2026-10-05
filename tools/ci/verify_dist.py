@@ -65,7 +65,7 @@ def main() -> None:
     sdist = sdists[-1]
     with tarfile.open(sdist) as tf:
         sdist_names = tf.getnames()
-    for required in ("LICENSE", "README.md", "pyproject.toml", "docs/launch-guide.md", "assets/splash.png"):
+    for required in ("LICENSE", "README.md", "pyproject.toml", "docs/launch-guide.md", "assets/abyss-social.webp"):
         if not any(n.endswith(f"/{required}") for n in sdist_names):
             fail(f"sdist {sdist.name} is missing {required}")
 
