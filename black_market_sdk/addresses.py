@@ -1,7 +1,7 @@
 """Chain definitions and canonical Black Market deployment addresses.
 
-Overrides are evaluated once at module import. Reviewed lifecycle orchestrators
-are explicit caller inputs, never selected from historical deployment records.
+Overrides are evaluated once at module import. Launch infrastructure is configured
+only for mainnet; every lifecycle plan and signature still names its orchestrator explicitly.
 Abyss infrastructure overrides apply to ``31337`` and ``46631`` only; mainnet
 ``4663`` remains canonical. Lending overrides apply to ``31337`` with bare,
 ``VITE_``, then ``NEXT_PUBLIC_`` precedence and to ``46631`` with public prefixes only.
@@ -52,6 +52,71 @@ def _env_addr(name: str, fallback: str = ZERO_ADDRESS) -> str:
 def _env_addr_public(name: str, fallback: str = ZERO_ADDRESS) -> str:
     """Workbench fields read only the public (VITE_/NEXT_PUBLIC_) variants."""
     return _read_env(f"VITE_{name}", f"NEXT_PUBLIC_{name}") or fallback
+
+
+@dataclass(frozen=True)
+class LaunchInfrastructureAddresses:
+    """Current lifecycle infrastructure; does not supply plan or signing defaults."""
+
+    orchestrator: str
+    registry: str
+    fee_owner_registry: str
+    admin: str
+    directory: str
+    fee_hub_factory: str
+    token_factory: str
+    erc20_deployer: str
+    erc404_deployer: str
+    staking_deployer: str
+    funding_escrow: str
+    validator: str
+    lens: str
+    pool_manager: str
+    oracle_factory: str
+    custody: str
+    hook_deployer: str
+    collector_deployer: str
+    collector_factory: str
+    pool_market_adapter: str
+    abyss_market_adapter: str
+    abyss_source_factory: str
+    wrapped_native: str
+
+
+ROBINHOOD_LAUNCH_INFRASTRUCTURE = LaunchInfrastructureAddresses(
+    orchestrator="0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
+    registry="0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
+    fee_owner_registry="0x15778Aad08e12D458B2848F035860e2a8c2a0725",
+    admin="0x119bB08D90753C5fa06C8f68cEb897af157D6416",
+    directory="0xa9d0F9Ff93AF569B7C11b5cDCE1E98D5a59F52DC",
+    fee_hub_factory="0x5c1FFa0F9fEB3f3f2704b752397f36f00072d252",
+    token_factory="0xa7467624E5A7a962f49a341Aa3fCE3eD20257b67",
+    erc20_deployer="0xA54Cf521d2566F030129a0DDEFff13366A049a4C",
+    erc404_deployer="0xba01E3Ce83F7192C03067e0A6f05050F0183FdFF",
+    staking_deployer="0x187E8204C1eFf3F20e254ceb6C6328C6eABb838e",
+    funding_escrow="0x13be9F6C4087d7eA3937c49bc174793162716312",
+    validator="0xb1e32359C4234993B0B1D245FFeF86688BaaaDC7",
+    lens="0x50bdA6937e3753665637538d62A8995b12a86A06",
+    pool_manager="0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    oracle_factory="0xe7feF2BC860B25bbdEB6F6AB96d88bAAa77ddad7",
+    custody="0xF0E5e79d0BC8243c1B0Afe031A39A8EAC5627f8b",
+    hook_deployer="0x9Cd433644237E6925deB13F3196cb44843de2DF6",
+    collector_deployer="0xb2A46C9C21d207455258E78ec448a307D6ea1E92",
+    collector_factory="0xf444dC28Aa7F6B3a8Ad5B7B3975d05a7A1fDF409",
+    pool_market_adapter="0xd9A7f35F2251dDa2506E50fCab2e52E6CE7a37d9",
+    abyss_market_adapter="0xeF509c6c9049D3260D5a90a56475d33f5BB47827",
+    abyss_source_factory="0x123669D891133B2FdB24e5613702530AA9be3E82",
+    wrapped_native=ROBINHOOD_WETH,
+)
+
+LAUNCH_ADDRESSES: dict[SupportedChainId, LaunchInfrastructureAddresses] = {
+    ROBINHOOD_MAINNET_CHAIN_ID: ROBINHOOD_LAUNCH_INFRASTRUCTURE,
+}
+
+
+def get_launch_addresses(chain_id: SupportedChainId) -> LaunchInfrastructureAddresses:
+    """Select configured infrastructure explicitly; unconfigured chains raise ``KeyError``."""
+    return LAUNCH_ADDRESSES[chain_id]
 
 
 @dataclass(frozen=True)
@@ -179,18 +244,18 @@ def _build_addresses() -> dict[SupportedChainId, ProtocolAddresses]:
 
     mainnet = ProtocolAddresses(
         **vars(ROBINHOOD_ABYSS_INFRASTRUCTURE),
-        lending_pool="0x5b8F732A4F7a62D642070bb49255d6C434A76766",
-        addresses_provider="0xaaD329d0Da03C8c00E8460b5b208D0A21A48C9df",
-        data_provider="0x3B097A7899DF433552B8428E774964661b53C193",
-        ui_pool_data_provider="0x2F35A64c7E7cBc0c05A1A1C3e2F3952E103fD5b8",
-        wallet_balance_provider="0x833BB152212DD5d2d6C7b0501aB38efb9602AD8B",
-        aave_oracle="0xb9441f8D3Eda65Ac7cbb6b542b5345c98067e5Fb",
+        lending_pool="0x5D8878b145904425C598f12EB8eD550985369a82",
+        addresses_provider="0x892faB533E8D04135D902F94974e45dB48C17697",
+        data_provider="0x1f3faA42C1D5cC330f6BD0242B9a56d611bdC78a",
+        ui_pool_data_provider="0x02D2CA3bBbBaBD3C25bEDD4bE0eE6E5885C4D152",
+        wallet_balance_provider="0xBbb5D81123C3d514456974e9Fe6C7C8d7a0E4E2A",
+        aave_oracle="0x6837B3cF5d959d01e07bf6DaB53f562877BF7d53",
         liquidation_executor=_env_addr("LIQUIDATION_EXECUTOR"),
-        protocol_vault="0x961981916AB6575C3af3eeCecbf6A3b7Fad7C9e1",
+        protocol_vault="0x83Ec5DbFEd6d972be89df88d3654EA2c70Fa2FB3",
         eth_usd_feed=ROBINHOOD_ETH_USD,
         weth=ROBINHOOD_WETH,
-        weth_gateway="0xAbc9E3B20e8773536BDCa5ba28C619762C8e0570",
-        lens="0x82FA6e601F48d64b4f163Eb47D6001f2d5040f9B",
+        weth_gateway="0xa16aB7646267327cB26dD3533526309cDe676d9d",
+        lens="0xB56079f966597CB9edaE27c589F8190f4dCD12df",
         token_vesting=ZERO_ADDRESS,
         faucet=ZERO_ADDRESS,
     )

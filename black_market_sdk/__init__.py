@@ -33,6 +33,8 @@ from .abyss import (
 from .addresses import (
     ADDRESSES,
     ANVIL_LOCAL_CHAIN_ID,
+    LAUNCH_ADDRESSES,
+    ROBINHOOD_LAUNCH_INFRASTRUCTURE,
     ROBINHOOD_ABYSS_INFRASTRUCTURE,
     ROBINHOOD_MAINNET_CHAIN_ID,
     ROBINHOOD_MAINNET_EXPLORER,
@@ -41,9 +43,11 @@ from .addresses import (
     SUPPORTED_CHAIN_IDS,
     WORKBENCH_CHAIN_ID,
     AbyssInfrastructureAddresses,
+    LaunchInfrastructureAddresses,
     ProtocolAddresses,
     default_rpc_url,
     get_addresses,
+    get_launch_addresses,
     is_supported_chain_id,
 )
 from .auction import (
@@ -97,6 +101,7 @@ from .launch_api import (
 )
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1,
+    ABYSS_MARKET_ADAPTER_V1_ABI,
     ABYSS_POSITION_CONFIG_COMPONENTS_V1,
     ADAPTER_REGISTRATION_COMPONENTS_V1,
     ASSET_FUNDING_COMPONENTS_V1,
@@ -124,6 +129,8 @@ from .lifecycle_abis import (
     LAUNCH_PROGRESS_COMPONENTS_V1,
     LAUNCH_RECEIPT_COMPONENTS_V1,
     LAUNCH_TOKEN_FACTORY_V1_ABI,
+    LAUNCH_TOKEN_CONTEXT_V1_ABI,
+    LAUNCH_ERC404_V1_ABI,
     LIFECYCLE_DIVIDEND_V1_ABI,
     LIVE_POSITION_COMPONENTS_V1,
     MARKET_CONFIG_COMPONENTS_V1,
@@ -135,13 +142,14 @@ from .lifecycle_abis import (
     POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1,
     POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1,
     POOL_HOOK_DEPLOYER_V1_ABI,
-    POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI,
+    FIXED_FEE_POOL_HOOK_V1_ABI,
     POOL_MARKET_ADAPTER_V1_ABI,
     PROFILE_REGISTRATION_COMPONENTS_V1,
     PROFILE_TOPOLOGY_COMPONENTS_V1,
     TOKEN_CONFIG_COMPONENTS_V1,
     V4_MARKET_CONFIG_COMPONENTS_V4,
     V4_MARKET_CONFIG_COMPONENTS_V5,
+    V4_FEE_LIQUIDITY_LOCKER_V2_ABI,
     POOL_FEE_COLLECTOR_FACTORY_V1_ABI,
     V4_POSITION_CONFIG_COMPONENTS_V1,
 )
@@ -262,4 +270,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

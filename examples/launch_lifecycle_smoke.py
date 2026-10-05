@@ -3,7 +3,7 @@
 Usage: LAUNCH_LIFECYCLE_RPC_URL=http://127.0.0.1:8545 \
     python examples/launch_lifecycle_smoke.py /absolute/manifest.json
 
-The manifest and plan rows are generated from the actual new local deployment.
+The manifest and plan rows come from the current lifecycle deployment on an owned local chain.
 No keys, default addresses, production broadcasts or fabricated pools are used.
 Each fixture executes in an independent local snapshot. Actual Active state,
 receipts and market evidence are observed before rollback, not retained on-chain.
@@ -124,7 +124,7 @@ def finalize_bound_fixture(client: Web3, plan, row: dict, *, exercise_remine: bo
     profiles = read_lifecycle_profiles(client, orchestrator=plan.orchestrator, profile_ids=[plan.markets[index].profile_id for index in indices])
     if any(not profile.admitted or profile.topology.hook_topology != 2 or profile.topology.config_version != 5 for profile in profiles):
         raise AssertionError("SDK discovery did not certify an actual reviewed pool-bound V5 offering")
-    by_profile = {profile.profile_id: profile for profile in profiles}
+    by_profile = {profile.id: profile for profile in profiles}
     token = predict_launch_token(client, plan)
     expected = {int(item["marketIndex"]): item for item in row.get("hookDeployments", [])}
     markets = list(plan.markets)
@@ -235,7 +235,7 @@ def restore_fixture(client: Web3, fork: ControlledLaunchFork, snapshot, baseline
 
 
 def selected_v4_pool(client: Web3, plan, row: dict) -> tuple[int, dict]:
-    # buys[0] of an old mixed stress plan targets Abyss. Never use it to infer V4.
+    # In mixed-venue plans, an opening buy may target Abyss; resolve the V4 market explicitly.
     index = int(row.get("selectedV4MarketIndex", next(
         (index for index, market in enumerate(plan.markets) if market.config_version in (4, 5)), -1)))
     if index < 0 or index >= len(plan.markets):

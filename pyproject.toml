@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "black-market-sdk"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python SDK for Black Market: reviewed lifecycle launches, explicit metadata API, Abyss DEX, and lending."
 readme = "README.md"
 license = "MIT"
@@ -37,3 +37,8 @@ packages = ["black_market_sdk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = '-m "not launch_api_http"'
+markers = [
+    "launch_api_http: opt-in real HTTP launch metadata API integration",
+    "launch_api_write: explicitly signed metadata-session writes to a loopback test API",
+]

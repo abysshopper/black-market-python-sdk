@@ -51,14 +51,12 @@ def test_creator_must_supply_exact_nonzero_author_terms_and_explicit_valid_rate(
         encode_lifecycle_v4_market_config(replace(shared_config(), **change))
 
 
-def test_current_decoders_reject_trailing_bytes_and_old_tuple_layout():
+def test_current_decoders_reject_trailing_bytes_and_truncated_tuple():
     encoded = encode_lifecycle_v4_market_config(shared_config())
     with pytest.raises((ValueError, DecodingError)):
         decode_lifecycle_v4_market_config(encoded + bytes(32))
-    # A retired V2 layout had 11 fields; this is not a reviewed 15-field tuple.
-    old = bytes.fromhex("00" * 31 + "20" + "00" * 31 + "02") + bytes(10 * 32)
     with pytest.raises((ValueError, DecodingError)):
-        decode_lifecycle_v4_market_config(old)
+        decode_lifecycle_v4_market_config(encoded[:-32])
 
 
 def test_abyss_keeps_its_independent_profile_oracle_and_large_budget_wire():

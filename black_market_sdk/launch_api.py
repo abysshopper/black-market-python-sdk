@@ -7,6 +7,7 @@ wallet signatures, idempotency keys, recovery state, and retry policy.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import re
@@ -49,13 +50,19 @@ _ECMASCRIPT_TRIM_CHARACTERS = (
 
 @dataclass(frozen=True)
 class LaunchApiConfig:
-    """Explicit transport configuration for :class:`LaunchApiClient`."""
+    """HTTPS API configuration, with an explicit loopback-only HTTP test opt-in."""
 
     base_url: str = _DEFAULT_API_URL
     timeout: float = 15.0
+    allow_loopback_http: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "base_url", _normalize_api_base_url(self.base_url))
+        if not isinstance(self.allow_loopback_http, bool):
+            raise TypeError("allow_loopback_http must be a bool")
+        object.__setattr__(
+            self, "base_url",
+            _normalize_api_base_url(self.base_url, allow_loopback_http=self.allow_loopback_http),
+        )
         object.__setattr__(self, "timeout", _validate_timeout(self.timeout))
 
 
@@ -1187,7 +1194,7 @@ def _validate_direct_upload_url(value: Any) -> None:
         raise ValueError("upload.url must be a safe HTTPS URL")
 
 
-def _normalize_api_base_url(value: Any) -> str:
+def _normalize_api_base_url(value: Any, *, allow_loopback_http: bool = False) -> str:
     if not isinstance(value, str) or not value or _contains_header_control(value) or any(
         character.isspace() for character in value
     ):
@@ -1197,14 +1204,24 @@ def _normalize_api_base_url(value: Any) -> str:
         port = parsed.port
     except ValueError:
         raise ValueError("base_url must be a safe HTTPS URL") from None
+    allowed_scheme = parsed.scheme.lower() == "https"
+    if not allowed_scheme and allow_loopback_http and parsed.scheme.lower() == "http":
+        host = parsed.hostname
+        if host == "localhost":
+            allowed_scheme = True
+        elif host is not None and "%" not in host:
+            try:
+                allowed_scheme = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                pass
     if (
-        parsed.scheme.lower() != "https"
+        not allowed_scheme
         or not parsed.netloc
         or parsed.hostname is None
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
+        or "?" in value
+        or "#" in value
         or port is not None and not 1 <= port <= 65535
     ):
         raise ValueError("base_url must be a safe HTTPS URL")

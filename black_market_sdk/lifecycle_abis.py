@@ -282,11 +282,21 @@ POOL_MARKET_ADAPTER_V1_ABI = [
     _function("CONFIG_VERSION", [], [_argument("", "uint32")]),
     _function("hookDeploymentMetadata", [_argument("token", "address"), _MARKET], POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1),
 ]
+ABYSS_MARKET_ADAPTER_V1_ABI = [
+    *LAUNCH_MARKET_ADAPTER_V1_ABI,
+    _function("profileId", [_argument("profile", "uint8")], [_argument("", "bytes32")]),
+    *[_function(name, [], [_argument("", "address")]) for name in ("factory", "positionManager", "locker", "sourceFactory")],
+]
+V4_FEE_LIQUIDITY_LOCKER_V2_ABI = [
+    _function("isSealed", [_argument("poolId", "bytes32")], [_argument("", "bool")]),
+    _function("positionCount", [_argument("poolId", "bytes32")], [_argument("", "uint256")]),
+    _function("feeRecipient", [_argument("poolId", "bytes32")], [_argument("", "address")]),
+]
 SHARED_MARKET_ADAPTER_V1_ABI = [
     {"type": "constructor", "stateMutability": "nonpayable", "inputs": [*[_argument(name, "address") for name in ("core_", "manager_", "root_", "locker_", "helper_", "registry_", "deployer_")], _argument("profileId_", "bytes32")]},
     *[entry for entry in POOL_MARKET_ADAPTER_V1_ABI if entry["type"] != "constructor" and entry.get("name") != "hookDeploymentMetadata"],
 ]
-POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI = [
+FIXED_FEE_POOL_HOOK_V1_ABI = [
     {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("parameters", "tuple", components=POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1)]},
     *[_function(name, [], [_argument("", "address")]) for name in ("poolManager", "registrar", "oracleFactory", "core", "liquidityLocker", "token")],
     *[_function(name, [], [_argument("", "bytes32")]) for name in ("boundPoolId", "deploymentConfigHash", "marketCommitment")],
@@ -318,6 +328,22 @@ LAUNCH_TOKEN_FACTORY_V1_ABI = [
     _function("predictToken", [_ID, _argument("config", "tuple", components=TOKEN_CONFIG_COMPONENTS_V1)], [_argument("", "address")]),
     _function("deployToken", [_ID, _argument("config", "tuple", components=TOKEN_CONFIG_COMPONENTS_V1)], [_argument("token", "address")], "nonpayable"),
     _function("createRewards", [_argument("token", "address"), _argument("hub", "address"), _argument("rewardAssets", "address[]")], [_argument("rewards", "address")], "nonpayable"),
+    _function("tokenOfLaunch", [_ID], [_argument("", "address")]),
+    _function("launchOfToken", [_argument("token", "address")], [_argument("", "bytes32")]),
+    _event("TokenDeployed", [_argument("launchId", "bytes32", indexed=True), _argument("token", "address", indexed=True), _argument("kind", "uint8", indexed=False)]),
+]
+LAUNCH_TOKEN_CONTEXT_V1_ABI = [
+    *[_function(name, [], [_argument("", "address")]) for name in ("authority", "tokenFactory", "feeHub", "rewardModule")],
+    _function("launchId", [], [_argument("", "bytes32")]),
+    _function("rewardMode", [], [_argument("", "uint8")]),
+    _function("initialSupply", [], [_argument("", "uint256")]),
+    *[_function(name, [], [_argument("", "bool")]) for name in ("active", "cancelled", "exclusionsFinalized")],
+]
+LAUNCH_ERC404_V1_ABI = [
+    *LAUNCH_TOKEN_CONTEXT_V1_ABI,
+    *[_function(name, [], [_argument("", "uint256")]) for name in ("unit", "maxNFTSupply")],
+    _function("baseURI", [], [_argument("", "string")]),
+    _function("mirrorERC721", [], [_argument("", "address")]),
 ]
 LAUNCH_FEE_OWNER_REGISTRY_V2_ABI = [
     {"type": "constructor", "stateMutability": "nonpayable", "inputs": [_argument("protocolAdmin_", "address")]},

@@ -107,7 +107,7 @@ class LaunchExecutionLimits:
     The live block gas limit always participates in admission. Separate chain
     transaction limits (for example EIP-7825), RPC caps and wallet constraints
     must be supplied when applicable; they are not inferred from block capacity.
-    Unknown nonstandard caps remain unknown rather than a historical 32M rule.
+    Unknown nonstandard caps remain unknown rather than using an invented limit.
     """
 
     headroom_bps: int = 2000

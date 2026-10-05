@@ -545,3 +545,57 @@ def test_retry_after_uses_javascript_rounding_and_clamps_finite_extremes():
     assert half_up.value.retry_after_ms == 313
     assert extreme.value.retry_after_ms == 7 * 24 * 60 * 60 * 1000
     assert len(transport.calls) == 2
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://127.0.0.1:18763",
+    "http://localhost:18763",
+    "http://[::1]:18763",
+    "http://127.0.0.2:18763/api/",
+])
+def test_http_api_configuration_requires_explicit_loopback_opt_in(base_url):
+    with pytest.raises(ValueError):
+        LaunchApiConfig(base_url=base_url)
+    config = LaunchApiConfig(base_url=base_url, allow_loopback_http=True)
+    assert config.base_url == base_url.rstrip("/")
+
+
+@pytest.mark.parametrize("base_url", [
+    "http://api.abyss.trading",
+    "http://192.168.1.1:18763",
+    "http://[2001:db8::1]:18763",
+    "http://localhost.attacker.invalid:18763",
+    "http://127.0.0.1.attacker.invalid:18763",
+    "http://2130706433:18763",
+    "http://user:password@localhost:18763",
+    "http://127.0.0.1@api.abyss.trading",
+    "http://127.0.0.1:18763?secret=value",
+    "http://localhost:18763#fragment",
+    "http://localhost:18763?",
+    "http://localhost:18763#",
+    "http://localhost:0",
+    "http://[::1%25eth0]:18763",
+    "ftp://localhost:18763",
+    "https://api.abyss.trading?secret=value",
+    "https://user:password@api.abyss.trading",
+])
+def test_loopback_http_opt_in_still_rejects_remote_and_unsafe_api_urls(base_url):
+    with pytest.raises(ValueError):
+        LaunchApiConfig(base_url=base_url, allow_loopback_http=True)
+
+
+@pytest.mark.parametrize("opt_in", [None, 0, 1, "false", "true"])
+def test_loopback_http_opt_in_must_be_an_explicit_boolean(opt_in):
+    with pytest.raises(TypeError):
+        LaunchApiConfig(base_url="http://127.0.0.1:18763", allow_loopback_http=opt_in)
+
+
+def test_local_http_api_opt_in_does_not_permit_http_image_uploads():
+    client = LaunchApiClient(LaunchApiConfig(
+        base_url="http://127.0.0.1:18763", allow_loopback_http=True,
+    ))
+    with pytest.raises(ValueError, match="upload.url must be a safe HTTPS URL"):
+        client.put_launch_image(
+            {"url": "http://127.0.0.1:18763/upload", "headers": {"content-type": "image/png"}},
+            b"png",
+        )

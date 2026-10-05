@@ -1,6 +1,6 @@
 """Explicit opt-in, receipt-driven LaunchPlanV1 planning and execution builders.
 
-Callers provide the new orchestrator and creator. This module neither selects
+Callers provide the orchestrator and creator. This module neither selects
 production addresses nor signs/broadcasts transactions. An execution mode is
 always explicit and never changes the economic commitment. Dependent admission
 requires actual sequential execution, not disconnected calls to future pools.
@@ -28,7 +28,7 @@ from .lifecycle_abis import (
     LAUNCH_TOKEN_FACTORY_V1_ABI,
     ADAPTER_REGISTRATION_COMPONENTS_V1, MARKET_IDENTITY_COMPONENTS_V1,
     POOL_BOUND_HOOK_PARAMETERS_COMPONENTS_V1, POOL_HOOK_DEPLOYER_V1_ABI,
-    POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI,
+    FIXED_FEE_POOL_HOOK_V1_ABI,
     POOL_MARKET_ADAPTER_V1_ABI, PROFILE_TOPOLOGY_COMPONENTS_V1,
     PROFILE_REGISTRATION_COMPONENTS_V1, POOL_FEE_COLLECTOR_FACTORY_V1_ABI,
     V4_MARKET_CONFIG_COMPONENTS_V4, V4_MARKET_CONFIG_COMPONENTS_V5,
@@ -51,11 +51,9 @@ LAUNCH_PERMANENT_CUSTODY_CAPABILITY_V1 = 8
 LAUNCH_CANONICAL_FEES_CAPABILITY_V1 = 16
 LAUNCH_ERC404_CAPABILITY_V1 = 32
 LAUNCH_MULTI_POSITION_CAPABILITY_V1 = 64
-# TOKEN_ONLY|EMPTY_PREPARE|PERMANENT_CUSTODY|CANONICAL_FEES. The retired POOL_GATE
-# bit is never requested: preactivation safety is the launch token's transfer
-# restrictions plus the activation-time canonical opening-state verification on
-# both canonical venues. Atomic and staged share this mask; mode changes
-# execution grouping, never venue eligibility.
+# TOKEN_ONLY|EMPTY_PREPARE|PERMANENT_CUSTODY|CANONICAL_FEES. Preactivation
+# safety combines launch-token transfer restrictions with canonical opening-state
+# verification on both venues. Execution grouping never changes eligibility.
 LAUNCH_REQUIRED_CAPABILITIES_V1 = (
     LAUNCH_TOKEN_ONLY_CAPABILITY_V1 | LAUNCH_EMPTY_PREPARE_CAPABILITY_V1
     | LAUNCH_PERMANENT_CUSTODY_CAPABILITY_V1 | LAUNCH_CANONICAL_FEES_CAPABILITY_V1
@@ -566,7 +564,7 @@ def to_launch_plan_tuple(plan: LaunchPlanV1) -> tuple[Any, ...]:
         if market.quote_asset.lower() not in fee_assets:
             raise ValueError("every market quote must belong to the committed fee-asset set")
         if market.config_version not in (1, 4, 5):
-            raise ValueError("unsupported config version; old V4 config2/3 cannot be used in reviewed plans")
+            raise ValueError("unsupported config version; supported market schemas are Abyss1, shared4 and bound5")
         if market.config_version in (4, 5):
             config = decode_lifecycle_v4_market_config(market.config) if market.config_version == 4 else decode_lifecycle_pool_bound_v4_market_config(market.config)
             if config.lp_fee_pips >= 1_000_000:
@@ -972,16 +970,16 @@ def _pool_bound_deployment(client: Web3, plan: LaunchPlanV1, index: int, token: 
         if recorded_hash == bytes(32) or recorded_hash != keccak(hook_code):
             raise ValueError("existing pool-bound hook lacks exact typed-deployer runtime provenance")
         for name, expected in (("deploymentConfigHash", keccak(encoded_parameters)), ("marketCommitment", bytes.fromhex(hex_bytes(parameters.market_commitment)[2:]))):
-            if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, name, [], block) != expected:
+            if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, name, [], block) != expected:
                 raise ValueError("existing pool-bound hook differs from its exact immutable economic commitment")
         for name, expected in (("poolManager", parameters.pool_manager), ("registrar", parameters.registrar), ("oracleFactory", parameters.oracle_factory), ("core", parameters.core), ("liquidityLocker", parameters.liquidity_locker), ("token", parameters.token)):
-            if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, name, [], block).lower() != expected.lower():
+            if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, name, [], block).lower() != expected.lower():
                 raise ValueError("existing pool-bound hook differs from its exact immutable dependency graph")
         currency0, currency1 = sorted((token, market.quote_asset), key=lambda address: int(address, 16))
         pool_id = keccak(abi_encode(["address", "address", "uint24", "int24", "address"], [currency0, currency1, config.lp_fee_pips, config.tick_spacing, prediction]))
-        if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "boundPoolId", [], block) != pool_id or _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "openingSqrtPriceX96", [], block) != config.sqrt_price_x96 or _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "expectedPositionCount", [], block) != len(config.positions):
+        if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "boundPoolId", [], block) != pool_id or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "openingSqrtPriceX96", [], block) != config.sqrt_price_x96 or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "expectedPositionCount", [], block) != len(config.positions):
             raise ValueError("existing pool-bound hook differs from its exact key, opening price or position count")
-        if _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "REQUIRED_HOOK_FLAGS", [], block) != V4_LIFECYCLE_HOOK_PERMISSIONS or _call(client, prediction, POOL_BOUND_LAUNCH_FEE_HOOK_V1_ABI, "ALL_HOOK_MASK", [], block) != V4_LIFECYCLE_HOOK_PERMISSION_MASK:
+        if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "REQUIRED_HOOK_FLAGS", [], block) != V4_LIFECYCLE_HOOK_PERMISSIONS or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "ALL_HOOK_MASK", [], block) != V4_LIFECYCLE_HOOK_PERMISSION_MASK:
             raise ValueError("existing pool-bound hook differs from its exact reviewed callback declarations")
     return PoolBoundHookDeployment(to_checksum_address(deployer), hex_bytes(init_code_hash), hex_bytes(salt), prediction), parameters
 
@@ -1120,9 +1118,18 @@ def build_lifecycle_calldata(plan: LaunchPlanV1, command: str, *, first_market: 
 
 
 def predict_launch_token(client: Web3, plan: LaunchPlanV1, *, block: LaunchBlock | None = None) -> str:
-    """Predict from domain+token economics; draft fee assets need not include it yet."""
+    """Predict a typed token-only draft, without requiring completed launch markets.
+
+    Prediction is not economic validation or admission. Execution builders still
+    require the complete plan through ``to_launch_plan_tuple``.
+    """
+    values = _struct_tuple(LAUNCH_PLAN_COMPONENTS_V1, plan)
+    if plan.chain_id == 0:
+        raise ValueError("prediction chain_id must be positive")
+    _address(plan.creator, "creator", nonzero=True)
+    _address(plan.orchestrator, "orchestrator", nonzero=True)
     pinned = block or read_block(client)
-    result = _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "predictToken", [to_launch_plan_tuple(plan)], pinned), "predicted token", nonzero=True)
+    result = _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "predictToken", [values], pinned), "predicted token", nonzero=True)
     assert_canonical(client, pinned)
     return result
 

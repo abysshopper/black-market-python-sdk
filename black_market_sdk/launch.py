@@ -1,8 +1,4 @@
-"""Exact TickMath utilities shared by Abyss and V4 DEX consumers.
-
-Launch construction uses the reviewed lifecycle API; no template allowlists or
-historical Atomic conversion/builders are provided.
-"""
+"""Exact TickMath utilities shared by Abyss and V4 DEX consumers."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""DEX/lending override precedence and chain-isolation boundaries."""
+"""Current deployment configuration, override precedence and chain isolation."""
 
 import importlib
 
@@ -62,3 +62,17 @@ def test_explicit_zero_is_not_silently_replaced_with_another_deployment(clean_en
 def test_unknown_chain_has_no_accidental_deployment_fallback():
     with pytest.raises(KeyError):
         addresses_module.get_addresses(1)
+
+
+@pytest.mark.parametrize("chain_id", [1, 31337, 46631])
+def test_unconfigured_launch_chain_has_no_mainnet_fallback(chain_id):
+    from black_market_sdk import get_launch_addresses
+    with pytest.raises(KeyError):
+        get_launch_addresses(chain_id)
+
+
+def test_local_lending_and_launch_addresses_do_not_inherit_mainnet(clean_env):
+    module = reload_addresses()
+    assert module.get_addresses(31337).lending_pool == ZERO
+    with pytest.raises(KeyError):
+        module.get_launch_addresses(31337)

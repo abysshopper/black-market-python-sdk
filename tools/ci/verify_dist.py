@@ -22,6 +22,10 @@ EXPECTED_MODULES = {
     "black_market_sdk/client.py",
     "black_market_sdk/format.py",
     "black_market_sdk/launch.py",
+    "black_market_sdk/launch_api.py",
+    "black_market_sdk/lifecycle.py",
+    "black_market_sdk/lifecycle_abis.py",
+    "black_market_sdk/lifecycle_rpc.py",
     "black_market_sdk/live.py",
     "black_market_sdk/py.typed",
 }
@@ -61,7 +65,7 @@ def main() -> None:
     sdist = sdists[-1]
     with tarfile.open(sdist) as tf:
         sdist_names = tf.getnames()
-    for required in ("LICENSE", "README.md", "pyproject.toml"):
+    for required in ("LICENSE", "README.md", "pyproject.toml", "docs/launch-guide.md", "assets/splash.png"):
         if not any(n.endswith(f"/{required}") for n in sdist_names):
             fail(f"sdist {sdist.name} is missing {required}")
 
