@@ -43,3 +43,6 @@ Keep `.env` and private recovery files out of Git.
 [Example source](https://github.com/abysshopper/black-market-python-sdk/tree/main/examples)
 · [API guide](https://github.com/abysshopper/black-market-python-sdk/blob/main/docs/launch-guide.md)
 · [MIT license](https://github.com/abysshopper/black-market-python-sdk/blob/main/LICENSE)
+
+[Agent guide](https://github.com/abysshopper/black-market-python-sdk/blob/main/AGENTS.md)
+· [Skills](https://github.com/abysshopper/black-market-python-sdk/tree/main/.agents/skills)
