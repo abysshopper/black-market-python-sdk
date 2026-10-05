@@ -67,10 +67,19 @@ Admission uses EIP-712 domain `Black Market Launch Registry`, version `2`; old a
 must be regenerated. Market configuration tuple layouts remain unchanged; bounds encoding changes
 below require fresh profile identities and consent.
 
-`LaunchBoundsV2` now has seven fields beginning with `minimum_tick_spacing`; both former LP/hook
-fee-ceiling fields are removed. Creators independently select valid market LP and hook rates
-below 1,000,000 pips, including 15%, without profile-level trading-fee caps. Author royalty
-ceilings remain separate. Regenerate bounds digests, profile IDs and consent for the new tuple.
+`LaunchBoundsV2` now has five fields beginning with `minimum_tick_spacing`: spacing bounds,
+maximum positions, maximum oracle cardinality and fee-mode flags. Former LP/hook fee ceilings
+and profile-level oracle/external-liquidity pins are removed. Creators choose valid LP/hook
+rates below 1,000,000 pips, their per-pool `oracle_config_id` and
+`external_liquidity_disabled`. Author royalty ceilings remain separate.
+Regenerate bounds digests, profile IDs and consent for the new tuple.
+
+All three registered Robinhood oracle configurations P1 `(1,4096)`, P2 `(6,4096)` and
+P3 `(17,4096)` remain usable on the same admitted profile. Preparation and wallet admission
+validate the selected oracle against the certified factory at the pinned block, including
+movement/cardinality limits. An unregistered ID still fails. With
+`external_liquidity_disabled=False`, third-party LP add/remove is permitted after opening;
+permanent launch custody and pre-opening protection remain intact.
 
 Shared contracts are `FixedFeeSharedHookV1`, `SharedHookDeployerV1` and
 `SharedMarketAdapterV1`; the shared adapter ABI export is
@@ -105,10 +114,10 @@ current bytes, including the version and all author terms. The inner profile ID
 must match the outer market. The developer beneficiary is the stable admitted
 **authorId**, not today's payout address. The creator must choose an explicit
 rate (zero is allowed); there is no default rate. That rate may not exceed either
-the envelope maximum or the registry's protocol maximum. Treasury, protocol fee,
-fee mode, oracle ID, tick spacing, position count and external-liquidity policy
-must stay within the exact reviewed bounds. The canonical collector helper also
-checks actual oracle metadata and the economic/position validation on chain.
+the envelope maximum or the registry's protocol maximum. Treasury and protocol fee are
+frozen terms; fee mode, tick spacing and position count must stay within the admitted bounds.
+Oracle ID and external-liquidity policy are creator-selected per-pool parameters. The canonical
+collector helper validates actual selected oracle metadata and economic/position rules on chain.
 
 Abyss retains `LifecycleAbyssMarketConfig`, `LifecycleAbyssPosition`, and
 `encode_lifecycle_abyss_market_config`. Mixed Abyss/V4 plans are supported. At most

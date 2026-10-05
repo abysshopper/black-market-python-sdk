@@ -247,8 +247,6 @@ class LaunchBoundsV2:
     maximum_positions: int
     maximum_oracle_cardinality: int
     fee_mode_flags: int
-    external_liquidity_disabled: bool
-    oracle_config_id: bytes | str
 
 
 @dataclass(frozen=True)
@@ -722,6 +720,12 @@ _PROFILE_DEPENDENCY_ABI = [*POOL_MARKET_ADAPTER_V1_ABI,
     {"type": "function", "name": "factory", "stateMutability": "view", "inputs": [], "outputs": [{"name": "", "type": "address"}]},
 ]
 
+_ORACLE_FACTORY_ABI = [
+    {"type": "function", "name": "oracleConfigs", "stateMutability": "view",
+     "inputs": [{"name": "", "type": "bytes32"}],
+     "outputs": [{"name": "", "type": "uint24"}, {"name": "", "type": "uint16"}]},
+]
+
 
 def _profile_topology(client: Web3, registry: str, profile_id: bytes, block: LaunchBlock) -> ProfileTopologyV1:
     values = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "profileTopology", [profile_id], block)
@@ -885,12 +889,23 @@ def _pool_bound_creation_code(client: Web3, topology: ProfileTopologyV1, block: 
 
 def _validate_v4_market(config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig, market: LifecycleMarketConfig, token: str, envelope: LaunchEnvelopeV2, ceiling: int) -> None:
     bounds = envelope.bounds
+    if hex_bytes(config.oracle_config_id) == ZERO_HASH:
+        raise ValueError("market oracle configuration must be nonzero")
     if config.version != market.config_version or hex_bytes(config.profile_id) != hex_bytes(market.profile_id) or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()) or config.developer_fee_bps > envelope.maximum_developer_fee_bps or config.developer_fee_bps > ceiling:
         raise ValueError("reviewed market profile, stable author, terms digest or explicit developer rate differs from admission")
-    if config.treasury.lower() != envelope.protocol_treasury.lower() or config.protocol_fee_denominator != envelope.protocol_fee_denominator or isinstance(config.hook_fee_pips, bool) or not isinstance(config.hook_fee_pips, int) or not 0 <= config.hook_fee_pips < 1_000_000 or isinstance(config.lp_fee_pips, bool) or not isinstance(config.lp_fee_pips, int) or not 0 <= config.lp_fee_pips < 1_000_000 or not bounds.minimum_tick_spacing <= config.tick_spacing <= bounds.maximum_tick_spacing or config.fee_mode not in (0, 1) or not bounds.fee_mode_flags & (1 << config.fee_mode) or config.external_liquidity_disabled != bounds.external_liquidity_disabled or hex_bytes(config.oracle_config_id) != hex_bytes(bounds.oracle_config_id):
+    if config.treasury.lower() != envelope.protocol_treasury.lower() or config.protocol_fee_denominator != envelope.protocol_fee_denominator or isinstance(config.hook_fee_pips, bool) or not isinstance(config.hook_fee_pips, int) or not 0 <= config.hook_fee_pips < 1_000_000 or isinstance(config.lp_fee_pips, bool) or not isinstance(config.lp_fee_pips, int) or not 0 <= config.lp_fee_pips < 1_000_000 or not bounds.minimum_tick_spacing <= config.tick_spacing <= bounds.maximum_tick_spacing or config.fee_mode not in (0, 1) or not bounds.fee_mode_flags & (1 << config.fee_mode):
         raise ValueError("reviewed market economics exceed or differ from the exact admitted bounds")
     if not 1 <= len(config.positions) <= bounds.maximum_positions:
         raise ValueError("positions exceed the reviewed offering bounds")
+
+
+def _validate_v4_oracle(client: Web3, config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig, envelope: LaunchEnvelopeV2, block: LaunchBlock) -> None:
+    oracle_id = _abi_value({"name": "oracleConfigId", "type": "bytes32"}, config.oracle_config_id)
+    if not any(oracle_id):
+        raise ValueError("market oracle configuration must be nonzero")
+    move, cardinality = _call(client, envelope.graph.oracle_factory, _ORACLE_FACTORY_ABI, "oracleConfigs", [oracle_id], block)
+    if not 0 < move <= 887272 or not 2 <= cardinality <= envelope.bounds.maximum_oracle_cardinality:
+        raise ValueError("selected market oracle is unregistered or exceeds the admitted cardinality bounds")
 
 
 def _admit_market_config(client: Web3, registry: str, market: LifecycleMarketConfig, token: str, adapter: Sequence[Any], profile: Sequence[Any], topology: ProfileTopologyV1, block: LaunchBlock, required: int) -> tuple[LaunchEnvelopeV2 | None, LifecycleDeveloperTerms | None]:
@@ -903,6 +918,7 @@ def _admit_market_config(client: Web3, registry: str, market: LifecycleMarketCon
         envelope, terms = _profile_metadata(client, registry, bytes.fromhex(hex_bytes(market.profile_id)[2:]), block)
         ceiling = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "protocolMaximumDeveloperFeeBps", [], block)
         _validate_v4_market(config, market, token, envelope, ceiling)
+        _validate_v4_oracle(client, config, envelope, block)
     if len(positions) > 1:
         required |= LAUNCH_MULTI_POSITION_CAPABILITY_V1
         if adapter[2] & required != required or profile[6] & required != required:

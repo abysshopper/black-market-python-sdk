@@ -111,8 +111,7 @@ PROFILE_TOPOLOGY_COMPONENTS_V1 = [
 LAUNCH_BOUNDS_COMPONENTS_V2 = [
     _argument("minimumTickSpacing", "int24"), _argument("maximumTickSpacing", "int24"),
     _argument("maximumPositions", "uint16"), _argument("maximumOracleCardinality", "uint16"),
-    _argument("feeModeFlags", "uint8"), _argument("externalLiquidityDisabled", "bool"),
-    _argument("oracleConfigId", "bytes32"),
+    _argument("feeModeFlags", "uint8"),
 ]
 LAUNCH_GRAPH_COMPONENTS_V2 = [
     *[_argument(name, "address") for name in ("manager", "hookRoot", "oracleFactory", "locker", "collectorFactory", "collectorDeployer", "hookDeployer")],
