@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "black-market-sdk"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python SDK for Black Market: reviewed lifecycle launches, explicit metadata API, Abyss DEX, and lending."
 readme = "README.md"
 license = "MIT"
