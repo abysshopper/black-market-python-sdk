@@ -20,7 +20,7 @@ from black_market_sdk import (
     hash_launch_plan, launch_id_of, launch_plan_from_dict, mine_pool_bound_hook_salt,
     pool_bound_market_commitment, predict_pool_bound_hook_address, to_launch_plan_tuple,
 )
-from black_market_sdk.lifecycle import _assert_reviewed_deployments, _profile_topology
+from black_market_sdk.lifecycle import _assert_hook_deployments, _profile_topology
 from black_market_sdk.lifecycle_rpc import LaunchRpcError
 
 ZERO_ADDRESS = "0x" + "00" * 20
@@ -189,7 +189,7 @@ def test_missing_or_broken_registry_topology_never_becomes_a_certificate(error):
 
 
 @pytest.mark.parametrize("field", ["deployer", "init_code_hash", "salt", "predicted_hook", "token_factory", "token_factory_code_hash"])
-def test_wallet_revalidation_rejects_reviewed_deployment_or_factory_drift(field):
+def test_wallet_revalidation_rejects_hook_deployment_or_factory_drift(field):
     deployment = PoolBoundHookDeployment(REGISTRAR, "0x" + "12" * 32, "0x" + "34" * 32, TOKEN)
     values = {"plan": bound_plan(), "predicted_token": TOKEN, "token_factory": REGISTRAR,
         "token_factory_code_hash": "0x" + "78" * 32,
@@ -202,7 +202,7 @@ def test_wallet_revalidation_rejects_reviewed_deployment_or_factory_drift(field)
         new_values["market_admissions"] = ({"marketIndex": 0, "hookDeployment": replace(deployment, **{field: changed})},)
     fresh = SimpleNamespace(**new_values, simulation=SimpleNamespace(transactions=("next wallet command",)))
     with pytest.raises(ValueError):
-        _assert_reviewed_deployments(SimpleNamespace(**values), fresh)
+        _assert_hook_deployments(SimpleNamespace(**values), fresh)
 
 
 @pytest.mark.parametrize("drift", ["factory", "began", "constructor"])

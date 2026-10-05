@@ -109,7 +109,6 @@ PROFILE_TOPOLOGY_COMPONENTS_V1 = [
     _argument("hookDeployer", "address"), _argument("hookCreationCodeHash", "bytes32"),
 ]
 LAUNCH_BOUNDS_COMPONENTS_V2 = [
-    _argument("maximumHookFeePips", "uint24"), _argument("maximumLpFeePips", "uint24"),
     _argument("minimumTickSpacing", "int24"), _argument("maximumTickSpacing", "int24"),
     _argument("maximumPositions", "uint16"), _argument("maximumOracleCardinality", "uint16"),
     _argument("feeModeFlags", "uint8"), _argument("externalLiquidityDisabled", "bool"),
@@ -229,7 +228,8 @@ LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI = [
     _function("core", [], [_argument("", "address")]),
     _function("admin", [], [_argument("", "address")]),
     _function("registerAdapter", [_argument("id", "bytes32"), _argument("implementation", "address"), _argument("capabilities", "uint64"), _argument("configVersion", "uint32")], [], "nonpayable"),
-    _function("registerProfile", [_argument("id", "bytes32"), _argument("registration", "tuple", components=PROFILE_REGISTRATION_COMPONENTS_V1)], [], "nonpayable"),
+    _function("registerProfile", [_argument("id", "bytes32"), _argument("registration", "tuple", components=PROFILE_REGISTRATION_COMPONENTS_V1), _argument("envelope", "tuple", components=LAUNCH_ENVELOPE_COMPONENTS_V2), _argument("nonce", "uint256"), _argument("deadline", "uint256"), _argument("authorization", "bytes")], [], "nonpayable"),
+    _function("registerAbyssProfile", [_argument("variant", "uint8"), _argument("registration", "tuple", components=PROFILE_REGISTRATION_COMPONENTS_V1)], [], "nonpayable"),
     *[_function(name, [_argument("id", "bytes32")], [], "nonpayable") for name in ("disableAdapter", "disableProfile")],
     _function("setFundingInputAllowed", [_argument("asset", "address"), _argument("allowed", "bool")], [], "nonpayable"),
     _function("registerFundingTarget", [_argument("target", "address"), _argument("spender", "address")], [], "nonpayable"),
@@ -283,7 +283,7 @@ POOL_MARKET_ADAPTER_V1_ABI = [
     _function("CONFIG_VERSION", [], [_argument("", "uint32")]),
     _function("hookDeploymentMetadata", [_argument("token", "address"), _MARKET], POOL_BOUND_HOOK_DEPLOYMENT_COMPONENTS_V1),
 ]
-REVIEWED_SHARED_V4_MARKET_ADAPTER_V1_ABI = [
+SHARED_MARKET_ADAPTER_V1_ABI = [
     {"type": "constructor", "stateMutability": "nonpayable", "inputs": [*[_argument(name, "address") for name in ("core_", "manager_", "root_", "locker_", "helper_", "registry_", "deployer_")], _argument("profileId_", "bytes32")]},
     *[entry for entry in POOL_MARKET_ADAPTER_V1_ABI if entry["type"] != "constructor" and entry.get("name") != "hookDeploymentMetadata"],
 ]

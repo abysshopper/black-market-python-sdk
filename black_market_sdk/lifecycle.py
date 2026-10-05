@@ -242,8 +242,6 @@ class ProfileTopologyV1:
 
 @dataclass(frozen=True)
 class LaunchBoundsV2:
-    maximum_hook_fee_pips: int
-    maximum_lp_fee_pips: int
     minimum_tick_spacing: int
     maximum_tick_spacing: int
     maximum_positions: int
@@ -401,7 +399,7 @@ LAUNCH_PLAN_V1_ABI_TYPE = _tuple_type(LAUNCH_PLAN_COMPONENTS_V1)
 V4_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V4))
 V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(V4_MARKET_CONFIG_COMPONENTS_V5))
 ABYSS_LIFECYCLE_CONFIG_SCHEMA = keccak(text=_tuple_type(ABYSS_MARKET_CONFIG_COMPONENTS_V1))
-POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1 = keccak(text="black-market.reviewed-pool-bound-market-economics.v1")
+POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1 = keccak(text="black-market.pool-bound-market-economics.v1")
 V4_LIFECYCLE_HOOK_PERMISSION_MASK = 0x3FFF
 V4_LIFECYCLE_HOOK_PERMISSIONS = 0x1AFC
 
@@ -573,6 +571,10 @@ def to_launch_plan_tuple(plan: LaunchPlanV1) -> tuple[Any, ...]:
             raise ValueError("unsupported config version; old V4 config2/3 cannot be used in reviewed plans")
         if market.config_version in (4, 5):
             config = decode_lifecycle_v4_market_config(market.config) if market.config_version == 4 else decode_lifecycle_pool_bound_v4_market_config(market.config)
+            if config.lp_fee_pips >= 1_000_000:
+                raise ValueError("lpFeePips must be below 1000000")
+            if config.hook_fee_pips >= 1_000_000:
+                raise ValueError("hookFeePips must be below 1000000")
             if hex_bytes(config.profile_id) != hex_bytes(market.profile_id):
                 raise ValueError("inner reviewed profileId differs from its outer market binding")
             quote = market.quote_asset.lower()
@@ -728,24 +730,24 @@ def _profile_topology(client: Web3, registry: str, profile_id: bytes, block: Lau
     return ProfileTopologyV1(LifecycleHookTopology(values[0]), values[1], to_checksum_address(values[2]), hex_bytes(values[3]))
 
 
-def _reviewed_metadata(client: Web3, registry: str, profile_id: bytes, block: LaunchBlock) -> tuple[LaunchEnvelopeV2, LifecycleDeveloperTerms]:
+def _profile_metadata(client: Web3, registry: str, profile_id: bytes, block: LaunchBlock) -> tuple[LaunchEnvelopeV2, LifecycleDeveloperTerms]:
     values = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "profileEnvelope", [profile_id], block)
     envelope = LaunchEnvelopeV2(*values[:-2], LaunchBoundsV2(*values[-2]), LaunchGraphV2(*values[-1]))
     terms = LifecycleDeveloperTerms(*_call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "developerTerms", [profile_id], block))
     return envelope, terms
 
 
-def _reviewed_profile_id(envelope: LaunchEnvelopeV2) -> bytes:
+def _profile_id(envelope: LaunchEnvelopeV2) -> bytes:
     return keccak(abi_encode(
         ["bytes32"] * 5 + ["uint256"] * 6,
-        [keccak(text="black-market.reviewed-launch-profile.v2"),
+        [keccak(text="black-market.launch-profile.v2"),
          *[_abi_value({"name": "digest", "type": "bytes32"}, value) for value in (envelope.artifact_digest, envelope.review_manifest_digest, envelope.config_bounds_digest, envelope.terms_digest)],
          int(envelope.topology), envelope.config_version, envelope.economic_version,
          int(envelope.beneficiary, 16), envelope.maximum_developer_fee_bps, envelope.capabilities],
     ))
 
 
-def _verify_reviewed_graph(client: Web3, registry: str, orchestrator: str, implementation: str, envelope: LaunchEnvelopeV2, topology: ProfileTopologyV1, block: LaunchBlock) -> None:
+def _verify_profile_graph(client: Web3, registry: str, orchestrator: str, implementation: str, envelope: LaunchEnvelopeV2, topology: ProfileTopologyV1, block: LaunchBlock) -> None:
     graph = envelope.graph
     for getter, expected in (("poolManager", graph.manager), ("hookRoot", graph.hook_root), ("oracleFactory", graph.oracle_factory), ("locker", graph.locker), ("collectorFactory", graph.collector_factory), ("hookDeployer", graph.hook_deployer), ("implementationRegistry", registry)):
         if _call(client, implementation, _PROFILE_DEPENDENCY_ABI, getter, [], block).lower() != expected.lower():
@@ -808,9 +810,9 @@ def _certified_profile(client: Web3, registry: str, orchestrator: str, profile_i
             raise ValueError("reviewed V4 profile must retain its exact venue and hook topology")
         if _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "PROFILE_ID", [], block) != profile_id or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "CONFIG_SCHEMA", [], block) != schema or _call(client, implementation, _PROFILE_DEPENDENCY_ABI, "CONFIG_VERSION", [], block) != version:
             raise ValueError("V4 adapter does not implement the approved profile, schema and version")
-        envelope, terms = _reviewed_metadata(client, registry, profile_id, block)
+        envelope, terms = _profile_metadata(client, registry, profile_id, block)
         ceiling = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "protocolMaximumDeveloperFeeBps", [], block)
-        if _reviewed_profile_id(envelope) != profile_id or envelope.config_version != version or envelope.topology != expected_topology or envelope.economic_version != 3 or envelope.flags != 0 or envelope.callback_flags != V4_LIFECYCLE_HOOK_PERMISSIONS or envelope.callback_mask != V4_LIFECYCLE_HOOK_PERMISSION_MASK or envelope.capabilities != profile[6] or envelope.capabilities != adapter[2]:
+        if _profile_id(envelope) != profile_id or envelope.config_version != version or envelope.topology != expected_topology or envelope.economic_version != 3 or envelope.flags != 0 or envelope.callback_flags != V4_LIFECYCLE_HOOK_PERMISSIONS or envelope.callback_mask != V4_LIFECYCLE_HOOK_PERMISSION_MASK or envelope.capabilities != profile[6] or envelope.capabilities != adapter[2]:
             raise ValueError("reviewed envelope identity, version, capabilities or callbacks differ from admission")
         if hex_bytes(keccak(abi_encode([_tuple_type(LAUNCH_BOUNDS_COMPONENTS_V2)], [_struct_tuple(LAUNCH_BOUNDS_COMPONENTS_V2, envelope.bounds)]))) != hex_bytes(envelope.config_bounds_digest):
             raise ValueError("reviewed configuration bounds do not match their admitted digest")
@@ -818,7 +820,7 @@ def _certified_profile(client: Web3, registry: str, orchestrator: str, profile_i
             raise ValueError("reviewed developer terms are disabled or differ from their exact admitted envelope")
         if envelope.graph.manager.lower() != profile[3].lower() or envelope.graph.hook_root.lower() != profile[5].lower():
             raise ValueError("reviewed venue/root differ from the registered deployment graph")
-        _verify_reviewed_graph(client, registry, orchestrator, implementation, envelope, topology, block)
+        _verify_profile_graph(client, registry, orchestrator, implementation, envelope, topology, block)
     else:
         if topology.hook_topology != LifecycleHookTopology.NONE or topology.hook_deployer.lower() != ZERO_ADDRESS or topology.hook_creation_code_hash != ZERO_HASH:
             raise ValueError("Abyss profile cannot claim a V4 hook topology")
@@ -849,7 +851,7 @@ def read_lifecycle_profiles(client: Web3, *, orchestrator: str, profile_ids: Seq
         reason = None
         envelope = terms = None
         if profile[1] in (V4_LIFECYCLE_CONFIG_SCHEMA, V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA):
-            envelope, terms = _reviewed_metadata(client, registry, profile_id, pinned)
+            envelope, terms = _profile_metadata(client, registry, profile_id, pinned)
         try:
             adapter, profile, topology = _certified_profile(client, registry, orchestrator, profile_id, pinned, LAUNCH_REQUIRED_CAPABILITIES_V1)
         except (ValueError, LaunchRpcError) as error:
@@ -881,6 +883,16 @@ def _pool_bound_creation_code(client: Web3, topology: ProfileTopologyV1, block: 
     return creation_code
 
 
+def _validate_v4_market(config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig, market: LifecycleMarketConfig, token: str, envelope: LaunchEnvelopeV2, ceiling: int) -> None:
+    bounds = envelope.bounds
+    if config.version != market.config_version or hex_bytes(config.profile_id) != hex_bytes(market.profile_id) or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()) or config.developer_fee_bps > envelope.maximum_developer_fee_bps or config.developer_fee_bps > ceiling:
+        raise ValueError("reviewed market profile, stable author, terms digest or explicit developer rate differs from admission")
+    if config.treasury.lower() != envelope.protocol_treasury.lower() or config.protocol_fee_denominator != envelope.protocol_fee_denominator or isinstance(config.hook_fee_pips, bool) or not isinstance(config.hook_fee_pips, int) or not 0 <= config.hook_fee_pips < 1_000_000 or isinstance(config.lp_fee_pips, bool) or not isinstance(config.lp_fee_pips, int) or not 0 <= config.lp_fee_pips < 1_000_000 or not bounds.minimum_tick_spacing <= config.tick_spacing <= bounds.maximum_tick_spacing or config.fee_mode not in (0, 1) or not bounds.fee_mode_flags & (1 << config.fee_mode) or config.external_liquidity_disabled != bounds.external_liquidity_disabled or hex_bytes(config.oracle_config_id) != hex_bytes(bounds.oracle_config_id):
+        raise ValueError("reviewed market economics exceed or differ from the exact admitted bounds")
+    if not 1 <= len(config.positions) <= bounds.maximum_positions:
+        raise ValueError("positions exceed the reviewed offering bounds")
+
+
 def _admit_market_config(client: Web3, registry: str, market: LifecycleMarketConfig, token: str, adapter: Sequence[Any], profile: Sequence[Any], topology: ProfileTopologyV1, block: LaunchBlock, required: int) -> tuple[LaunchEnvelopeV2 | None, LifecycleDeveloperTerms | None]:
     if profile[1] == ABYSS_LIFECYCLE_CONFIG_SCHEMA:
         positions = abi_decode([_tuple_type(ABYSS_MARKET_CONFIG_COMPONENTS_V1)], bytes.fromhex(hex_bytes(market.config)[2:]))[0][-1]
@@ -888,15 +900,9 @@ def _admit_market_config(client: Web3, registry: str, market: LifecycleMarketCon
     else:
         config = decode_lifecycle_pool_bound_v4_market_config(market.config) if topology.hook_topology == LifecycleHookTopology.POOL_BOUND_V4 else decode_lifecycle_v4_market_config(market.config)
         positions = config.positions
-        envelope, terms = _reviewed_metadata(client, registry, bytes.fromhex(hex_bytes(market.profile_id)[2:]), block)
-        bounds = envelope.bounds
+        envelope, terms = _profile_metadata(client, registry, bytes.fromhex(hex_bytes(market.profile_id)[2:]), block)
         ceiling = _call(client, registry, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI, "protocolMaximumDeveloperFeeBps", [], block)
-        if config.version != market.config_version or hex_bytes(config.profile_id) != hex_bytes(market.profile_id) or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()) or config.developer_fee_bps > envelope.maximum_developer_fee_bps or config.developer_fee_bps > ceiling:
-            raise ValueError("reviewed market profile, stable author, terms digest or explicit developer rate differs from admission")
-        if config.treasury.lower() != envelope.protocol_treasury.lower() or config.protocol_fee_denominator != envelope.protocol_fee_denominator or config.hook_fee_pips > bounds.maximum_hook_fee_pips or config.lp_fee_pips > bounds.maximum_lp_fee_pips or not bounds.minimum_tick_spacing <= config.tick_spacing <= bounds.maximum_tick_spacing or not bounds.fee_mode_flags & (1 << config.fee_mode) or config.external_liquidity_disabled != bounds.external_liquidity_disabled or hex_bytes(config.oracle_config_id) != hex_bytes(bounds.oracle_config_id):
-            raise ValueError("reviewed market economics exceed or differ from the exact admitted bounds")
-        if not 1 <= len(positions) <= bounds.maximum_positions:
-            raise ValueError("positions exceed the reviewed offering bounds")
+        _validate_v4_market(config, market, token, envelope, ceiling)
     if len(positions) > 1:
         required |= LAUNCH_MULTI_POSITION_CAPABILITY_V1
         if adapter[2] & required != required or profile[6] & required != required:
@@ -1779,7 +1785,7 @@ def _assert_planned_identity(launch: PlannedLaunch) -> None:
         raise ValueError("the reviewed economic plan/identity changed; create a new explicit plan")
 
 
-def _assert_reviewed_deployments(reviewed: PlannedLaunch, current: PlannedLaunch) -> None:
+def _assert_hook_deployments(reviewed: PlannedLaunch, current: PlannedLaunch) -> None:
     if not current.simulation.transactions:
         return
     if reviewed.predicted_token.lower() != current.predicted_token.lower():
@@ -1817,7 +1823,7 @@ def simulate_launch_plan(client: Web3, launch: PlannedLaunch | LaunchPlanV1, *, 
         selected, plan = mode, launch
     current = plan_launch(client, plan, account=account, mode=selected, **options)
     if isinstance(launch, PlannedLaunch):
-        _assert_reviewed_deployments(launch, current)
+        _assert_hook_deployments(launch, current)
     return current.simulation
 
 
@@ -1873,7 +1879,7 @@ def build_next_transaction(
     else:
         planned = plan_launch(client, plan, account=account, mode=selected, limits=limits, prepare_batch_size=prepare_batch_size, confirmations=confirmations, transaction_hashes=transaction_hashes, fork=fork, data_fee_estimator=data_fee_estimator)
         if isinstance(launch, PlannedLaunch):
-            _assert_reviewed_deployments(launch, planned)
+            _assert_hook_deployments(launch, planned)
         proof = planned.simulation
     if not proof.admitted:
         raise ValueError("the next transaction has no verified admission: " + "; ".join(proof.reasons))

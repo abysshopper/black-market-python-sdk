@@ -12,9 +12,9 @@ Built on [web3.py](https://web3py.readthedocs.io). Python 3.10+.
 pip install black-market-sdk
 ```
 
-## Reviewed lifecycle cutover
+## Lifecycle cutover
 
-The launch API is `LaunchPlanV1` with the reviewed V2 implementation registry and
+The launch API is `LaunchPlanV1` with the V2 implementation registry and
 V3 source-aware fee economics. Historical Atomic/Unified builders, template
 catalogs, conversion helpers, fee-only ABIs, old launch-address views and V4
 profile/adapter ID constants have been removed. Old shared config2 and bound
@@ -41,26 +41,43 @@ for profile in profiles:
 
 Enumeration calls the registry's exact `profileIds(offset,limit)`, `profile`,
 `adapter`, `profileTopology` and `requireEligible` getters. IDs are registry data,
-not SDK allowlists. The supported codecs are reviewed shared V4/schema4,
-reviewed pool-bound V4/schema5, and canonical Abyss/schema1. Unknown schemas
+not SDK allowlists. The supported codecs are shared V4/schema4,
+pool-bound V4/schema5, and canonical Abyss/schema1. Unknown schemas
 produce an explicit unsupported-schema reason, distinct from position bounds or
-missing multi-position capability. Admission also verifies adapter runtime,
-core/dependency binding, the frozen envelope, live developer terms and the exact
-reviewed graph. Disabled offerings remain discoverable but cannot bind new or
-pending source terms.
+missing multi-position capability. Admission verifies adapter runtime and core/dependency binding.
+V4 additionally verifies the frozen envelope, live developer terms and exact admitted
+graph. Canonical Abyss has no author envelope or developer terms; its config-1 graph
+is certified by the registry. Disabled offerings remain discoverable but cannot launch.
 
 `LifecycleProfile.envelope` is a `LaunchEnvelopeV2` dataclass with
 `LaunchBoundsV2` and `LaunchGraphV2`. `developer_terms` contains
 `adapter`, stable `beneficiary`, `maximum_developer_fee_bps`, `terms_digest`, and
 current `enabled`. `topology` remains the registry-certified `ProfileTopologyV1`.
-Both reviewed V4 topologies record their deployer and creation-code hash.
+Both V4 topologies record their deployer and creation-code hash.
 
-The clean pool-only deployment removes the legacy certification child and unsigned admission.
-Registry ABI reads use `profileEnvelope` / `profileId`; signed admission is `registerProfile`.
+The keystore-only `DeployPoolLaunchV1` installs fixed pool-bound V4 and canonical Abyss:
+two adapters and five automatically admitted profiles. The legacy certification child and
+arbitrary unsigned V4 admission are absent. Registry ABI reads use `profileEnvelope` / `profileId`;
+V4 uses signed six-argument `registerProfile`. Admin-only
+`registerAbyssProfile(uint8,registration)` independently certifies four canonical config-1
+variants without author terms or royalties.
 Pool-specific ABI exports are `POOL_HOOK_DEPLOYER_V1_ABI`, `POOL_MARKET_ADAPTER_V1_ABI`
 and `POOL_FEE_COLLECTOR_FACTORY_V1_ABI`. Renamed types/ABI exports have no old-name aliases.
 Admission uses EIP-712 domain `Black Market Launch Registry`, version `2`; old author consent
-must be regenerated. Config tuples and profile/dependency hash preimages remain unchanged.
+must be regenerated. Market configuration tuple layouts remain unchanged; bounds encoding changes
+below require fresh profile identities and consent.
+
+`LaunchBoundsV2` now has seven fields beginning with `minimum_tick_spacing`; both former LP/hook
+fee-ceiling fields are removed. Creators independently select valid market LP and hook rates
+below 1,000,000 pips, including 15%, without profile-level trading-fee caps. Author royalty
+ceilings remain separate. Regenerate bounds digests, profile IDs and consent for the new tuple.
+
+Shared contracts are `FixedFeeSharedHookV1`, `SharedHookDeployerV1` and
+`SharedMarketAdapterV1`; the shared adapter ABI export is
+`SHARED_MARKET_ADAPTER_V1_ABI`. The factory getter is `dependencyDigest(address)`.
+Identity domains are `black-market.launch-profile.v2`,
+`black-market.v4-dependencies.v2` and `black-market.pool-bound-market-economics.v1`.
+There are no old-name aliases; regenerate profile identities, commitments and author consent.
 
 ### Exact current configuration
 
@@ -114,7 +131,7 @@ the finalized graph and factory binding, and preserves token identity. Once a
 launch has begun, its economic plan cannot be rewritten.
 
 The commitment domain is exactly
-`black-market.reviewed-pool-bound-market-economics.v1`. Only `hook_salt` is
+`black-market.pool-bound-market-economics.v1`. Only `hook_salt` is
 normalized; profile, terms, author, developer rate and every economic/position
 field remain bound. Prediction uses the exact reviewed creation chunks plus all
 18 scalar constructor words. Runtime/initcode limits are 24,576/49,152 bytes.
