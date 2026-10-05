@@ -1,4 +1,4 @@
-![Abyss](assets/splash.png)
+![Abyss](https://raw.githubusercontent.com/abysshopper/black-market-python-sdk/main/assets/splash.png)
 
 # Black Market Python SDK
 
@@ -62,8 +62,8 @@ The deployed mainnet launcher offers pool-bound V4/config5 and canonical
 Abyss/config1. Staged preparation still ends in one indivisible activation.
 The SDK does not silently change fees, funding, execution mode, or plan identity.
 
-See the [launch guide](docs/launch-guide.md) for configuration layouts, runnable
-CLI commands, simulation requirements, recovery, author fees, and metadata API usage.
+See the [launch guide](https://github.com/abysshopper/black-market-python-sdk/blob/main/docs/launch-guide.md)
+for configuration layouts, runnable examples, simulation requirements, recovery, author fees, and metadata API usage.
 
 ## Networks and configuration
 
@@ -87,15 +87,58 @@ DEX fee tiers, pool/router/position ABIs, TickMath, lending clients, reserve/use
 normalization, and exact RAY/WAD helpers are also exported at the package root.
 Override precedence and the full deployment view are documented in the guide.
 
-## Individually runnable token-launch smoke
+## Eight standalone token-launch examples
 
-`examples/smoke_launch.py` consumes the [owned local fork fixture](../black-market/docs/sdk-launch-smoke.md)
-and runs one of eight ERC20/ERC404, reward, burn, V4/Abyss cases at a time.
-`--list` is offline; the default only prepares a plan. `--execute` enables real
-token creation and API publication, or explicitly partial `--chain-only` proof.
-No production key is used. Each fresh `--output` retains redacted diagnostics and
-submitted hashes even on failure; private session recovery is mode 0600.
-See the [runner commands and artifacts](docs/launch-guide.md#individually-runnable-token-creation-smoke).
+**Running any command below deliberately spends funds, creates permanent tokens
+and markets on chain4663, and writes to your configured launch API.** Each command
+launches its fixed ERC20/ERC404, reward, burn, venue and position case. There are
+no flags, fixture files, default wallet, API-skip mode, or automatic relaunches.
+
+Install once and copy the configuration template to the working directory:
+
+```sh
+python -m pip install black-market-sdk
+cp examples/.env.example .env
+chmod 600 .env
+```
+
+Set `PRIVATE_KEY` and `LAUNCH_API_URL` in `.env` (or your process environment).
+Use your funded wallet and actual launch API/indexer; the API URL has no default.
+`RPC_URL` is optional and defaults to the SDK official Robinhood mainnet RPC.
+Optional `SIMULATION_RPC_URL` selects a separate exclusively owned loopback Anvil;
+otherwise the SDK uses the RPC's real native simulation backend. Existing process
+environment wins; working-directory `.env` is loaded once without shell expansion.
+Optional `NFT_BASE_URI` is your hosted ERC404 NFT base URI; it defaults to empty,
+without claiming hosted NFT metadata exists.
+
+Run exactly one command for the case you want:
+
+```sh
+python examples/launch_erc20_v4.py
+python examples/launch_erc20_abyss.py
+python examples/launch_erc404_v4.py
+python examples/launch_erc404_abyss.py
+python examples/launch_erc20_staking_v4.py
+python examples/launch_erc20_dividends_abyss.py
+python examples/launch_erc20_burn_mixed.py
+python examples/launch_erc404_dividends_mixed.py
+```
+
+To use these outside the checkout, copy the selected example,
+`examples/launch_examples.py`, and `examples/_launch_support.py` together beside
+each other (plus `.env.example` for setup). They use the installed public
+`black_market_sdk`; no monorepo manifest or fixture catalogue is needed.
+
+The SDK admits the full unchanged economics before API staging; the wallet signs
+exact SDK envelopes locally. Every run creates fresh
+`launch-results/<timestamp-case-random>/` diagnostics. Computed signed hashes are
+durably recorded **before broadcast**; raw signed transactions and session recovery
+are mode-0600 private files. Failures retain logs/hashes and never retry broadcast,
+relaunch, or roll back execution. Inspect the original hash/session before another run.
+Default 16M gas, 131072-byte calldata and 1000-bps headroom are **EXAMPLE ceilings**,
+not verified provider limits; gas is bounded by the observed block. See the
+[setup, economics and recovery guide](https://github.com/abysshopper/black-market-python-sdk/blob/main/docs/launch-guide.md#standalone-token-launch-examples)
+for optional environment ceilings and exact evidence.
 
 ## Tests and real HTTP API integration
 

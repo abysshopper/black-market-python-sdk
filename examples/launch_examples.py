@@ -1,32 +1,29 @@
-"""Prepare or execute ONE token-launch case on explicitly owned local Anvil nodes.
-
-The shared fixture supplies cases and endpoints. Without --execute this only reads
-chain provenance and finalizes a plan offchain: no signing, simulation, or writes.
---execute stages signed metadata, launches the real token, verifies chain state,
-and publishes its activation hash to the real configured API. --chain-only is an
-explicit partial proof; it never reports full end-to-end success.
-"""
+"""Shared implementation for the eight deliberate, real token-launch examples."""
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import json
-import re
+import os
 import secrets
 import signal
+import shlex
 import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from web3 import Web3
 from web3._utils.events import get_event_data
 
+from eth_account import Account
+from eth_abi import encode
 from black_market_sdk import (
+    ABYSS_FACTORY_ABI,
+    LAUNCH_FUNDING_ESCROW_V1_ABI,
+    ROBINHOOD_MAINNET_RPC,
     ABYSS_LIFECYCLE_CONFIG_SCHEMA,
     ABYSS_MARKET_ADAPTER_V1_ABI,
     ABYSS_POSITION_LOCKER_ABI,
@@ -78,11 +75,17 @@ from black_market_sdk import (
     read_launch_progress,
     read_lifecycle_profiles,
 )
-from black_market_sdk.lifecycle_rpc import hex_bytes, quantity, read_block, rpc, rpc_transaction
-from _smoke_support import (
-    Artifacts, JournalHTTPProvider, Redactor, SmokeFailure, error_details,
-    loopback_url, portable, positive_seconds, rpc_identity,
-)
+from black_market_sdk.lifecycle_rpc import hex_bytes, quantity, read_block, rpc
+if __package__:
+    from ._launch_support import (
+        Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure,
+        error_details, loopback_url, mainnet_url, portable,
+    )
+else:
+    from _launch_support import (
+        Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure,
+        error_details, loopback_url, mainnet_url, portable,
+    )
 
 ZERO_ADDRESS = "0x" + "00" * 20
 UNIT = 10**18
@@ -91,13 +94,10 @@ LIQUIDITY = 1000 * UNIT
 BUY_INPUT = 10**15
 CONFIRMATIONS = 1
 CHAIN_TIMEOUT_SECONDS = 90
-_LIMIT_FIELDS = {
-    "chainTransactionGasLimit": "chain_transaction_gas_limit",
-    "rpcTransactionGasLimit": "rpc_transaction_gas_limit",
-    "accountTransactionGasLimit": "account_transaction_gas_limit",
-    "maxCalldataBytes": "max_calldata_bytes",
-    "headroomBps": "headroom_bps",
-}
+# EXAMPLE ceilings, not verified provider/account limits. Admission still proves
+# the full case and bounds every transaction by the actual observed block.
+EXAMPLE_GAS_CEILING = 16_000_000
+_ENV_LOADED = False
 
 
 class Cancellation:
@@ -110,7 +110,7 @@ class Cancellation:
 
     def check(self):
         if self.signum is not None:
-            raise SmokeFailure("launch smoke interrupted; submitted chain state is preserved", code="INTERRUPTED", diagnostic={"signal": self.signum})
+            raise ExampleFailure("launch example interrupted; submitted chain state is preserved", code="INTERRUPTED", diagnostic={"signal": self.signum})
 
     def sleep(self, seconds):
         deadline = time.monotonic() + seconds
@@ -125,7 +125,7 @@ class Cancellation:
 
 def require(condition: bool, message: str, *, code="OBSERVATION_MISMATCH", diagnostic=None):
     if not condition:
-        raise SmokeFailure(message, code=code, diagnostic=diagnostic)
+        raise ExampleFailure(message, code=code, diagnostic=diagnostic)
 
 
 def address_equal(left, right) -> bool:
@@ -136,80 +136,88 @@ def contract(client, address, abi):
     return client.eth.contract(address=Web3.to_checksum_address(address), abi=abi)
 
 
-def validate_cases(cases):
-    require(isinstance(cases, list) and bool(cases), "fixture cases must be a nonempty catalogue", code="INVALID_CONFIGURATION")
-    ids = set()
-    for case in cases:
-        require(isinstance(case, dict), "each catalogue case must be an object", code="INVALID_CONFIGURATION")
-        case_id = case.get("id")
-        require(isinstance(case_id, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", case_id) and case_id not in ids,
-                "catalogue case IDs must be safe and unique", code="INVALID_CONFIGURATION")
-        ids.add(case_id)
-        require(type(case.get("tokenKind")) is int and case["tokenKind"] in (0, 1) and type(case.get("rewardMode")) is int and case["rewardMode"] in (0, 1, 2),
-                "unsupported token kind or reward mode", code="INVALID_CONFIGURATION")
-        require(case.get("mode") in ("atomic", "staged"), "case mode must be atomic or staged", code="INVALID_CONFIGURATION")
-        markets = case.get("markets")
-        require(isinstance(markets, list) and 1 <= len(markets) <= 2, "cases require one or two complete markets", code="INVALID_CONFIGURATION")
-        require(type(case.get("buysPerMarket")) is int and 1 <= case["buysPerMarket"] <= 2, "unsupported opening buy count", code="INVALID_CONFIGURATION")
-        venues = set()
-        for market in markets:
-            require(isinstance(market, dict) and market.get("venue") in ("v4", "abyss"), "unsupported market venue", code="INVALID_CONFIGURATION")
-            require(market["venue"] not in venues, "each venue appears at most once per quote", code="INVALID_CONFIGURATION")
-            venues.add(market["venue"])
-            require(type(market.get("positions")) is int and 1 <= market["positions"] <= 3, "unsupported position count", code="INVALID_CONFIGURATION")
-            require(type(market.get("feeMode", 0)) is int and market.get("feeMode", 0) in (0, 1), "unsupported V4 fee mode", code="INVALID_CONFIGURATION")
-            require(market["venue"] == "v4" or "feeMode" not in market, "Abyss cases cannot set V4 fee mode", code="INVALID_CONFIGURATION")
-            require(not set(market) - {"venue", "positions", "feeMode"}, "unknown market variation", code="INVALID_CONFIGURATION")
-        burn = case.get("burnBps", 0)
-        require(type(burn) is int and 0 <= burn < 10000 and (not burn or case["rewardMode"] == 0), "unsupported burn/reward combination", code="INVALID_CONFIGURATION")
-        require(not set(case) - {"id", "description", "tokenKind", "rewardMode", "mode", "markets", "buysPerMarket", "burnBps"},
-                "unknown case variation", code="INVALID_CONFIGURATION")
-    return cases
+def load_environment(redactor):
+    """Load working-directory .env once; existing process values always win."""
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    path = Path.cwd() / ".env"
+    if path.exists():
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            key = key.strip()
+            require(separator and key.isidentifier() and key.isascii(),
+                    f"invalid .env assignment on line {line_number}", code="INVALID_CONFIGURATION")
+            lexer = shlex.shlex(value, posix=True)
+            lexer.whitespace_split = True
+            lexer.commenters = "#"
+            words = list(lexer)
+            require(len(words) <= 1, f"quote .env values containing spaces on line {line_number}",
+                    code="INVALID_CONFIGURATION")
+            value = words[0] if words else ""
+            if any(part in key.upper() for part in ("KEY", "SECRET", "TOKEN", "PASSWORD", "AUTH")):
+                redactor.remember(value)
+            if key.endswith("_URL"):
+                redactor.remember_url(value)
+            os.environ.setdefault(key, value)
+    _ENV_LOADED = True
 
 
-def load_fixture(path: Path):
-    fixture = json.loads(path.read_text(encoding="utf-8"))
-    require(isinstance(fixture, dict) and fixture.get("schema") == "black-market.launch-smoke-fixture.v1" and fixture.get("fixtureOnly") is True,
-            "an explicit fixtureOnly local launch-smoke fixture is required", code="INVALID_CONFIGURATION")
-    validate_cases(fixture.get("cases"))
-    return fixture
-
-
-def validate_fixture(fixture, api_override=None):
-    require(fixture.get("chainId") == "4663", "fixture must fork the current chain4663 deployment", code="INVALID_CONFIGURATION")
+def example_configuration(artifacts):
+    load_environment(artifacts.redact)
+    artifacts.redact.secrets.update(Redactor().secrets)
+    private_key = os.environ.get("PRIVATE_KEY", "").strip()
+    api_url = os.environ.get("LAUNCH_API_URL", "").strip()
+    artifacts.redact.remember(private_key)
+    artifacts.redact.remember_url(api_url)
+    require(bool(private_key), "PRIVATE_KEY is required in .env or environment", code="INVALID_CONFIGURATION")
+    require(bool(api_url), "LAUNCH_API_URL is required in .env or environment", code="INVALID_CONFIGURATION")
+    creator = Account.from_key(private_key).address
+    source_url = os.environ.get("RPC_URL") or ROBINHOOD_MAINNET_RPC
+    simulation_url = os.environ.get("SIMULATION_RPC_URL") or None
+    artifacts.redact.remember_url(source_url)
+    artifacts.redact.remember_url(simulation_url)
+    # HTTPS for remote providers; explicit loopback allows owned-local verification.
+    source_url = mainnet_url(source_url, api=True) if source_url.startswith("http://") else mainnet_url(source_url)
+    api_url = mainnet_url(api_url, api=True)
+    if simulation_url:
+        simulation_url = loopback_url(simulation_url, rpc=True)
+        source_endpoint = urlsplit(source_url)
+        simulation_endpoint = urlsplit(simulation_url)
+        require(not (source_endpoint.hostname in {"localhost", "127.0.0.1", "::1"}
+                     and source_endpoint.port == simulation_endpoint.port),
+                "simulation and execution endpoints must be separate", code="INVALID_CONFIGURATION")
     deployment = get_launch_addresses(4663)
-    require(address_equal(fixture.get("orchestrator"), deployment.orchestrator), "fixture orchestrator is not the current SDK deployment", code="INVALID_CONFIGURATION")
-    require(address_equal(fixture.get("quoteAsset"), deployment.wrapped_native) and fixture.get("quoteDecimals") == 18,
-            "fixture quote must be canonical 18-decimal wrapped native", code="INVALID_CONFIGURATION")
-    creator = fixture.get("creator")
-    require(isinstance(creator, str) and Web3.is_address(creator) and int(creator, 16) != 0, "fixture creator must be a nonzero unlocked dev account", code="INVALID_CONFIGURATION")
-    oracle = fixture.get("oracleConfigId")
-    require(isinstance(oracle, str) and re.fullmatch(r"0x[0-9a-fA-F]{64}", oracle) and int(oracle, 16) != 0,
-            "fixture requires a nonzero registered oracleConfigId", code="INVALID_CONFIGURATION")
-    source = loopback_url(fixture.get("rpcUrl"), rpc=True)
-    fork = loopback_url(fixture.get("forkRpcUrl"), rpc=True)
-    require(rpc_identity(source) != rpc_identity(fork), "execution and simulation Anvil endpoints must be separate", code="INVALID_CONFIGURATION")
-    limits = fixture.get("executionLimits")
-    require(isinstance(limits, dict) and set(limits) == {*_LIMIT_FIELDS, "provenance"}, "fixture must supply every supported execution limit without unknown caps", code="INVALID_CONFIGURATION")
-    require(isinstance(limits["provenance"], dict) and limits["provenance"].get("scope") == "controlled-local-measurement",
-            "execution limits require controlled-local-measurement provenance", code="INVALID_CONFIGURATION")
-    for name in _LIMIT_FIELDS:
-        value = limits[name]
-        require((type(value) is int or isinstance(value, str) and re.fullmatch(r"[0-9]+", value)) and int(value) >= (0 if name == "headroomBps" else 1),
-                f"invalid execution limit {name}", code="INVALID_CONFIGURATION")
-    api = api_override if api_override is not None else fixture.get("apiUrl")
-    if api is not None:
-        api = loopback_url(api)
-    return source, fork, api
+    return {
+        "chainId": 4663, "orchestrator": deployment.orchestrator,
+        "creator": creator, "quoteAsset": deployment.wrapped_native, "quoteDecimals": 18,
+        "rpcUrl": source_url, "forkRpcUrl": simulation_url, "apiUrl": api_url,
+    }, private_key
 
 
-def limit_resolver(fixture):
+def limit_resolver():
+    def ceiling(name, default):
+        value = os.environ.get(name, str(default))
+        require(value.isdecimal() and int(value) > 0, f"{name} must be a positive integer",
+                code="INVALID_CONFIGURATION")
+        return int(value)
+
+    chain = ceiling("LAUNCH_CHAIN_GAS_CAP", EXAMPLE_GAS_CEILING)
+    provider = ceiling("LAUNCH_RPC_GAS_CAP", EXAMPLE_GAS_CEILING)
+    account = ceiling("LAUNCH_ACCOUNT_GAS_CAP", EXAMPLE_GAS_CEILING)
+    calldata = ceiling("LAUNCH_CALLDATA_CAP", 131072)
+
     def resolve(_client, context):
         return LaunchExecutionLimits(
-            **{target: int(fixture["executionLimits"][source]) for source, target in _LIMIT_FIELDS.items()},
+            chain_transaction_gas_limit=min(chain, context.block.gas_limit),
+            rpc_transaction_gas_limit=provider, account_transaction_gas_limit=account,
+            max_calldata_bytes=calldata, headroom_bps=1000,
             observed_block_number=context.block.number, observed_block_hash=context.block.block_hash,
             chain_id=context.chain_id, account=context.account, orchestrator=context.orchestrator,
-            source="owned local fixture; controlled-local-measurement",
+            source="EXAMPLE ceilings; not verified provider/account limits",
         )
     return resolve
 
@@ -231,16 +239,16 @@ def fee_policies(token, quote, case):
     return tuple(policy(asset) for asset in sorted((token, quote), key=lambda item: int(item, 16)))
 
 
-def discover_profiles(client, fixture, artifacts, cancellation):
-    orchestrator = contract(client, fixture["orchestrator"], LAUNCH_LIFECYCLE_V1_ABI)
+def discover_profiles(client, configuration, artifacts, cancellation):
+    orchestrator = contract(client, configuration["orchestrator"], LAUNCH_LIFECYCLE_V1_ABI)
     registry_address = orchestrator.functions.registry().call()
     registry = contract(client, registry_address, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI)
     count = registry.functions.profileCount().call()
-    require(0 < count <= 1000, "registry discovery exceeds this bounded smoke catalogue", code="UNSUPPORTED_PROFILE_CATALOGUE")
+    require(0 < count <= 1000, "registry discovery exceeds the bounded example scan", code="UNSUPPORTED_PROFILE_CATALOGUE")
     profiles = []
     for offset in range(0, count, 100):
         cancellation.check()
-        profiles.extend(read_lifecycle_profiles(client, orchestrator=fixture["orchestrator"], offset=offset, limit=100))
+        profiles.extend(read_lifecycle_profiles(client, orchestrator=configuration["orchestrator"], offset=offset, limit=100))
     artifacts.event("profiles-discovered", registry=registry_address, profiles=profiles)
     v4 = [profile for profile in profiles if profile.admitted and profile.venue_kind == "uniswap-v4"
           and profile.topology.hook_topology == 2 and profile.topology.config_version == 5
@@ -259,26 +267,26 @@ def discover_profiles(client, fixture, artifacts, cancellation):
     return {"v4": v4, "abyss": abyss}
 
 
-def construct_plan(client, fixture, case, nonce, token_salt, artifacts, cancellation):
+def construct_plan(client, configuration, case, nonce, token_salt, artifacts, cancellation):
     block = read_block(client)
-    creator = Web3.to_checksum_address(fixture["creator"])
-    quote = Web3.to_checksum_address(fixture["quoteAsset"])
+    creator = Web3.to_checksum_address(configuration["creator"])
+    quote = Web3.to_checksum_address(configuration["quoteAsset"])
     draft = LaunchPlanV1(
-        chain_id=int(fixture["chainId"]), orchestrator=Web3.to_checksum_address(fixture["orchestrator"]),
+        chain_id=int(configuration["chainId"]), orchestrator=Web3.to_checksum_address(configuration["orchestrator"]),
         creator=creator, nonce=nonce,
         token=LifecycleTokenConfig(
-            kind=case["tokenKind"], reward_mode=case["rewardMode"], name="Smoke " + case["id"], symbol="SMOKE",
+            kind=case["tokenKind"], reward_mode=case["rewardMode"], name="Example " + case["id"], symbol="EXAMPLE",
             supply=(10000 if case["tokenKind"] == 1 else 1000000) * UNIT,
             nft_unit=100 * UNIT if case["tokenKind"] == 1 else 0,
-            metadata_uri="ipfs://sdk-smoke/" if case["tokenKind"] == 1 else "",
+            metadata_uri=os.environ.get("NFT_BASE_URI", "") if case["tokenKind"] == 1 else "",
             salt=token_salt, inventory_recipient=creator, burn_on_cancel=False,
         ),
         funding=(), fee_assets=(), markets=(), buys=(), deadline=block.timestamp + 3600, executor_fee_bps=275,
     )
     predicted = predict_launch_token(client, draft, block=block)
-    artifacts.result["chain"].update(chainId=fixture["chainId"], orchestrator=draft.orchestrator, creator=creator, predictedToken=predicted)
+    artifacts.result["chain"].update(chainId=configuration["chainId"], orchestrator=draft.orchestrator, creator=creator, predictedToken=predicted)
     artifacts.event("token-predicted", predictedToken=predicted, block=block)
-    offerings = discover_profiles(client, fixture, artifacts, cancellation)
+    offerings = discover_profiles(client, configuration, artifacts, cancellation)
     token0 = int(predicted, 16) < int(quote, 16)
     markets = []
     buys = []
@@ -295,7 +303,7 @@ def construct_plan(client, fixture, case, nonce, token_salt, artifacts, cancella
             config = LifecyclePoolBoundV4MarketConfig(
                 version=5, lp_fee_pips=3000, tick_spacing=60, sqrt_price_x96=2**96, hook_fee_pips=10000,
                 fee_mode=spec.get("feeMode", 0), protocol_fee_denominator=envelope.protocol_fee_denominator,
-                treasury=envelope.protocol_treasury, external_liquidity_disabled=True, oracle_config_id=fixture["oracleConfigId"],
+                treasury=envelope.protocol_treasury, external_liquidity_disabled=True, oracle_config_id=configuration["oracleConfigId"],
                 hook_salt=bytes(32), profile_id=profile.id, terms_digest=envelope.terms_digest,
                 developer_beneficiary=envelope.beneficiary, developer_fee_bps=0, positions=positions,
             )
@@ -303,7 +311,7 @@ def construct_plan(client, fixture, case, nonce, token_salt, artifacts, cancella
             version = 5
         else:
             positions = tuple(LifecycleAbyssPosition(lower, upper, LIQUIDITY, MARKET_BUDGET) for lower, upper in bands)
-            encoded = encode_lifecycle_abyss_market_config(LifecycleAbyssMarketConfig(3, 3000, fixture["oracleConfigId"], 2**96, positions))
+            encoded = encode_lifecycle_abyss_market_config(LifecycleAbyssMarketConfig(3, 3000, configuration["oracleConfigId"], 2**96, positions))
             version = 1
         markets.append(LifecycleMarketConfig(profile.registration["adapterId"], profile.id, quote, MARKET_BUDGET, version, encoded))
         for _ in range(case["buysPerMarket"]):
@@ -332,10 +340,10 @@ def api_client(url, *, timeout=15):
     return LaunchApiClient(LaunchApiConfig(base_url=url, allow_loopback_http=True, timeout=timeout))
 
 
-def stage_metadata(client, api, plan, artifacts, cancellation):
+def stage_metadata(client, api, plan, artifacts, cancellation, *, wallet):
     artifacts.enter("api-stage")
-    metadata = LaunchSessionMetadata(name=plan.token.name, symbol=plan.token.symbol, description="Local Python SDK token-creation smoke: " + artifacts.case_id)
-    key = "python-smoke-" + secrets.token_hex(16)
+    metadata = LaunchSessionMetadata(name=plan.token.name, symbol=plan.token.symbol, description="Python SDK launch example: " + artifacts.case_id)
+    key = "python-example-" + secrets.token_hex(16)
     nonce = "0x" + secrets.token_hex(32)
     deadline = int(time.time()) + 600
     typed_data = build_launch_attribution_typed_data(chain_id=plan.chain_id, verifying_contract=plan.orchestrator, wallet=plan.creator,
@@ -345,7 +353,7 @@ def stage_metadata(client, api, plan, artifacts, cancellation):
     artifacts.redact.remember(key)
     artifacts.save("recovery.private.json", recovery, private=True)
     cancellation.check()
-    signature = rpc(client, "eth_signTypedData_v4", [plan.creator, json.dumps(typed_data, separators=(",", ":"))])
+    signature = wallet.sign_typed_data(typed_data, verifying_contract=plan.orchestrator)
     artifacts.redact.remember(signature)
     authorization = LaunchAttributionAuthorization(nonce=nonce, deadline=deadline, signature=signature)
     request = LaunchSessionCreateRequest(chain_id=plan.chain_id, wallet=plan.creator, metadata=metadata, authorization=authorization)
@@ -378,7 +386,7 @@ def simulation_observation(launch):
 
 def validate_envelope(client, transaction, plan, limits):
     require(quantity(rpc(client, "eth_chainId", [])) == plan.chain_id and transaction["chainId"] == plan.chain_id,
-            "transaction chain differs from the owned fixture", code="TRANSACTION_IDENTITY_MISMATCH")
+            "transaction chain differs from configured chain", code="TRANSACTION_IDENTITY_MISMATCH")
     require(address_equal(transaction["from"], plan.creator), "transaction sender differs from committed creator", code="TRANSACTION_IDENTITY_MISMATCH")
     require(quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"])) == transaction["nonce"],
             "transaction nonce differs from settled account state", code="TRANSACTION_IDENTITY_MISMATCH")
@@ -407,7 +415,7 @@ def wait_receipt(client, row, artifacts, cancellation):
             trace = {"traceError": error_details(trace_error)}
         row["failureTrace"] = trace
         artifacts.save("receipts.json", artifacts.receipts)
-        raise SmokeFailure("actual submitted transaction reverted", code="TRANSACTION_REVERTED", diagnostic={"receipt": receipt, "trace": trace})
+        raise ExampleFailure("actual submitted transaction reverted", code="TRANSACTION_REVERTED", diagnostic={"receipt": receipt, "trace": trace})
     included_block = quantity(receipt["blockNumber"])
     while time.monotonic() < deadline:
         cancellation.check()
@@ -431,10 +439,10 @@ def wait_receipt(client, row, artifacts, cancellation):
     return receipt
 
 
-def execute_plan(client, fork_client, plan, case, fixture, artifacts, cancellation):
+def admit_plan(client, fork_client, plan, case, artifacts, cancellation):
     artifacts.enter("admission")
-    fork = create_controlled_launch_fork(client, fork_client, isolated=True)
-    limits = limit_resolver(fixture)
+    fork = create_controlled_launch_fork(client, fork_client, isolated=True) if fork_client is not None else None
+    limits = limit_resolver()
     cancellation.check()
     launch = plan_launch(client, plan, account=plan.creator, mode=case["mode"], limits=limits,
                          prepare_batch_size=1, confirmations=CONFIRMATIONS, fork=fork)
@@ -442,6 +450,10 @@ def execute_plan(client, fork_client, plan, case, fixture, artifacts, cancellati
     artifacts.save("admission.json", observation)
     artifacts.event("launch-admission", **observation)
     require(launch.admitted, "SDK refused this exact launch: " + "; ".join(launch.simulation.reasons), code="LAUNCH_NOT_ADMITTED", diagnostic=observation)
+    return launch, fork
+
+
+def execute_plan(client, launch, fork, plan, artifacts, cancellation, *, wallet):
     hashes = []
     activation_receipt = None
     maximum_steps = len(plan.markets) + len(launch.approvals) + 2
@@ -457,8 +469,8 @@ def execute_plan(client, fork_client, plan, case, fixture, artifacts, cancellati
         validate_envelope(client, transaction, plan, launch.limits)
         artifacts.enter("submit-" + step.kind)
         cancellation.check()
-        transaction_hash = hex_bytes(rpc(client, "eth_sendTransaction", [rpc_transaction(transaction)]))
-        row = artifacts.submitted(step.kind, transaction, transaction_hash)
+        row = wallet.send_transaction(step.kind, transaction)
+        transaction_hash = row["transactionHash"]
         hashes.append(transaction_hash)
         cancellation.check()
         artifacts.enter("receipt-" + step.kind)
@@ -636,119 +648,89 @@ def publish_activation(api, recovery, plan, predicted, receipt, timeout_seconds,
         artifacts.result["api"].update(status="passed", canonicalStatus=session["canonicalStatus"], token=predicted, transactionHash=transaction_hash, representation=detail)
         artifacts.event("publication-verified", token=predicted, transactionHash=transaction_hash)
         return
-    raise SmokeFailure("real API did not index and publish the activation before the bounded deadline", code="API_INDEX_TIMEOUT", diagnostic={"lastSession": last_pending, "transactionHash": transaction_hash, "timeoutSeconds": timeout_seconds})
+    raise ExampleFailure("real API did not index and publish the activation before the bounded deadline", code="API_INDEX_TIMEOUT", diagnostic={"lastSession": last_pending, "transactionHash": transaction_hash, "timeoutSeconds": timeout_seconds})
 
 
-def run(args, artifacts, cancellation):
-    require(args.fixture is not None and args.case is not None, "--fixture and exactly one --case are required", code="INVALID_CONFIGURATION")
-    fixture = load_fixture(args.fixture)
-    case = next((case for case in fixture["cases"] if case["id"] == args.case), None)
-    require(case is not None, "--case must select a fixture catalogue ID; use --list", code="INVALID_CONFIGURATION")
-    source_url, fork_url, api_url = validate_fixture(fixture, args.api_url)
-    require(not args.execute or args.chain_only or api_url is not None, "--execute requires an explicit real loopback API; use --chain-only to omit API", code="INVALID_CONFIGURATION")
-    artifacts.result.update(scope="chain-only" if args.execute and args.chain_only else "end-to-end" if args.execute else "plan-only", execution="requested" if args.execute else "not-run")
-    artifacts.result["api"].update(status="skipped" if args.execute and args.chain_only else "not-run", reason="explicit --chain-only" if args.chain_only and args.execute else "--execute required" if not args.execute else None, url=api_url)
-    nonce = secrets.randbits(256)
-    token_salt = "0x" + secrets.token_hex(32)
-    artifacts.save("run.json", {"fixture": fixture, "case": case, "nonce": str(nonce), "tokenSalt": token_salt,
-                                "execute": args.execute, "chainOnly": args.chain_only, "apiUrl": api_url, "publishTimeoutSeconds": args.publish_timeout_seconds})
-    client = Web3(JournalHTTPProvider(source_url, artifacts, node="execution", execute=args.execute))
+def run(case, artifacts, cancellation):
+    configuration, private_key = example_configuration(artifacts)
+    artifacts.result.update(network="chain4663", scope="end-to-end", execution="requested")
+    artifacts.result["api"].update(url=configuration["apiUrl"])
+    client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts, node="execution"))
+    wallet = LocalSigningWallet(client, artifacts, private_key=private_key,
+                                creator=configuration["creator"], chain_id=4663)
     artifacts.enter("provenance")
     cancellation.check()
-    node = rpc(client, "anvil_nodeInfo", [])
-    require(quantity(rpc(client, "eth_chainId", [])) == int(fixture["chainId"]), "actual RPC chain differs from fixture", code="CHAIN_IDENTITY_MISMATCH")
-    require(fixture["creator"].lower() in {account.lower() for account in rpc(client, "eth_accounts", [])}, "creator is not unlocked on the owned execution Anvil", code="CHAIN_IDENTITY_MISMATCH")
-    require(bool(client.eth.get_code(Web3.to_checksum_address(fixture["orchestrator"]))), "current orchestrator has no actual runtime", code="CHAIN_IDENTITY_MISMATCH")
-    quote = contract(client, fixture["quoteAsset"], ERC20_ABI)
-    require(quote.functions.decimals().call() == fixture["quoteDecimals"], "actual wrapped-native decimals differ from fixture", code="CHAIN_IDENTITY_MISMATCH")
-    artifacts.event("execution-node-verified", node=node, block=read_block(client), executionLimits=fixture["executionLimits"])
+    require(quantity(rpc(client, "eth_chainId", [])) == 4663,
+            "RPC must serve chain4663", code="CHAIN_IDENTITY_MISMATCH")
+    require(not client.eth.get_code(wallet.account.address), "creator must be an empty-code EOA",
+            code="CHAIN_IDENTITY_MISMATCH")
+    orchestrator = contract(client, configuration["orchestrator"], LAUNCH_LIFECYCLE_V1_ABI)
+    require(bool(client.eth.get_code(orchestrator.address)), "canonical orchestrator has no runtime",
+            code="CHAIN_IDENTITY_MISMATCH")
+    deployment = get_launch_addresses(4663)
+    require(address_equal(orchestrator.functions.registry().call(), deployment.registry),
+            "orchestrator registry differs from canonical SDK deployment", code="CHAIN_IDENTITY_MISMATCH")
+    escrow = contract(client, orchestrator.functions.fundingEscrow().call(), LAUNCH_FUNDING_ESCROW_V1_ABI)
+    require(address_equal(escrow.functions.wrappedNative().call(), configuration["quoteAsset"]),
+            "funding escrow wrapped native differs from SDK canonical WETH", code="CHAIN_IDENTITY_MISMATCH")
+    quote = contract(client, configuration["quoteAsset"], ERC20_ABI)
+    require(quote.functions.decimals().call() == 18, "canonical WETH must use 18 decimals",
+            code="CHAIN_IDENTITY_MISMATCH")
+    profiles = discover_profiles(client, configuration, artifacts, cancellation)
+    require(len(profiles["v4"]) == 1 and profiles["v4"][0].envelope is not None,
+            "canonical bound V4 oracle authority unavailable", code="PROFILE_UNAVAILABLE")
+    factory = contract(client, profiles["v4"][0].envelope.graph.oracle_factory, ABYSS_FACTORY_ABI)
+    oracle_id = hex_bytes(Web3.keccak(encode(["uint24", "uint16"], [1, 4096])))
+    require(tuple(factory.functions.oracleConfigs(bytes.fromhex(oracle_id[2:])).call()) == (1, 4096),
+            "canonical P1 oracle is not registered", code="CHAIN_IDENTITY_MISMATCH")
+    configuration["oracleConfigId"] = oracle_id
+    artifacts.event("execution-node-verified", block=read_block(client), configuration=configuration)
+    nonce = secrets.randbits(256)
+    token_salt = "0x" + secrets.token_hex(32)
+    artifacts.save("run.json", {"configuration": configuration, "case": case,
+                              "nonce": str(nonce), "tokenSalt": token_salt,
+                              "ceilings": "EXAMPLE ceilings; not verified provider/account limits"})
     artifacts.enter("plan")
-    plan, predicted = construct_plan(client, fixture, case, nonce, token_salt, artifacts, cancellation)
-    if not args.execute:
-        artifacts.enter("plan-only")
-        return "Plan prepared; launch not executed"
-    fork_client = Web3(JournalHTTPProvider(fork_url, artifacts, node="simulation", execute=True))
-    rpc(fork_client, "anvil_nodeInfo", [])
-    require(quantity(rpc(fork_client, "eth_chainId", [])) == plan.chain_id
-            and plan.creator.lower() in {account.lower() for account in rpc(fork_client, "eth_accounts", [])}, "simulation Anvil must mirror the chain and unlocked creator without impersonation", code="CHAIN_IDENTITY_MISMATCH")
-    api = api_client(api_url) if not args.chain_only else None
-    recovery = stage_metadata(client, api, plan, artifacts, cancellation) if api is not None else None
+    plan, predicted = construct_plan(client, configuration, case, nonce, token_salt, artifacts, cancellation)
+    fork_client = None
+    if configuration["forkRpcUrl"]:
+        fork_provider = JournalHTTPProvider(configuration["forkRpcUrl"], artifacts, node="simulation",
+                                           simulation_creator=plan.creator)
+        fork_client = Web3(fork_provider)
+        rpc(fork_client, "anvil_nodeInfo", [])
+        fork_provider.unlock_simulation_creator()
+        require(quantity(rpc(fork_client, "eth_chainId", [])) == plan.chain_id,
+                "simulation Anvil must mirror chain4663", code="CHAIN_IDENTITY_MISMATCH")
+    launch, fork = admit_plan(client, fork_client, plan, case, artifacts, cancellation)
+    api = api_client(configuration["apiUrl"])
+    recovery = stage_metadata(client, api, plan, artifacts, cancellation, wallet=wallet)
     artifacts.result["execution"] = "executed"
     artifacts.result["chain"]["status"] = "executing"
-    receipt, hashes = execute_plan(client, fork_client, plan, case, fixture, artifacts, cancellation)
+    receipt, hashes = execute_plan(client, launch, fork, plan, artifacts, cancellation, wallet=wallet)
     verify_chain(client, plan, case, predicted, receipt, hashes, artifacts, cancellation)
-    if args.chain_only:
-        artifacts.enter("chain-only-complete")
-        return "Chain-only launch verified; API skipped (not full end-to-end)"
-    publish_activation(api, recovery, plan, predicted, receipt, args.publish_timeout_seconds, artifacts, cancellation)
+    publish_activation(api, recovery, plan, predicted, receipt, 90, artifacts, cancellation)
     artifacts.enter("end-to-end-complete")
     return "Token launch and real API publication verified end-to-end"
 
 
-class Parser(argparse.ArgumentParser):
-    def error(self, message):
-        raise SmokeFailure(message, code="INVALID_CONFIGURATION")
-
-
-def parser():
-    argument_parser = Parser(description=__doc__)
-    argument_parser.add_argument("--fixture", type=Path, help="Required shared fixtureOnly local JSON from the owned fork setup")
-    argument_parser.add_argument("--case", help="Exactly one catalogue ID, never an implicit all-case run")
-    argument_parser.add_argument("--output", type=Path, help="Required fresh exclusive run directory; never overwrites a run")
-    argument_parser.add_argument("--list", action="store_true", help="List the fixture catalogue unsigned, without contacting any RPC/API")
-    argument_parser.add_argument("--execute", action="store_true", help="Explicitly allow signing, fork simulations, source chain transactions and API writes")
-    argument_parser.add_argument("--chain-only", action="store_true", help="Explicitly omit API work; success is only a chain proof")
-    argument_parser.add_argument("--api-url", help="Override fixture apiUrl with an actual owned loopback API; no default endpoint")
-    argument_parser.add_argument("--publish-timeout-seconds", type=positive_seconds, default=90, help="Bounded API indexing/publication deadline (default90)")
-    return argument_parser
-
-
-def argument_value(argv, name):
-    for index, value in enumerate(argv):
-        if value.startswith(name + "="):
-            return value.split("=", 1)[1]
-        if value == name and index + 1 < len(argv) and not argv[index + 1].startswith("--"):
-            return argv[index + 1]
-    return None
-
-
-def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
+def run_launch_example(case):
+    """Execute one fixed case; return exit status and always retain diagnostics."""
     artifacts = None
-    output = None
     cancellation = Cancellation()
     original_handlers = {}
     try:
-        # Reserve output before parsing/reading configuration so early failures are durable.
-        output = argument_value(argv, "--output")
-        if output is not None and not any(flag in argv for flag in ("--help", "-h", "--list")):
-            artifacts = Artifacts(Path(output), argument_value(argv, "--case") or "unknown")
-        args = parser().parse_args(argv)
-        require(args.fixture is not None, "--fixture is required; no live endpoint is selected", code="INVALID_CONFIGURATION")
-        if args.list:
-            fixture = load_fixture(args.fixture)
-            print(json.dumps({"sdk": "python", "signed": False, "rpcContacted": False, "cases": fixture["cases"]}, indent=2))
-            return 0
-        require(args.output is not None, "--output must name a fresh exclusive run directory", code="INVALID_CONFIGURATION")
-        if artifacts is None:
-            artifacts = Artifacts(args.output, args.case or "unknown")
+        from datetime import datetime, timezone
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        directory = Path.cwd() / "launch-results" / (stamp + "-" + case["id"] + "-" + secrets.token_hex(4))
+        artifacts = Artifacts(directory, case["id"])
         for signum in (signal.SIGINT, signal.SIGTERM):
             original_handlers[signum] = signal.signal(signum, cancellation.signal)
-        message = run(args, artifacts, cancellation)
+        message = run(case, artifacts, cancellation)
         cancellation.check()
         artifacts.finish()
         print(message + "; artifacts: " + str(artifacts.directory))
         return 0
-    except SystemExit as error:
-        if error.code == 0:
-            return 0
-        raise
     except BaseException as error:
-        if artifacts is None and output is not None and not Path(output).exists():
-            try:
-                artifacts = Artifacts(Path(output), argument_value(argv, "--case") or "unknown")
-            except OSError:
-                pass  # No diagnostic destination can be created; still report the original error.
         if artifacts is not None:
             if artifacts.stage.startswith("api-"):
                 artifacts.result["api"]["status"] = "failed"
@@ -756,14 +738,11 @@ def main(argv=None):
                 artifacts.result["chain"]["status"] = "failed"
             artifacts.finish(error)
             safe = artifacts.redact(error_details(error))
-            print(json.dumps({"status": "failed", "stage": artifacts.stage, "error": safe, "artifacts": str(artifacts.directory)}, indent=2), file=sys.stderr)
+            print(json.dumps({"status": "failed", "stage": artifacts.stage, "error": safe,
+                              "artifacts": str(artifacts.directory)}, indent=2), file=sys.stderr)
         else:
             print(json.dumps({"status": "failed", "error": Redactor()(error_details(error))}, indent=2), file=sys.stderr)
         return 1
     finally:
         for signum, handler in original_handlers.items():
             signal.signal(signum, handler)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

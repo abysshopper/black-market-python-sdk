@@ -11,3 +11,4 @@ venv/
 .env.*
 !.env.example
 *.private.json
+launch-results/

@@ -1,8 +1,8 @@
 """Consumer-visible commitment, admission and canonical recovery regressions.
 
 The portable vectors are shared with the Node SDK. Real complete AMM execution
-is exercised by examples/launch_lifecycle_smoke.py against the local manifest;
-these deterministic tests inject RPC failures/reorgs, never successful mock AMMs.
+is implemented by the standalone launch examples; these deterministic tests
+inject RPC failures/reorgs, never successful mock AMMs.
 """
 
 from __future__ import annotations

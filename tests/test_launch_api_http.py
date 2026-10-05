@@ -33,8 +33,9 @@ from black_market_sdk import (
     build_launch_attribution_typed_data,
     get_launch_addresses,
 )
-from examples import smoke_launch as smoke
-from _smoke_support import Artifacts
+from examples import launch_examples as example
+from examples import _launch_support as support
+from examples._launch_support import Artifacts, LocalSigningWallet
 
 pytestmark = pytest.mark.launch_api_http
 
@@ -217,31 +218,31 @@ def test_real_signature_domain_deadline_and_metadata_authorization_boundaries(ap
 
 
 @pytest.mark.launch_api_write
-def test_smoke_metadata_authorization_is_accepted_and_recoverable(
+def test_example_metadata_authorization_is_accepted_and_recoverable(
     api_settings, api_client, signed_account, tmp_path, monkeypatch,
 ):
-    """Exercise the smoke producer against real API authorization, not a copied deadline."""
+    """Exercise the example's real local signer and actual API authorization."""
     plan = LaunchPlanV1(
         chain_id=api_settings.chain_id, orchestrator=api_settings.orchestrator,
         creator=signed_account.address, nonce=1,
         token=LifecycleTokenConfig(
-            0, 0, "Smoke authorization boundary", "SMOKE", 1000000 * 10**18,
+            0, 0, "Example authorization boundary", "EXAMPLE", 1000000 * 10**18,
             0, "", bytes(32), signed_account.address, False,
         ),
         funding=(), fee_assets=(), markets=(), buys=(),
         deadline=int(time.time()) + 3600, executor_fee_bps=275,
     )
 
-    def sign_typed_data(_client, method, params):
-        if method != "eth_signTypedData_v4" or params[0] != signed_account.address:
-            raise AssertionError("only disposable-wallet attribution signing is supported")
-        return "0x" + bytes(signed_account.sign_message(
-            encode_typed_data(full_message=json.loads(params[1])),
-        ).signature).hex()
+    def chain_identity(_client, method, _params):
+        if method != "eth_chainId":
+            raise AssertionError("metadata-only integration must not send chain transactions")
+        return hex(api_settings.chain_id)
 
-    monkeypatch.setattr(smoke, "rpc", sign_typed_data)
-    artifacts = Artifacts(tmp_path / "smoke-authorization", "authorization-boundary")
-    recovery = smoke.stage_metadata(None, api_client, plan, artifacts, smoke.Cancellation())
+    monkeypatch.setattr(support, "rpc", chain_identity)
+    artifacts = Artifacts(tmp_path / "example-authorization", "authorization-boundary")
+    wallet = LocalSigningWallet(None, artifacts, private_key=signed_account.key,
+                                creator=plan.creator, chain_id=plan.chain_id)
+    recovery = example.stage_metadata(None, api_client, plan, artifacts, example.Cancellation(), wallet=wallet)
     created = recovery["session"]
     recovered = api_client.get_launch_upload_session(
         plan.chain_id, created["sessionId"], created["capability"],
@@ -252,3 +253,4 @@ def test_smoke_metadata_authorization_is_accepted_and_recoverable(
     assert recovered["metadata"]["symbol"] == plan.token.symbol
     assert recovered["token"] is None and recovered["transactionHash"] is None
     assert "capability" not in recovered
+    artifacts.finish()

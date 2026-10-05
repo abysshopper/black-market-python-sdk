@@ -208,89 +208,140 @@ python examples/launch_submit.py "$PLAN_JSON" --rpc-url "$RPC_URL" \
 ```
 
 Supply `--transaction-hash` and `--confirmations` for recovery. Do not use
-`--finalize-bound` after submission. For real owned-local-chain fixture execution,
-`LAUNCH_LIFECYCLE_RPC_URL=http://127.0.0.1:8545 python examples/launch_lifecycle_smoke.py "$MANIFEST_JSON"`
-requires an actual current deployment manifest linking `fixtures.plansFile`, complete
-plans, real pools/receipts, and matching execution limits. Each row is snapshot-isolated
-and rolled back. Unit wire fixtures are not deployed-chain smoke inputs.
+`--finalize-bound` after submission. For complete deliberate launches, use the
+standalone examples below rather than a manifest or fixture-driven harness.
 
-## Individually runnable token-creation smoke
+## Standalone token-launch examples
 
-`examples/smoke_launch.py` is separate from the snapshot/rollback proof driver above.
-It creates real tokens through the current deployed lifecycle on an owned local
-fork, leaves source-chain state intact for debugging, and selects exactly one case.
-The [shared setup guide](../../black-market/docs/sdk-launch-smoke.md) starts two
-separate Anvil nodes, checks current deployment provenance, and copies the eight
-shared cases into `black-market.launch-smoke-fixture.v1`. Run cases serially while
-that setup terminal stays open; the simulation node is an exclusively owned sandbox.
+These examples use the installed public `black_market_sdk` and run one fixed case
+per file. **Invoking an example with a configured wallet is your deliberate
+execution action: real funds are spent and token/market/custody state is permanent.**
+There are no CLI parameters, fixture files, default keys, chain-only mode, or
+unsigned plan-only variant. Use `launch_recipe.py` / `launch_submit.py` above for
+the separate unsigned plan workflow.
 
-From this SDK checkout, after installing `.[dev]`:
+### Setup once
+
+From this checkout, or with the selected file and its two helper files copied
+together into your own `examples/` directory:
 
 ```sh
-# In another terminal; requires Foundry and upstream read-only RPC access.
-python ../black-market/scripts/start_sdk_launch_smoke.py --output /tmp/my-launch-smoke
-
-# Offline catalogue/help; neither contacts RPC or API.
-python examples/smoke_launch.py --help
-python examples/smoke_launch.py --fixture /tmp/my-launch-smoke/fixture.json --list
-
-# Unsigned, read-only provenance + offchain salt finalization; no simulation writes.
-python examples/smoke_launch.py --fixture /tmp/my-launch-smoke/fixture.json \
-  --case erc20-v4-basic --output /tmp/python-launch-plan
-
-# Real token/markets/custody/buys, explicitly omitting the API.
-python examples/smoke_launch.py --fixture /tmp/my-launch-smoke/fixture.json \
-  --case erc404-dividends-mixed --execute --chain-only --output /tmp/python-chain-run
-
-# Full path: supply your actual local API/indexer configured against execution Anvil.
-python examples/smoke_launch.py --fixture /tmp/my-launch-smoke/fixture.json \
-  --case erc20-abyss-basic --execute --api-url http://127.0.0.1:42069 \
-  --publish-timeout-seconds 90 --output /tmp/python-api-run
+python -m pip install black-market-sdk
+cp examples/.env.example .env
+chmod 600 .env
 ```
 
-Every output directory must be fresh. No default live RPC/API, signing key, all-case
-mode, silent execution-mode fallback, market removal, or implicit relaunch exists.
-Without `--execute`, the result is `scope: plan-only`, with execution/API `not-run`;
-it says **“Plan prepared; launch not executed”**, not that a token was launched.
-`--chain-only` reports API `skipped` and is never full end-to-end proof.
+Edit working-directory `.env` to set `PRIVATE_KEY` and `LAUNCH_API_URL`. Both are
+required before any RPC/API call; the creator is derived from the key, never from
+an unlocked node account or a public development key. The API must run the real
+launch router, session database, current `LaunchActivated` indexer and public DTO
+against the execution chain. There is no guessed production API or silent API skip.
 
-Executed cases use fresh persisted nonce/token salt, discover bound V4/config5 and
-canonical Abyss/config1 **QUOTE_ORACLE profile3** from the live registry/adapter,
-and use the selected real registered oracle ID. ERC20 supply is 1,000,000 tokens;
-ERC404 supply is 10,000 tokens with 100-token NFT units. `plan_launch` and
-`build_next_transaction` prove the unchanged full economics with fixture-scoped
-gas/calldata limits. The dev creator must already be unlocked on both nodes;
-the runner does not impersonate, inject balances, or revert the execution node.
-Simulation alone restores its owned fork.
-Local RPC requests have a 120-second bound for cold nested forks, with automatic
-transport retries disabled. A timeout remains a logged failure, not an admitted launch.
+`RPC_URL` defaults to `ROBINHOOD_MAINNET_RPC`. Remote RPC/API URLs require HTTPS;
+explicit loopback HTTP is accepted for owned local services. API URL credentials,
+queries and fragments are rejected. RPC URL credentials are redacted in diagnostics.
+The examples resolve canonical chain4663 addresses from `get_launch_addresses`,
+verify live escrow WETH/18 decimals, discover admitted profiles and the real
+registered **P1 `(1,4096)`** oracle from the bound V4 oracle factory.
 
-Full execution first signs the SDK's complete attribution EIP-712 payload through
-execution Anvil `eth_signTypedData_v4`, stages metadata with the exact token name
-and symbol using `LaunchApiClient`, then publishes only the confirmed atomic/activate
+Optional `SIMULATION_RPC_URL` must be a separate exclusively owned loopback Anvil,
+not the execution node (including loopback hostname aliases). It uses the SDK's
+canonical controlled-fork backend and impersonates only the simulation creator,
+including after resets. Otherwise SDK native simulation runs against `RPC_URL`.
+Unavailable or unsuccessful full-case simulation honestly fails admission; no
+scenario fallback, market removal, balance/code injection, or source rollback exists.
+
+Existing process environment wins. The small stdlib `.env` loader reads once and
+supports ordinary `KEY=value`, quoted values and comments, with no shell
+interpolation, command execution or extra dependency.
+
+### One command per case
+
+```sh
+python examples/launch_erc20_v4.py
+python examples/launch_erc20_abyss.py
+python examples/launch_erc404_v4.py
+python examples/launch_erc404_abyss.py
+python examples/launch_erc20_staking_v4.py
+python examples/launch_erc20_dividends_abyss.py
+python examples/launch_erc20_burn_mixed.py
+python examples/launch_erc404_dividends_mixed.py
+```
+
+| File | Fixed case |
+| --- | --- |
+| `launch_erc20_v4.py` | ERC20/no rewards, one V4 position, one buy, atomic |
+| `launch_erc20_abyss.py` | ERC20/no rewards, one Abyss position, one buy, atomic |
+| `launch_erc404_v4.py` | ERC404/no rewards, one V4 position, one buy, staged |
+| `launch_erc404_abyss.py` | ERC404/no rewards, one Abyss position, one buy, atomic |
+| `launch_erc20_staking_v4.py` | ERC20/staking, two V4 positions, two ordered buys, staged |
+| `launch_erc20_dividends_abyss.py` | ERC20/holder dividends, three Abyss positions, one buy, staged |
+| `launch_erc20_burn_mixed.py` | ERC20/3000-bps token burn, two dual-fee V4 + one Abyss position, one buy per market, staged |
+| `launch_erc404_dividends_mixed.py` | ERC404/holder dividends, two V4 + three Abyss positions, one buy per market, staged |
+
+Each invokes `run_launch_example(case)` in `examples/launch_examples.py`, supported
+by `examples/_launch_support.py`. Copy these helpers alongside the selected example
+for use with an installed SDK. No source-tree import injection is used.
+ERC20 supply is 1,000,000 tokens; ERC404 supply is 10,000 tokens with 100-token NFT
+units. Position liquidity is `1000 * 10**18`, each market has a `1100 * 10**18`
+launch-token budget, and each opening buy uses `10**15` native input wrapped through
+canonical WETH. Config5 bound V4 and config1 canonical Abyss QUOTE_ORACLE profile3
+are discovered live; the full plan is salt-finalized and admitted without reducing
+its selected economics.
+
+Optional `NFT_BASE_URI` supplies your own hosted ERC404 NFT base URI; the default
+is empty and does not pretend a metadata service exists. NFT units/mirrors remain
+part of the ERC404 case and on-chain verification.
+
+### Example ceilings, signing, and API publication
+
+Default gas ceilings are 16,000,000 for chain/RPC/account; calldata is 131072 bytes
+and headroom is 1000 bps. These are **EXAMPLE ceilings, not verified provider or
+account limits**, and chain gas is bounded by every observed block gas limit.
+Optional `LAUNCH_CHAIN_GAS_CAP`, `LAUNCH_RPC_GAS_CAP`, `LAUNCH_ACCOUNT_GAS_CAP` and
+`LAUNCH_CALLDATA_CAP` environment values select reviewed positive integer ceilings;
+they do not bypass exact SDK full-case admission or replay.
+
+The real SDK admission runs before signed API metadata staging. The wallet signs
+the complete attribution EIP-712 payload locally with creator/chain/domain checks
+and signs exact SDK transaction envelopes without changing supplied gas, value,
+calldata, nonce or fees. Normal nonce/fee lookup occurs only for absent fields.
+Source RPC signing and unlocked-account sends are forbidden.
+
+Before `eth_sendRawTransaction`, the computed signed hash and exact unsigned
+envelope are fsynced to `receipts.json` as a broadcast attempt. Raw bytes are
+retained only in `signed-<hash>.private.json` (mode0600). Broadcast has no retry;
+timeouts and wrong returned hashes retain the computed hash for manual recovery.
+RPC transport retries are disabled and requests have a 120-second bound.
+
+Real receipts and canonical chain invariants prove token, markets, permanent
+custody and ordered buys. The API receives only the confirmed atomic/activate
 transaction hash. Only actual `202`/`LaunchPublishPending` responses are polled,
-respecting `Retry-After` within the deadline. Other errors fail immediately.
-The returned session and real `/api/v1/launches/<token>?chainId=4663` representation
-must match the observed token, activation block/hash, canonical status, and metadata.
-An API/indexer without current `LaunchActivated` support is a real failure, not
-something the SDK fills with invented projections.
+respecting `Retry-After` within the 90-second deadline. Other errors fail immediately.
+The session and real `/api/v1/launches/<token>?chainId=4663` DTO must match the token,
+activation block/hash, canonical status and staged metadata; no invented projection
+fills an unavailable indexer.
 
-Artifacts remain available after errors or Ctrl+C:
+### Retained results
+
+Every run automatically creates `launch-results/<timestamp-case-random>/`, with
+no user output option. Artifacts remain after errors or Ctrl+C:
 
 | Artifact | Evidence |
 | --- | --- |
-| `run.json`, `plan.json` | Exact case/configuration and nonce/salt; full finalized portable plan before execution |
-| `events.jsonl`, `admission.json` | Stages/timing, real backend/admission, simulation envelopes/gas and safe RPC errors/revert traces |
-| `receipts.json`, `chain.json` | Hashes persisted before waits, receipts before status checks; actual Active token/markets/permanent custody/ordered buys |
-| `api.json`, `result.json` | Real publication representation when reached; final scope/failed stage and traceback/causal/revert/API error details |
-| `recovery.private.json` | Mode-0600 exact signed request, once-returned session capability, activation hash and latest publish response |
+| `run.json`, `plan.json` | Exact case/configuration, fresh nonce/salt, finalized portable plan |
+| `events.jsonl`, `admission.json` | Stages/timing, actual backend/admission, gas/envelope proof, redacted RPC failures/revert traces |
+| `receipts.json`, `chain.json` | Pre-broadcast computed hashes/envelopes, real receipts, Active token/markets/custody/buys |
+| `api.json`, `result.json` | Actual publication DTO when reached, failed stage/traceback/causal/revert/API details |
+| `recovery.private.json` | Mode0600 exact signed API request, session capability, activation hash and latest response |
+| `signed-<hash>.private.json` | Mode0600 signed raw transaction, exact envelope and computed hash |
 
-Do not share the private recovery file. Public artifacts recursively redact
-signatures, keys, capabilities, authorization headers, secret environment values,
-and URL credentials/query secrets. A failure exits nonzero and preserves submitted
-chain state. Inspect the original token/hash/session after API failure: rerunning
-with fresh output deliberately constructs a different token, not a retry of that launch.
-
+Never share private files. Public output recursively redacts all known keys,
+signatures, capabilities, authorization, secret environment values and endpoint
+credentials. A failure exits nonzero and preserves execution-chain state. There
+is no automatic retry, relaunch or rollback. Inspect the original hash/token/session
+after a broadcast or API failure: another invocation deliberately creates another
+token, not a recovery attempt.
 
 ## Stable authors, payouts, and fee claims
 
