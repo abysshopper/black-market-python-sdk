@@ -10,6 +10,11 @@ Token launches, swaps, and lending with [web3.py](https://web3py.readthedocs.io)
 python -m pip install black-market-sdk
 ```
 
+Lifecycle admission uses optional tightening policy, native Nitro compute/poster
+accounting on chain4663, and exact sequential replay. An admitted plan is not a
+wallet-submission guarantee; use the optional read-only `submission_client`
+preflight when building the immediate next transaction. See the API guide below.
+
 ## Examples
 
 Clone this repository to run the examples. Requires Python 3.10+.

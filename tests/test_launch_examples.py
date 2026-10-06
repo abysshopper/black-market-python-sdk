@@ -22,7 +22,7 @@ from examples import launch_examples as example
 from examples import _launch_support as support
 from examples._launch_support import Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure, error_details, loopback_url, mainnet_url
 from black_market_sdk import (
-    LaunchBlock, LaunchPlanV1, LaunchPublishPending, LifecycleTokenConfig,
+    LaunchBlock, LaunchExecutionLimits, LaunchPlanV1, LaunchPublishPending, LifecycleTokenConfig,
     LaunchApiError, get_launch_addresses, predict_launch_token, to_launch_plan_tuple,
 )
 from black_market_sdk import lifecycle
@@ -230,7 +230,7 @@ def test_failed_http_request_is_logged_once_without_hidden_transport_retries(tmp
     worker.start()
     artifacts = Artifacts(tmp_path / "http-failure", "boundary-case")
     provider = JournalHTTPProvider(
-        f"http://127.0.0.1:{server.server_port}", artifacts, node="execution",
+        f"http://127.0.0.1:{server.server_port}", artifacts,
     )
     try:
         with pytest.raises(HTTPError) as failure:
@@ -354,11 +354,11 @@ def test_wallet_signs_real_attribution_and_rejects_wrong_domain(tmp_path, monkey
     artifacts.finish()
 
 
-@pytest.mark.parametrize("method", ["eth_sendTransaction", "eth_signTypedData_v4", "personal_sign", "hardhat_setBalance"])
+@pytest.mark.parametrize("method", ["eth_sendTransaction", "eth_signTypedData_v4", "personal_sign", "hardhat_setBalance", "anvil_reset", "anvil_impersonateAccount"])
 def test_mainnet_provider_requires_local_signing_and_preserves_source(tmp_path, monkeypatch, method):
     artifacts = Artifacts(tmp_path / "guard", "boundary-case")
     monkeypatch.setattr(Web3.HTTPProvider, "make_request", no_call)
-    provider = JournalHTTPProvider("https://rpc.example", artifacts, node="execution")
+    provider = JournalHTTPProvider("https://rpc.example", artifacts)
     with pytest.raises(ExampleFailure):
         provider.make_request(method, [])
     artifacts.finish()
@@ -373,27 +373,12 @@ def test_native_simulation_is_allowed_without_source_broadcast(tmp_path, monkeyp
         return {"result": []}
 
     monkeypatch.setattr(Web3.HTTPProvider, "make_request", request)
-    provider = JournalHTTPProvider("https://rpc.example", artifacts, node="execution")
+    provider = JournalHTTPProvider("https://rpc.example", artifacts)
     assert provider.make_request("eth_simulateV1", [{}]) == {"result": []}
     assert calls == [("eth_simulateV1", [{}])]
     artifacts.finish()
 
 
-def test_controlled_fork_reimpersonates_only_simulation_creator_after_reset(tmp_path, monkeypatch):
-    artifacts = Artifacts(tmp_path / "controlled-unlock", "boundary-case")
-    calls = []
-
-    def request(_self, method, params):
-        calls.append((method, params))
-        return {"result": True}
-
-    monkeypatch.setattr(Web3.HTTPProvider, "make_request", request)
-    provider = JournalHTTPProvider("http://127.0.0.1:19864", artifacts, node="simulation",
-                                   simulation_creator=CREATOR)
-    provider.make_request("anvil_reset", [{"forking": {"jsonRpcUrl": "https://rpc.example", "blockNumber": 17}}])
-    assert [method for method, _ in calls] == ["anvil_reset", "anvil_impersonateAccount"]
-    assert calls[-1][1] == [CREATOR]
-    artifacts.finish()
 
 
 
@@ -410,13 +395,13 @@ def test_unavailable_native_admission_retains_failure_without_sign_or_api(tmp_pa
         return refused
 
     monkeypatch.setattr(example, "plan_launch", refuse)
-    for name in ("create_controlled_launch_fork", "stage_metadata", "build_next_transaction", "api_client"):
+    for name in ("stage_metadata", "build_next_transaction", "api_client"):
         monkeypatch.setattr(example, name, no_call)
     with pytest.raises(ExampleFailure) as failure:
-        example.admit_plan(None, None, token_draft(), case_definition(), artifacts, example.Cancellation())
+        example.admit_plan(None, token_draft(), case_definition(), artifacts, example.Cancellation())
     artifacts.finish(failure.value)
     assert failure.value.code == "LAUNCH_NOT_ADMITTED"
-    assert len(calls) == 1 and calls[0][1]["fork"] is None and calls[0][1]["mode"] == "atomic"
+    assert len(calls) == 1 and "fork" not in calls[0][1] and calls[0][1]["mode"] == "atomic"
     assert artifacts.result["chain"]["transactions"] == []
     assert "eth_simulateV1 unavailable" in (artifacts.directory / "admission.json").read_text()
 
@@ -473,7 +458,6 @@ def test_configuration_derives_canonical_deployment_and_creator(tmp_path, monkey
     monkeypatch.setenv("PRIVATE_KEY", key)
     monkeypatch.setenv("LAUNCH_API_URL", "https://api.example")
     monkeypatch.delenv("RPC_URL", raising=False)
-    monkeypatch.delenv("SIMULATION_RPC_URL", raising=False)
     artifacts = Artifacts(tmp_path / "config", "boundary-case")
     configuration, actual_key = example.example_configuration(artifacts)
     artifacts.finish()
@@ -482,14 +466,42 @@ def test_configuration_derives_canonical_deployment_and_creator(tmp_path, monkey
     assert configuration["rpcUrl"] == example.ROBINHOOD_MAINNET_RPC.rstrip("/")
     assert configuration["orchestrator"] == get_launch_addresses(4663).orchestrator
     assert configuration["quoteAsset"] == get_launch_addresses(4663).wrapped_native
+    assert "forkRpcUrl" not in configuration
 
 
-def test_example_ceiling_is_bounded_by_observed_block(tmp_path, monkeypatch):
+def test_examples_do_not_invent_mandatory_backend_policy(monkeypatch):
     for name in ("LAUNCH_CHAIN_GAS_CAP", "LAUNCH_RPC_GAS_CAP", "LAUNCH_ACCOUNT_GAS_CAP", "LAUNCH_CALLDATA_CAP"):
         monkeypatch.delenv(name, raising=False)
-    block = LaunchBlock(1, BLOCK_HASH, 100, 12_000_000, 1)
+    assert example.limit_resolver() is None
+
+
+def test_example_supplied_policy_only_tightens_known_limits(monkeypatch):
+    for name in ("LAUNCH_CHAIN_GAS_CAP", "LAUNCH_RPC_GAS_CAP", "LAUNCH_ACCOUNT_GAS_CAP", "LAUNCH_CALLDATA_CAP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("LAUNCH_ACCOUNT_GAS_CAP", "12000000")
+    block = LaunchBlock(1, BLOCK_HASH, 100, 30_000_000, 1)
     context = SimpleNamespace(block=block, chain_id=4663, account=CREATOR, orchestrator=TOKEN)
     limits = example.limit_resolver()(None, context)
-    assert limits.gas_cap(block) == 12_000_000
-    assert limits.max_calldata_bytes == 131072 and limits.headroom_bps == 1000
-    assert "EXAMPLE ceilings" in limits.source
+    assert limits.account_transaction_gas_limit == 12_000_000
+    assert limits.chain_transaction_gas_limit is None and limits.rpc_transaction_gas_limit is None
+    assert limits.max_calldata_bytes is None and limits.headroom_bps == 1500
+    assert "explicit example caller policy" in limits.source
+
+
+def test_fixed_example_guard_preserves_unknown_policy_and_nitro_total_envelope(monkeypatch):
+    request = token_draft()
+    block = LaunchBlock(1, BLOCK_HASH, 100, 1 << 50, 1)
+    monkeypatch.setattr(example, "read_block", lambda *_: block)
+    monkeypatch.setattr(example, "rpc", lambda _client, method, _params:
+                        hex(request.chain_id) if method == "eth_chainId" else "0x0" if method == "eth_getTransactionCount" else no_call())
+    transaction = {"chainId": request.chain_id, "from": request.creator, "to": request.orchestrator,
+                   "nonce": 0, "value": 0, "data": "0x0102", "gas": 34_500_000, "gasPrice": 1}
+    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000,
+                                   max_tx_compute_gas=32_000_000, max_block_compute_gas=32_000_000, arb_os_version=50)
+    assert example.validate_envelope(None, transaction, request, limits) is None
+    with pytest.raises(ExampleFailure) as gas_failure:
+        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(account_transaction_gas_limit=34_000_000))
+    assert gas_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
+    with pytest.raises(ExampleFailure) as calldata_failure:
+        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(max_calldata_bytes=1))
+    assert calldata_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"

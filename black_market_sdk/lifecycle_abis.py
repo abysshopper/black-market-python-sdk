@@ -19,6 +19,22 @@ def _function(name, inputs=(), outputs=(), state_mutability="view"):
 def _event(name, inputs):
     return {"type": "event", "name": name, "inputs": list(inputs), "anonymous": False}
 
+# Official Nitro precompile and virtual NodeInterface fragments. ArbSys reports
+# 55 + the Nitro ArbOS version; gas ceilings require actual ArbOS >= 50.
+NITRO_ARB_SYS_ABI = [_function("arbOSVersion", [], [_argument("", "uint256")])]
+NITRO_ARB_GAS_INFO_ABI = [
+    _function("getMaxTxGasLimit", [], [_argument("", "uint256")]),
+    _function("getMaxBlockGasLimit", [], [_argument("", "uint64")]),
+]
+NITRO_NODE_INTERFACE_ABI = [
+    _function("gasEstimateL1Component", [
+        _argument("to", "address"), _argument("contractCreation", "bool"), _argument("data", "bytes"),
+    ], [
+        _argument("gasEstimateForL1", "uint64"), _argument("baseFee", "uint256"),
+        _argument("l1BaseFeeEstimate", "uint256"),
+    ], "payable"),
+]
+
 
 TOKEN_CONFIG_COMPONENTS_V1 = [
     _argument("kind", "uint8"), _argument("rewardMode", "uint8"),

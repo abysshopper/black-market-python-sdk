@@ -4,6 +4,10 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+Version **0.5.0** makes caller-supplied execution policy optional, separates exact
+execution/protocol proof from submission-RPC preflight, and reads native Nitro
+compute ceilings and poster budgets on chain4663. The default gas headroom is 15%.
+
 ## Deployed infrastructure
 
 `get_launch_addresses(4663)` returns the current mined `pool-launch-v1` infrastructure.
@@ -182,10 +186,80 @@ and account state, and restores it. The creator must already be unlocked there;
 the SDK does not sign or impersonate automatically. Disconnected deployment calls
 or unsupported simulation backends remain provisional and cannot authorize a step.
 
-Provide `LaunchExecutionLimits` or a `LifecycleLimitResolver`. Chain, RPC, account,
-and calldata caps are scoped to the observed block/hash, chain, orchestrator, and
-account. Unknown limits fail admission. Reread after receipts, replacement, reload,
-wallet switch, or reorg. Unconfirmed approvals and local counters are not authority.
+`LaunchExecutionLimits` and `LifecycleLimitResolver` are optional tightening policy,
+not a mandatory backend service. Missing RPC/account/calldata policy stays explicit
+in `unknown_constraints` without rejecting otherwise proved execution. Supplied caps
+are enforced; a failed/malformed resolver or mismatched supplied block/hash, chain,
+orchestrator or account is rejected. The SDK's own canonical simulation context
+binds the actual proof even when independent policy provenance was not supplied.
+
+`LaunchSimulation` and each `LifecycleTransaction.admission` expose three separate
+outcomes:
+
+| Field | Values | Scope |
+| --- | --- | --- |
+| `execution_proof` | `proved`, `failed`, `unavailable` | Complete sequential measurement followed by exact gas-envelope replay and all launch postconditions |
+| `protocol_fit` | `proved`, `failed`, `unknown` | Pinned protocol ceilings and known tightening policy; an economic revert does not prove gas fit |
+| `transport_preflight` | `not-requested`, `passed`, `failed` | Optional immediate-next-transaction estimate on the supplied submission RPC |
+
+`admitted` certifies the exact current execution against proved protocol and known
+policy, not wallet acceptance or future execution. On generic EVM chains, the
+bounded header and actual validated backend are used; an absent independent
+per-transaction cutoff is reported, never replaced with an invented Ethereum cap.
+An optional `data_fee_estimator` still adds external chain-specific fees exactly
+once. Without it, external data fees remain explicitly unknown.
+
+On chain4663, the SDK pins `ArbSys.arbOSVersion()` at `0x64` and
+`ArbGasInfo.getMaxTxGasLimit()` / `getMaxBlockGasLimit()` at `0x6c` to the same
+canonical context. ArbSys returns `55 +` the actual ArbOS version; actual version
+50 or newer and valid positive decoded ceilings are required. Read failure never
+falls back to the unusually large header gas limit or a hard-coded compute cap.
+`limits.execution_gas_ceiling` is the native compute ceiling;
+`limits.transaction_gas_ceiling` is a separate known total-envelope policy, if any.
+
+Native Nitro permissive simulation measures compute, including a gross
+`maxUsedGas` requirement when returned. `NodeInterface.gasEstimateL1Component()` at
+`0xc8` supplies a pinned exact-calldata poster budget even for future dependent
+steps. Each budget receives integer-ceiling headroom separately. The validated
+native replay charges actual poster gas and proves ArbOS compute enforcement;
+the SDK never subtracts an approximate poster quote to assert exact compute use.
+The total gas envelope and receipt gas may exceed the compute ceiling.
+`poster_gas` / `poster_fee` are budget observations, not extra charges:
+`data_fee_included_in_gas=True`, `data_fee=0`, and `total_fee` is already
+`gas_limit * gas_price`. A generic Anvil fork cannot prove native ArbOS metering
+and is refused for Nitro, while generic EVM controlled-fork support is unchanged.
+
+A separate non-persisting native capability probe verifies all three getters
+through validated simulation. Only that isolated probe temporarily supplies its
+sender balance so an exactly funded payer need not fund probe calls. Actual
+lifecycle measurement, exact replay, nonce/state checks and affordability always
+use real source state without balance/code/allowance injection.
+
+Pass `submission_client=...` to `build_next_transaction` to estimate only the
+immediate next unsigned transaction on the active submission reader. It checks
+the reader's chain before and after `eth_estimateGas` and uses the exact reviewed
+`from/to/data/value/gas/gasPrice` at `latest`; no gas-envelope expansion, signatures,
+or writes occur. A refusal raises `LaunchSubmissionPreflightError` with
+`code="SUBMISSION_PREFLIGHT_FAILED"` and a copied simulation retaining its proved
+execution admission but `transport_preflight="failed"`. A returned transaction's
+admission has `transport_preflight="passed"`. Planning does not estimate future
+dependent steps against nonexistent current state. Wallet/account/chain guards
+are still required immediately around the eventual signature request.
+
+Source chain identity is checked again at native-probe, sequential-simulation and
+admission completion, in addition to canonical block identity. Transport drift to
+a different-chain fork sharing the same block hash raises `LaunchStateChanged`
+with `code="CHAIN_MISMATCH"`. Headroom is an integer from 0 through 10000 bps;
+header and transaction/simulation/execution/compute gas ceilings are positive
+uint64 values. Chain/version/provenance and fee quantities retain their own widths;
+calldata/request byte caps must be positive safe integers.
+Gas-buffer arithmetic itself stays exact at arbitrary integer width. A zero or
+uint64-overflow reviewed gas budget is refused before replay, with unavailable
+execution proof and failed protocol fit; it cannot emit a next transaction.
+
+Reread after receipts, replacement, reload, wallet switch, or reorg. Direct EOA
+execution and settled nonces remain required; contract accounts are not silently
+treated as supported wallets. Unconfirmed approvals and local counters are not authority.
 `build_next_transaction(..., action="cancel")` explicitly requests an eligible
 cancellation, refunding only unspent launch-isolated external funding, not gas,
 setup cost, or inventory disposed under the committed cancellation policy.
@@ -198,13 +272,12 @@ python examples/quickstart.py "$PLAN_JSON"
 : "${V4_CONFIG_JSON:?Set the path to your complete config}"
 python examples/launch_recipe.py "$V4_CONFIG_JSON"
 
-# Plan/simulate/recover with caller-observed caps; emits unsigned output only.
-: "${RPC_URL:?}" "${CREATOR:?}" "${CHAIN_GAS_CAP:?}" "${RPC_GAS_CAP:?}" \
-  "${ACCOUNT_GAS_CAP:?}" "${CALLDATA_CAP:?}"
+# Plan/simulate/recover; no caller policy or limits service is required.
+: "${RPC_URL:?}" "${CREATOR:?}"
 python examples/launch_submit.py "$PLAN_JSON" --rpc-url "$RPC_URL" \
-  --account "$CREATOR" --mode staged --chain-gas-cap "$CHAIN_GAS_CAP" \
-  --rpc-gas-cap "$RPC_GAS_CAP" --account-gas-cap "$ACCOUNT_GAS_CAP" \
-  --calldata-cap "$CALLDATA_CAP" --finalize-bound
+  --account "$CREATOR" --mode staged --finalize-bound
+# Optional: add --submission-rpc-url for a read-only immediate-next preflight.
+# Known --chain-gas-cap/--rpc-gas-cap/--account-gas-cap/--calldata-cap only tighten.
 ```
 
 Supply `--transaction-hash` and `--confirmations` for recovery. Do not use
@@ -244,12 +317,15 @@ The examples resolve canonical chain4663 addresses from `get_launch_addresses`,
 verify live escrow WETH/18 decimals, discover admitted profiles and the real
 registered **P1 `(1,4096)`** oracle from the bound V4 oracle factory.
 
-Optional `SIMULATION_RPC_URL` must be a separate exclusively owned loopback Anvil,
-not the execution node (including loopback hostname aliases). It uses the SDK's
-canonical controlled-fork backend and impersonates only the simulation creator,
-including after resets. Otherwise SDK native simulation runs against `RPC_URL`.
-Unavailable or unsuccessful full-case simulation honestly fails admission; no
-scenario fallback, market removal, balance/code injection, or source rollback exists.
+Fixed chain4663 examples use the execution RPC's native simulation backend.
+Generic Anvil/Hardhat simulation cannot prove ArbOS metering and is not offered
+as a fallback. Generic-EVM controlled forks remain available through the SDK and
+the saved-plan CLI. The examples do not invent transaction or calldata caps;
+optional `LAUNCH_*_CAP` environment values only tighten known policy. Each
+immediate step receives a fresh read-only submission preflight on `RPC_URL`.
+Unavailable or unsuccessful full-case simulation fails admission without scenario
+fallback, market removal or source rollback. The capability-only probe described
+above does not alter actual launch funding or state.
 
 Existing process environment wins. The small stdlib `.env` loader reads once and
 supports ordinary `KEY=value`, quoted values and comments, with no shell

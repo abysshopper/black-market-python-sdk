@@ -12,7 +12,6 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from urllib.parse import urlsplit
 
 
 from web3 import Web3
@@ -58,7 +57,6 @@ from black_market_sdk import (
     LifecycleV4Position,
     build_launch_attribution_typed_data,
     build_next_transaction,
-    create_controlled_launch_fork,
     decode_lifecycle_events,
     decode_lifecycle_pool_bound_v4_market_config,
     encode_lifecycle_abyss_market_config,
@@ -79,12 +77,12 @@ from black_market_sdk.lifecycle_rpc import hex_bytes, quantity, read_block, rpc
 if __package__:
     from ._launch_support import (
         Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure,
-        error_details, loopback_url, mainnet_url, portable,
+        error_details, mainnet_url, portable,
     )
 else:
     from _launch_support import (
         Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure,
-        error_details, loopback_url, mainnet_url, portable,
+        error_details, mainnet_url, portable,
     )
 
 ZERO_ADDRESS = "0x" + "00" * 20
@@ -94,9 +92,6 @@ LIQUIDITY = 1000 * UNIT
 BUY_INPUT = 10**15
 CONFIRMATIONS = 1
 CHAIN_TIMEOUT_SECONDS = 90
-# EXAMPLE ceilings, not verified provider/account limits. Admission still proves
-# the full case and bounds every transaction by the actual observed block.
-EXAMPLE_GAS_CEILING = 16_000_000
 _ENV_LOADED = False
 
 
@@ -177,47 +172,42 @@ def example_configuration(artifacts):
     require(bool(api_url), "LAUNCH_API_URL is required in .env or environment", code="INVALID_CONFIGURATION")
     creator = Account.from_key(private_key).address
     source_url = os.environ.get("RPC_URL") or ROBINHOOD_MAINNET_RPC
-    simulation_url = os.environ.get("SIMULATION_RPC_URL") or None
     artifacts.redact.remember_url(source_url)
-    artifacts.redact.remember_url(simulation_url)
     # HTTPS for remote providers; explicit loopback allows owned-local verification.
     source_url = mainnet_url(source_url, api=True) if source_url.startswith("http://") else mainnet_url(source_url)
     api_url = mainnet_url(api_url, api=True)
-    if simulation_url:
-        simulation_url = loopback_url(simulation_url, rpc=True)
-        source_endpoint = urlsplit(source_url)
-        simulation_endpoint = urlsplit(simulation_url)
-        require(not (source_endpoint.hostname in {"localhost", "127.0.0.1", "::1"}
-                     and source_endpoint.port == simulation_endpoint.port),
-                "simulation and execution endpoints must be separate", code="INVALID_CONFIGURATION")
     deployment = get_launch_addresses(4663)
     return {
         "chainId": 4663, "orchestrator": deployment.orchestrator,
         "creator": creator, "quoteAsset": deployment.wrapped_native, "quoteDecimals": 18,
-        "rpcUrl": source_url, "forkRpcUrl": simulation_url, "apiUrl": api_url,
+        "rpcUrl": source_url, "apiUrl": api_url,
     }, private_key
 
 
 def limit_resolver():
-    def ceiling(name, default):
-        value = os.environ.get(name, str(default))
+    def ceiling(name):
+        value = os.environ.get(name)
+        if value is None or value == "":
+            return None
         require(value.isdecimal() and int(value) > 0, f"{name} must be a positive integer",
                 code="INVALID_CONFIGURATION")
         return int(value)
 
-    chain = ceiling("LAUNCH_CHAIN_GAS_CAP", EXAMPLE_GAS_CEILING)
-    provider = ceiling("LAUNCH_RPC_GAS_CAP", EXAMPLE_GAS_CEILING)
-    account = ceiling("LAUNCH_ACCOUNT_GAS_CAP", EXAMPLE_GAS_CEILING)
-    calldata = ceiling("LAUNCH_CALLDATA_CAP", 131072)
+    chain = ceiling("LAUNCH_CHAIN_GAS_CAP")
+    provider = ceiling("LAUNCH_RPC_GAS_CAP")
+    account = ceiling("LAUNCH_ACCOUNT_GAS_CAP")
+    calldata = ceiling("LAUNCH_CALLDATA_CAP")
+    if all(value is None for value in (chain, provider, account, calldata)):
+        return None
 
     def resolve(_client, context):
         return LaunchExecutionLimits(
-            chain_transaction_gas_limit=min(chain, context.block.gas_limit),
+            chain_transaction_gas_limit=chain,
             rpc_transaction_gas_limit=provider, account_transaction_gas_limit=account,
-            max_calldata_bytes=calldata, headroom_bps=1000,
+            max_calldata_bytes=calldata,
             observed_block_number=context.block.number, observed_block_hash=context.block.block_hash,
             chain_id=context.chain_id, account=context.account, orchestrator=context.orchestrator,
-            source="EXAMPLE ceilings; not verified provider/account limits",
+            source="explicit example caller policy; not a wallet-submission guarantee",
         )
     return resolve
 
@@ -390,10 +380,10 @@ def validate_envelope(client, transaction, plan, limits):
     require(address_equal(transaction["from"], plan.creator), "transaction sender differs from committed creator", code="TRANSACTION_IDENTITY_MISMATCH")
     require(quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"])) == transaction["nonce"],
             "transaction nonce differs from settled account state", code="TRANSACTION_IDENTITY_MISMATCH")
-    require(0 < transaction.get("gas", 0) <= limits.gas_cap(read_block(client)), "proven envelope exceeds actual gas constraints", code="TRANSACTION_LIMIT_MISMATCH")
+    require(0 < transaction.get("gas", 0) <= limits.gas_cap(read_block(client)), "proven envelope exceeds known gas constraints", code="TRANSACTION_LIMIT_MISMATCH")
     cap = limits.calldata_cap()
-    require(cap is not None and len(bytes.fromhex(transaction["data"][2:])) <= cap,
-            "proven envelope exceeds calldata constraints", code="TRANSACTION_LIMIT_MISMATCH")
+    require(cap is None or len(bytes.fromhex(transaction["data"][2:])) <= cap,
+            "proven envelope exceeds known calldata constraints", code="TRANSACTION_LIMIT_MISMATCH")
 
 
 def wait_receipt(client, row, artifacts, cancellation):
@@ -439,34 +429,35 @@ def wait_receipt(client, row, artifacts, cancellation):
     return receipt
 
 
-def admit_plan(client, fork_client, plan, case, artifacts, cancellation):
+def admit_plan(client, plan, case, artifacts, cancellation):
     artifacts.enter("admission")
-    fork = create_controlled_launch_fork(client, fork_client, isolated=True) if fork_client is not None else None
     limits = limit_resolver()
     cancellation.check()
     launch = plan_launch(client, plan, account=plan.creator, mode=case["mode"], limits=limits,
-                         prepare_batch_size=1, confirmations=CONFIRMATIONS, fork=fork)
+                         prepare_batch_size=1, confirmations=CONFIRMATIONS)
     observation = simulation_observation(launch)
     artifacts.save("admission.json", observation)
     artifacts.event("launch-admission", **observation)
     require(launch.admitted, "SDK refused this exact launch: " + "; ".join(launch.simulation.reasons), code="LAUNCH_NOT_ADMITTED", diagnostic=observation)
-    return launch, fork
+    return launch
 
 
-def execute_plan(client, launch, fork, plan, artifacts, cancellation, *, wallet):
+def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet):
     hashes = []
     activation_receipt = None
     maximum_steps = len(plan.markets) + len(launch.approvals) + 2
     for index in range(maximum_steps + 1):
         artifacts.enter("build-next")
         cancellation.check()
-        step = build_next_transaction(client, launch, account=plan.creator, transaction_hashes=hashes, confirmations=CONFIRMATIONS, fork=fork)
+        step = build_next_transaction(client, launch, account=plan.creator, transaction_hashes=hashes, confirmations=CONFIRMATIONS, submission_client=client)
         if step is None:
             break
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
         artifacts.event("next-transaction-proven", transaction=step)
         transaction = step.as_transaction()
-        validate_envelope(client, transaction, plan, launch.limits)
+        require(step.admission is not None and step.admission.admitted,
+                "SDK step lacks current bound admission", code="TRANSACTION_LIMIT_MISMATCH")
+        validate_envelope(client, transaction, plan, step.admission.limits)
         artifacts.enter("submit-" + step.kind)
         cancellation.check()
         row = wallet.send_transaction(step.kind, transaction)
@@ -655,7 +646,7 @@ def run(case, artifacts, cancellation):
     configuration, private_key = example_configuration(artifacts)
     artifacts.result.update(network="chain4663", scope="end-to-end", execution="requested")
     artifacts.result["api"].update(url=configuration["apiUrl"])
-    client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts, node="execution"))
+    client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts))
     wallet = LocalSigningWallet(client, artifacts, private_key=private_key,
                                 creator=configuration["creator"], chain_id=4663)
     artifacts.enter("provenance")
@@ -689,24 +680,15 @@ def run(case, artifacts, cancellation):
     token_salt = "0x" + secrets.token_hex(32)
     artifacts.save("run.json", {"configuration": configuration, "case": case,
                               "nonce": str(nonce), "tokenSalt": token_salt,
-                              "ceilings": "EXAMPLE ceilings; not verified provider/account limits"})
+                              "policy": "Optional explicit tightening policy; native protocol ceilings are read at the canonical block"})
     artifacts.enter("plan")
     plan, predicted = construct_plan(client, configuration, case, nonce, token_salt, artifacts, cancellation)
-    fork_client = None
-    if configuration["forkRpcUrl"]:
-        fork_provider = JournalHTTPProvider(configuration["forkRpcUrl"], artifacts, node="simulation",
-                                           simulation_creator=plan.creator)
-        fork_client = Web3(fork_provider)
-        rpc(fork_client, "anvil_nodeInfo", [])
-        fork_provider.unlock_simulation_creator()
-        require(quantity(rpc(fork_client, "eth_chainId", [])) == plan.chain_id,
-                "simulation Anvil must mirror chain4663", code="CHAIN_IDENTITY_MISMATCH")
-    launch, fork = admit_plan(client, fork_client, plan, case, artifacts, cancellation)
+    launch = admit_plan(client, plan, case, artifacts, cancellation)
     api = api_client(configuration["apiUrl"])
     recovery = stage_metadata(client, api, plan, artifacts, cancellation, wallet=wallet)
     artifacts.result["execution"] = "executed"
     artifacts.result["chain"]["status"] = "executing"
-    receipt, hashes = execute_plan(client, launch, fork, plan, artifacts, cancellation, wallet=wallet)
+    receipt, hashes = execute_plan(client, launch, plan, artifacts, cancellation, wallet=wallet)
     verify_chain(client, plan, case, predicted, receipt, hashes, artifacts, cancellation)
     publish_activation(api, recovery, plan, predicted, receipt, 90, artifacts, cancellation)
     artifacts.enter("end-to-end-complete")

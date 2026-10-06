@@ -11,7 +11,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from web3 import Web3
@@ -27,7 +27,9 @@ class LaunchRpcError(RuntimeError):
 
 
 class LaunchStateChanged(RuntimeError):
-    """The pinned canonical block changed during a read or simulation."""
+    """The pinned source chain or canonical block changed during a read."""
+
+    code: str | None = None
 
 
 def quantity(value: Any) -> int:
@@ -67,6 +69,10 @@ class LaunchBlock:
     timestamp: int
     gas_limit: int
     base_fee_per_gas: int | None
+    def __post_init__(self) -> None:
+        if isinstance(self.gas_limit, bool) or not isinstance(self.gas_limit, int) or not 0 < self.gas_limit < (1 << 64):
+            raise ValueError("block gas_limit must be a positive uint64")
+
 
     @property
     def tag(self) -> str:
@@ -100,17 +106,23 @@ def assert_canonical(client: Web3, block: LaunchBlock) -> None:
         raise LaunchStateChanged("the estimate/read block was reorganized; read and simulate again")
 
 
+def assert_chain(client: Web3, chain_id: int) -> None:
+    if quantity(rpc(client, "eth_chainId", [])) != chain_id:
+        error = LaunchStateChanged("the simulation source chain changed; read and simulate again")
+        error.code = "CHAIN_MISMATCH"
+        raise error
+
+
 @dataclass(frozen=True)
 class LaunchExecutionLimits:
-    """Current execution constraints supplied by the chain/RPC/account owner.
+    """Optional tightening policy for the chain, RPC and direct EOA.
 
-    The live block gas limit always participates in admission. Separate chain
-    transaction limits (for example EIP-7825), RPC caps and wallet constraints
-    must be supplied when applicable; they are not inferred from block capacity.
-    Unknown nonstandard caps remain unknown rather than using an invented limit.
+    Missing policy is reported as uncertainty, not a fabricated restriction.
+    Supplied bounds and provenance are enforced in addition to the canonical
+    SDK simulation context and the protocol ceilings read from the chain.
     """
 
-    headroom_bps: int = 2000
+    headroom_bps: int = 1500
     chain_transaction_gas_limit: int | None = None
     rpc_transaction_gas_limit: int | None = None
     account_transaction_gas_limit: int | None = None
@@ -124,36 +136,67 @@ class LaunchExecutionLimits:
     account: str | None = None
     orchestrator: str | None = None
     source: str | None = None
+    protocol: Literal["evm", "nitro"] = "evm"
+    execution_gas_ceiling: int | None = None
+    transaction_gas_ceiling: int | None = None
+    arb_os_version: int | None = None
+    max_tx_compute_gas: int | None = None
+    max_block_compute_gas: int | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.headroom_bps, bool) or not isinstance(self.headroom_bps, int) or self.headroom_bps < 0:
-            raise ValueError("headroom_bps must be a nonnegative integer")
+        if isinstance(self.headroom_bps, bool) or not isinstance(self.headroom_bps, int) or not 0 <= self.headroom_bps <= 10_000:
+            raise ValueError("headroom_bps must be an integer from 0 to 10000")
         for name in (
             "chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit",
-            "max_calldata_bytes", "account_max_calldata_bytes", "rpc_max_request_bytes",
-            "rpc_total_simulation_gas_limit",
+            "rpc_total_simulation_gas_limit", "execution_gas_ceiling", "transaction_gas_ceiling",
+            "max_tx_compute_gas", "max_block_compute_gas",
         ):
             value = getattr(self, name)
-            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
-                raise ValueError(f"{name} must be a positive integer when specified")
-        if self.observed_block_number is not None:
-            quantity(self.observed_block_number)
-        if self.observed_block_hash is not None and len(hex_bytes(self.observed_block_hash)) != 66:
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 < value < (1 << 64)):
+                raise ValueError(f"{name} must be a positive uint64 when specified")
+        for name in ("max_calldata_bytes", "account_max_calldata_bytes", "rpc_max_request_bytes"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= (1 << 53) - 1):
+                raise ValueError(f"{name} must be a positive safe integer")
+        if self.arb_os_version is not None and (
+            isinstance(self.arb_os_version, bool) or not isinstance(self.arb_os_version, int)
+            or not 0 < self.arb_os_version < (1 << 256)
+        ):
+            raise ValueError("arb_os_version must be a positive uint256")
+        if self.protocol not in {"evm", "nitro"}:
+            raise ValueError("protocol must be 'evm' or 'nitro'")
+        if self.observed_block_number is not None and (
+            isinstance(self.observed_block_number, bool) or not isinstance(self.observed_block_number, int)
+            or not 0 <= self.observed_block_number < (1 << 256)
+        ):
+            raise ValueError("observed_block_number must be uint256")
+        if self.observed_block_hash is not None and (not isinstance(self.observed_block_hash, str) or len(hex_bytes(self.observed_block_hash)) != 66):
             raise ValueError("observed_block_hash must be bytes32")
-        if self.chain_id is not None and quantity(self.chain_id) == 0:
-            raise ValueError("limits chain_id must be positive")
+        if self.chain_id is not None and (
+            isinstance(self.chain_id, bool) or not isinstance(self.chain_id, int) or not 0 < self.chain_id < (1 << 256)
+        ):
+            raise ValueError("limits chain_id must be a positive uint256")
 
     def gas_cap(self, block: LaunchBlock) -> int:
         return min(value for value in (
             block.gas_limit, self.chain_transaction_gas_limit,
             self.rpc_transaction_gas_limit, self.account_transaction_gas_limit,
         ) if value is not None)
+
+    def compute_cap(self, block: LaunchBlock) -> int:
+        if self.protocol == "nitro":
+            if self.execution_gas_ceiling is None:
+                raise ValueError("Nitro compute ceilings have not been read at the canonical block")
+            return self.execution_gas_ceiling
+        return self.gas_cap(block)
+
     def unknown_constraints(self) -> tuple[str, ...]:
         return tuple(name for name in (
             "chain_transaction_gas_limit", "rpc_transaction_gas_limit",
             "account_transaction_gas_limit", "max_calldata_bytes",
-            "observed_block_number", "observed_block_hash", "chain_id", "orchestrator", "account",
-        ) if getattr(self, name) is None)
+            "account_max_calldata_bytes", "rpc_max_request_bytes",
+            "rpc_total_simulation_gas_limit",
+        ) if getattr(self, name) is None and not (name == "chain_transaction_gas_limit" and self.protocol == "nitro"))
 
 
     def calldata_cap(self) -> int | None:
@@ -161,6 +204,8 @@ class LaunchExecutionLimits:
         return min(caps) if caps else None
 
     def buffered_gas(self, gas_used: int) -> int:
+        if isinstance(gas_used, bool) or not isinstance(gas_used, int) or gas_used < 0:
+            raise ValueError("gas_used must be a nonnegative integer")
         return (gas_used * (10_000 + self.headroom_bps) + 9_999) // 10_000
 
 
@@ -299,7 +344,7 @@ def _simulate_rpc(
     if not isinstance(raw, list) or len(raw) != len(transactions):
         raise RuntimeError("eth_simulateV1 returned an incomplete block sequence")
     calls: list[LaunchSimulationCall] = []
-    for simulated_block in raw:
+    for transaction, simulated_block in zip(transactions, raw):
         results = simulated_block.get("calls")
         if not isinstance(results, list) or len(results) != 1:
             raise RuntimeError("eth_simulateV1 did not return one result per fresh transaction")
@@ -307,12 +352,18 @@ def _simulate_rpc(
         status = quantity(result["status"])
         if status not in (0, 1):
             raise RuntimeError("eth_simulateV1 returned an invalid call status")
+        gas_used = quantity(result["gasUsed"])
+        requested_gas = quantity(transaction["gas"])
+        gas_required = quantity(result["maxUsedGas"]) if result.get("maxUsedGas") is not None else None
+        if gas_used > requested_gas or (gas_required is not None and not gas_used <= gas_required <= requested_gas):
+            raise RuntimeError("eth_simulateV1 returned gas consumption outside the exact requested envelope")
         calls.append(LaunchSimulationCall(
             success=status == 1,
-            gas_used=quantity(result["gasUsed"]),
+            gas_used=gas_used,
             return_data=hex_bytes(result.get("returnData", "0x")),
             logs=tuple(result.get("logs", ())),
             error=result.get("error"),
+            gas_required=gas_required,
         ))
     return LaunchRpcSimulation("stateful", "eth_simulateV1", block, tuple(calls), None, len(transactions))
 
@@ -456,8 +507,18 @@ def simulate_transactions(
 ) -> LaunchRpcSimulation:
     """Execute exact ordered transactions without persisting source state."""
     assert_canonical(client, block)
+    source_chain = quantity(rpc(client, "eth_chainId", []))
+    if limits.protocol == "nitro" and fork is not None:
+        return LaunchRpcSimulation("provisional", None, block, (), "a generic controlled fork cannot prove native Nitro ArbOS compute/poster metering")
     for transaction in transactions:
-        if quantity(transaction["gas"]) > limits.gas_cap(block):
+        if "chainId" in transaction and quantity(transaction["chainId"]) != source_chain:
+            error = LaunchStateChanged("the reviewed transaction belongs to a different simulation source chain")
+            error.code = "CHAIN_MISMATCH"
+            raise error
+        gas = quantity(transaction["gas"])
+        if not 0 < gas < (1 << 64):
+            raise ValueError("the requested transaction gas must be a positive uint64")
+        if gas > limits.gas_cap(block):
             return LaunchRpcSimulation("stateful", None, block, (), "a transaction exceeds the current gas cap")
         cap = limits.calldata_cap()
         if cap is not None and len(bytes.fromhex(hex_bytes(transaction.get("data", "0x"))[2:])) > cap:
@@ -466,6 +527,7 @@ def simulate_transactions(
         return LaunchRpcSimulation("stateful", "none", block, ())
     result = _simulate_fork(client, fork, transactions, block, validation, limits) if fork is not None else _simulate_rpc(client, transactions, block, limits, validation)
     assert_canonical(client, block)
+    assert_chain(client, source_chain)
     return result
 
 

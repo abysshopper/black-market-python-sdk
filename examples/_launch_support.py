@@ -162,18 +162,16 @@ def error_details(error: BaseException, seen=None) -> dict:
     return detail
 
 
-def loopback_url(value: str, *, rpc: bool = False) -> str:
+def loopback_url(value: str) -> str:
     if not isinstance(value, str) or not value or any(character.isspace() or ord(character) < 32 for character in value) or "\\" in value:
         raise ValueError("a safe explicit loopback URL is required")
     parts = urlsplit(value)
     if parts.scheme not in {"http", "https"} or parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise ValueError("simulation endpoints must use literal loopback HTTP(S)")
+        raise ValueError("owned local endpoints must use literal loopback HTTP(S)")
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise ValueError("loopback endpoints cannot contain credentials, queries, or fragments")
     if parts.port is None:
         raise ValueError("loopback endpoints require an explicit owned service port")
-    if rpc and parts.path not in {"", "/"}:
-        raise ValueError("owned Anvil RPC endpoints must have a root path")
     return value.rstrip("/")
 
 
@@ -363,35 +361,21 @@ class Artifacts:
 class JournalHTTPProvider(Web3.HTTPProvider):
     """Observe real RPC failures, including errors swallowed into SDK admission reasons."""
 
-    def __init__(self, url: str, artifacts: Artifacts, *, node: str,
-                 simulation_creator: str | None = None):
+    def __init__(self, url: str, artifacts: Artifacts):
         artifacts.redact.remember_url(url)
         super().__init__(
             url, request_kwargs={"timeout": 120}, exception_retry_configuration=None,
         )
         self.artifacts = artifacts
-        self.node = node
-        self.simulation_creator = simulation_creator
-        if simulation_creator is not None and node != "simulation":
-            raise ExampleFailure("impersonation is confined to an executing controlled fork", code="SOURCE_STATE_MUTATION_FORBIDDEN")
-        if simulation_creator is not None:
-            loopback_url(url, rpc=True)
+        self.node = "execution"
 
-    def unlock_simulation_creator(self):
-        if self.simulation_creator is not None:
-            response = self.make_request("anvil_impersonateAccount", [self.simulation_creator])
-            if "error" in response:
-                raise ExampleFailure("controlled fork could not unlock creator", code="SIMULATION_UNLOCK_FAILED", diagnostic=response["error"])
 
     def make_request(self, method, params):
         method = str(method)
-        writes = method.startswith(("eth_send", "eth_sign", "personal_", "evm_", "anvil_", "hardhat_")) and method != "anvil_nodeInfo"
-        if self.node == "execution" and method.startswith(("evm_", "anvil_", "hardhat_")) and method != "anvil_nodeInfo":
+        if method.startswith(("evm_", "anvil_", "hardhat_")) and method != "anvil_nodeInfo":
             raise ExampleFailure("the execution chain must be preserved for debugging", code="SOURCE_STATE_MUTATION_FORBIDDEN")
-        if self.node == "execution" and (method.startswith(("eth_sign", "personal_")) or method == "eth_sendTransaction"):
+        if method.startswith(("eth_sign", "personal_")) or method == "eth_sendTransaction":
             raise ExampleFailure("execution requires local wallet signing", code="REMOTE_SIGNING_FORBIDDEN")
-        if self.node == "simulation" and method.startswith(("anvil_set", "hardhat_set")):
-            raise ExampleFailure("simulation balance/code/storage mutation is forbidden", code="SIMULATION_STATE_MUTATION_FORBIDDEN")
         started = time.monotonic()
         try:
             response = super().make_request(method, params)
@@ -400,22 +384,8 @@ class JournalHTTPProvider(Web3.HTTPProvider):
             raise
         duration = (time.monotonic() - started) * 1000
         if "error" in response:
-            safe_params = "[RAW SIGNED TRANSACTION OMITTED]" if method == "eth_sendRawTransaction" else {"wallet": params[0], "typedData": "[SIGNING REQUEST OMITTED]"} if method == "eth_signTypedData_v4" else params
+            safe_params = "[RAW SIGNED TRANSACTION OMITTED]" if method == "eth_sendRawTransaction" else params
             self.artifacts.event("rpc-error", node=self.node, method=method, params=safe_params, error=response["error"], durationMs=duration)
-        elif method == "eth_sendTransaction":
-            self.artifacts.event("rpc-submitted", node=self.node, method=method, transaction=params[0], transactionHash=response.get("result"), durationMs=duration)
         elif method == "eth_getTransactionReceipt" and response.get("result") is not None:
             self.artifacts.event("rpc-receipt", node=self.node, transactionHash=params[0], receipt=response["result"], durationMs=duration)
-            if self.node == "simulation" and response["result"].get("status") in {0, "0x0", "0x00"}:
-                # The SDK restores its fork immediately after this read; retain real
-                # revert data now, while the failing transaction is still available.
-                try:
-                    trace = super().make_request("debug_traceTransaction", [params[0], {"tracer": "callTracer"}])
-                except Exception as error:
-                    trace = {"error": error_details(error)}
-                self.artifacts.event("rpc-revert-trace", node=self.node, transactionHash=params[0], trace=trace)
-        elif writes and method != "eth_signTypedData_v4":
-            self.artifacts.event("rpc-simulation-boundary", node=self.node, method=method, durationMs=duration)
-        if method == "anvil_reset" and "error" not in response:
-            self.unlock_simulation_creator()
         return response

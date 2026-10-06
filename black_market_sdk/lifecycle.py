@@ -9,6 +9,7 @@ requires actual sequential execution, not disconnected calls to future pools.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -20,6 +21,7 @@ from eth_abi import encode as abi_encode
 from eth_utils import is_address, keccak, to_checksum_address
 from web3 import Web3
 
+from .addresses import ROBINHOOD_MAINNET_CHAIN_ID
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -36,15 +38,19 @@ from .lifecycle_abis import (
     LAUNCH_ENVELOPE_COMPONENTS_V2, DEVELOPER_TERMS_COMPONENTS_V3,
     SOURCE_TERMS_COMPONENTS_V3, LAUNCH_FEE_HUB_FACTORY_V3_ABI,
     MARKET_CONFIG_COMPONENTS_V1,
+    NITRO_ARB_SYS_ABI, NITRO_ARB_GAS_INFO_ABI, NITRO_NODE_INTERFACE_ABI,
 )
 from .lifecycle_rpc import (
     ControlledLaunchFork, LaunchBlock, LaunchExecutionLimits, LaunchLimitContext, LaunchRpcError, LaunchRpcSimulation,
-    LaunchStateChanged, assert_canonical, create_controlled_launch_fork, hex_bytes, quantity, read_block, rpc, simulate_transactions,
+    LaunchStateChanged, assert_canonical, assert_chain, create_controlled_launch_fork, hex_bytes, quantity, read_block, rpc, rpc_transaction, simulate_transactions,
 )
 
 ZERO_ADDRESS = "0x" + "00" * 20
 ZERO_HASH = "0x" + "00" * 32
 LAUNCH_PLAN_DOMAIN_V1 = keccak(text="BLACK_MARKET_LAUNCH_PLAN_V1")
+NITRO_ARB_SYS_ADDRESS = "0x0000000000000000000000000000000000000064"
+NITRO_ARB_GAS_INFO_ADDRESS = "0x000000000000000000000000000000000000006c"
+NITRO_NODE_INTERFACE_ADDRESS = "0x00000000000000000000000000000000000000c8"
 LAUNCH_TOKEN_ONLY_CAPABILITY_V1 = 1
 LAUNCH_EMPTY_PREPARE_CAPABILITY_V1 = 2
 LAUNCH_PERMANENT_CUSTODY_CAPABILITY_V1 = 8
@@ -1347,6 +1353,23 @@ class LifecycleApproval:
 
 
 @dataclass(frozen=True)
+class LifecycleAdmission:
+    """Exact execution admission, distinct from wallet transport acceptance."""
+
+    admitted: bool
+    confidence: str
+    limits: LaunchExecutionLimits
+    block_number: int
+    block_hash: str
+    account: str
+    chain_id: int
+    execution_proof: Literal["proved", "failed", "unavailable"]
+    protocol_fit: Literal["proved", "failed", "unknown"]
+    transport_preflight: Literal["not-requested", "passed", "failed"] = "not-requested"
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class LifecycleTransaction:
     step_id: str
     kind: str
@@ -1366,8 +1389,14 @@ class LifecycleTransaction:
     execution_fee: int | None = None
     maximum_execution_fee: int | None = None
     data_fee: int | None = None
+    compute_gas_estimate: int | None = None
+    poster_gas: int | None = None
+    poster_fee: int | None = None
+    data_fee_included_in_gas: bool = False
+    total_fee: int | None = None
     gas_used: int | None = None
     confidence: str = "provisional"
+    admission: LifecycleAdmission | None = None
 
     def as_transaction(self) -> dict[str, Any]:
         result: dict[str, Any] = {"chainId": self.chain_id, "from": self.from_address, "to": self.to, "data": self.data, "value": self.value, "nonce": self.nonce}
@@ -1388,6 +1417,21 @@ class LaunchSimulation:
     reasons: tuple[str, ...]
     evidence: LaunchRpcSimulation
     unknown_constraints: tuple[str, ...] = ()
+    execution_proof: Literal["proved", "failed", "unavailable"] = "unavailable"
+    protocol_fit: Literal["proved", "failed", "unknown"] = "unknown"
+    transport_preflight: Literal["not-requested", "passed", "failed"] = "not-requested"
+    chain_id: int | None = None
+    account: str | None = None
+
+
+class LaunchSubmissionPreflightError(ValueError):
+    """Read-only submission RPC refusal; no signature or write was requested."""
+
+    code = "SUBMISSION_PREFLIGHT_FAILED"
+
+    def __init__(self, reason: str, simulation: LaunchSimulation) -> None:
+        self.simulation = replace(simulation, transport_preflight="failed", reasons=(*simulation.reasons, reason))
+        super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -1429,29 +1473,49 @@ _ERC20_READ_ABI = [
     {"type": "function", "name": "approve", "stateMutability": "nonpayable", "inputs": [{"name": "spender", "type": "address"}, {"name": "amount", "type": "uint256"}], "outputs": [{"name": "", "type": "bool"}]},
 ]
 
-def _resolve_limits(client: Web3, source: LaunchExecutionLimits | LifecycleLimitResolver | None, block: LaunchBlock, account: str, chain_id: int, orchestrator: str) -> tuple[LaunchExecutionLimits, str | None]:
-    try:
-        context = LaunchLimitContext(block, chain_id, _address(orchestrator, "orchestrator"), _address(account, "account"), getattr(client.provider, "endpoint_uri", None))
-        limits = source(client, context) if callable(source) else source
-        if limits is None:
-            return LaunchExecutionLimits(), None
-        if not isinstance(limits, LaunchExecutionLimits):
-            raise TypeError("the execution-limit resolver must return LaunchExecutionLimits")
-        if limits.observed_block_number is not None and limits.observed_block_number != block.number:
-            raise ValueError("execution limits were observed at a different block number")
-        if limits.observed_block_hash is not None and limits.observed_block_hash.lower() != block.block_hash:
-            raise ValueError("execution limits were observed on a different canonical block")
-        if limits.chain_id is not None and limits.chain_id != chain_id:
-            raise ValueError("execution limits belong to a different chain")
-        if limits.account is not None and limits.account.lower() != account.lower():
-            raise ValueError("execution limits belong to a different account")
-        if limits.orchestrator is not None and limits.orchestrator.lower() != orchestrator.lower():
-            raise ValueError("execution limits belong to a different orchestrator")
-        return limits, None
-    except Exception as error:
-        # Keep progress/cancellation discovery usable, but never turn missing
-        # limit authority into successful submission admission.
-        return LaunchExecutionLimits(), f"execution limits could not be resolved: {type(error).__name__}"
+def _read_nitro_uint(client: Web3, block: LaunchBlock, target: str, abi: Sequence[Mapping[str, Any]], name: str, bits: int) -> int:
+    data = _encode_function(abi, name, [])
+    raw = hex_bytes(rpc(client, "eth_call", [{"to": target, "data": data}, block.tag]))
+    if len(raw) != 66:
+        raise ValueError(f"Nitro {name} must return exactly one ABI word")
+    return _uint(abi_decode([f"uint{bits}"], bytes.fromhex(raw[2:]))[0], bits, f"Nitro {name}")
+
+
+def _resolve_limits(client: Web3, source: LaunchExecutionLimits | LifecycleLimitResolver | None, block: LaunchBlock, account: str, chain_id: int, orchestrator: str) -> LaunchExecutionLimits:
+    context = LaunchLimitContext(block, chain_id, _address(orchestrator, "orchestrator"), _address(account, "account"), getattr(client.provider, "endpoint_uri", None))
+    limits = source(client, context) if callable(source) else source if source is not None else LaunchExecutionLimits()
+    if not isinstance(limits, LaunchExecutionLimits):
+        raise TypeError("a supplied execution-limit resolver must return LaunchExecutionLimits")
+    if limits.observed_block_number is not None and limits.observed_block_number != block.number:
+        raise ValueError("execution limits were observed at a different block number")
+    if limits.observed_block_hash is not None and limits.observed_block_hash.lower() != block.block_hash:
+        raise ValueError("execution limits were observed on a different canonical block")
+    if limits.chain_id is not None and limits.chain_id != chain_id:
+        raise ValueError("execution limits belong to a different chain")
+    if limits.account is not None and _address(limits.account, "limits account").lower() != account.lower():
+        raise ValueError("execution limits belong to a different account")
+    if limits.orchestrator is not None and _address(limits.orchestrator, "limits orchestrator").lower() != orchestrator.lower():
+        raise ValueError("execution limits belong to a different orchestrator")
+    supplied_caps = [value for value in (
+        limits.chain_transaction_gas_limit, limits.rpc_transaction_gas_limit,
+        limits.account_transaction_gas_limit,
+    ) if value is not None]
+    if chain_id != ROBINHOOD_MAINNET_CHAIN_ID:
+        ceiling = min([block.gas_limit, *supplied_caps])
+        return replace(limits, protocol="evm", execution_gas_ceiling=ceiling, transaction_gas_ceiling=ceiling,
+                       arb_os_version=None, max_tx_compute_gas=None, max_block_compute_gas=None)
+    raw_version = _read_nitro_uint(client, block, NITRO_ARB_SYS_ADDRESS, NITRO_ARB_SYS_ABI, "arbOSVersion", 256)
+    if raw_version < 105:
+        raise ValueError("Nitro compute ceilings require actual ArbOS version 50 or above (ArbSys offset 55)")
+    tx_cap = _read_nitro_uint(client, block, NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxTxGasLimit", 256)
+    block_cap = _read_nitro_uint(client, block, NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxBlockGasLimit", 64)
+    if tx_cap == 0 or block_cap == 0:
+        raise ValueError("Nitro compute ceilings must be positive")
+    assert_canonical(client, block)
+    assert_chain(client, chain_id)
+    return replace(limits, protocol="nitro", execution_gas_ceiling=min(tx_cap, block_cap),
+                   transaction_gas_ceiling=min(supplied_caps) if supplied_caps else None,
+                   arb_os_version=raw_version - 55, max_tx_compute_gas=tx_cap, max_block_compute_gas=block_cap)
 
 
 
@@ -1659,57 +1723,182 @@ def _refused_overlimit(kind: str) -> tuple[str, ...]:
     return (reason + "; the final activation/launch is indivisible" if indivisible else (reason + "; only preparation groups may be partitioned"),)
 
 
+def _launch_simulation(
+    plan: LaunchPlanV1, limits: LaunchExecutionLimits, evidence: LaunchRpcSimulation,
+    transactions: Sequence[LifecycleTransaction], reasons: Sequence[str] = (), *,
+    admitted: bool = False, execution_proof: Literal["proved", "failed", "unavailable"] = "unavailable",
+    protocol_fit: Literal["proved", "failed", "unknown"] = "unknown", unknown: tuple[str, ...] = (),
+) -> LaunchSimulation:
+    admission = LifecycleAdmission(
+        admitted, evidence.confidence, limits, evidence.block.number, evidence.block.block_hash,
+        _address(plan.creator, "creator"), plan.chain_id, execution_proof, protocol_fit,
+        reason="; ".join(reasons) if reasons else None,
+    )
+    bound = tuple(replace(transaction, admission=admission) for transaction in transactions)
+    return LaunchSimulation(
+        evidence.confidence, admitted, evidence.block, evidence.backend, bound, tuple(reasons), evidence,
+        unknown, execution_proof, protocol_fit, chain_id=plan.chain_id, account=admission.account,
+    )
+
+
+def _verify_nitro_backend(client: Web3, plan: LaunchPlanV1, block: LaunchBlock, limits: LaunchExecutionLimits, gas_price: int) -> None:
+    if limits.arb_os_version is None or limits.max_tx_compute_gas is None or limits.max_block_compute_gas is None:
+        raise ValueError("the native Nitro protocol context is incomplete")
+    specifications = (
+        (NITRO_ARB_SYS_ADDRESS, NITRO_ARB_SYS_ABI, "arbOSVersion", 256, limits.arb_os_version + 55),
+        (NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxTxGasLimit", 256, limits.max_tx_compute_gas),
+        (NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxBlockGasLimit", 64, limits.max_block_compute_gas),
+    )
+    gas = min(limits.compute_cap(block), 100_000)
+    calls = [
+        {"from": plan.creator, "to": target, "data": _encode_function(abi, name, []),
+         "value": "0x0", "gas": hex(gas), "gasPrice": hex(gas_price)}
+        for target, abi, name, _, _ in specifications
+    ]
+    # This isolated capability probe proves native ArbOS execution only. Its
+    # temporary balance is never used in lifecycle measurement/replay or funding
+    # admission, so an exactly funded payer need not afford three probe calls.
+    payload = {
+        "blockStateCalls": [{
+            "blockOverrides": {"number": hex(block.number + 1), "time": hex(block.timestamp + 1)},
+            "stateOverrides": {plan.creator: {"balance": hex((1 << 256) - 1)}},
+            "calls": calls,
+        }],
+        "validation": True, "traceTransfers": False,
+    }
+    if limits.rpc_total_simulation_gas_limit is not None and gas * len(calls) > limits.rpc_total_simulation_gas_limit:
+        raise ValueError("the RPC aggregate simulation gas cap cannot fit the native Nitro capability probe")
+    envelope = {"jsonrpc": "2.0", "id": 1, "method": "eth_simulateV1", "params": [payload, block.tag]}
+    if limits.rpc_max_request_bytes is not None and len(json.dumps(envelope, separators=(",", ":")).encode()) > limits.rpc_max_request_bytes:
+        raise ValueError("the RPC request-size cap cannot fit the native Nitro capability probe")
+    assert_canonical(client, block)
+    assert_chain(client, plan.chain_id)
+    try:
+        raw = rpc(client, "eth_simulateV1", [payload, block.tag])
+    finally:
+        assert_chain(client, plan.chain_id)
+    if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], Mapping):
+        raise ValueError("the native Nitro capability probe returned an incomplete block")
+    results = raw[0].get("calls")
+    if not isinstance(results, list) or len(results) != len(specifications):
+        raise ValueError("the native Nitro capability probe returned incomplete calls")
+    for result, (_, _, name, bits, expected) in zip(results, specifications):
+        returned = hex_bytes(result.get("returnData", "0x"))
+        if quantity(result.get("status")) != 1 or len(returned) != 66:
+            raise ValueError(f"the simulation backend cannot prove native Nitro {name}")
+        actual = abi_decode([f"uint{bits}"], bytes.fromhex(returned[2:]))[0]
+        if actual != expected:
+            raise ValueError(f"the simulation backend Nitro {name} differs from the pinned protocol context")
+    assert_canonical(client, block)
+    assert_chain(client, plan.chain_id)
+
+
+def _nitro_poster_budget(client: Web3, transaction: LifecycleTransaction, block: LaunchBlock) -> tuple[int, int]:
+    request = rpc_transaction(transaction.as_transaction())
+    request["to"] = NITRO_NODE_INTERFACE_ADDRESS
+    request["data"] = _encode_function(
+        NITRO_NODE_INTERFACE_ABI, "gasEstimateL1Component",
+        [transaction.to, False, bytes.fromhex(hex_bytes(transaction.data)[2:])],
+    )
+    raw = hex_bytes(rpc(client, "eth_call", [request, block.tag]))
+    if len(raw) != 194:
+        raise ValueError("Nitro poster estimation must return exactly three ABI words")
+    poster_gas, base_fee, _ = abi_decode(["uint64", "uint256", "uint256"], bytes.fromhex(raw[2:]))
+    if base_fee == 0:
+        raise ValueError("Nitro poster estimation returned a zero L2 base fee")
+    return poster_gas, _uint(poster_gas * base_fee, 256, "Nitro poster fee")
+
+
 def _simulate_sequence(client: Web3, plan: LaunchPlanV1, transactions: Sequence[LifecycleTransaction], *, block: LaunchBlock, predicted: str, limits: LaunchExecutionLimits, fork: ControlledLaunchFork | None, data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None) -> LaunchSimulation:
+    assert_chain(client, plan.chain_id)
+    unknown = limits.unknown_constraints()
+    if limits.protocol == "evm" and data_fee_estimator is None:
+        unknown = (*unknown, "data_fee")
     if not transactions:
         evidence = LaunchRpcSimulation("stateful", "none", block, ())
-        return LaunchSimulation("stateful", True, block, "none", (), (), evidence)
+        return _launch_simulation(plan, limits, evidence, (), admitted=True, execution_proof="proved", protocol_fit="proved", unknown=unknown)
+    nitro = limits.protocol == "nitro"
+    if nitro:
+        if fork is not None:
+            reason = "a generic controlled fork cannot prove native Nitro ArbOS compute/poster metering"
+            evidence = LaunchRpcSimulation("provisional", None, block, (), reason)
+            return _launch_simulation(plan, limits, evidence, transactions, (reason,), unknown=unknown)
+        try:
+            _verify_nitro_backend(client, plan, block, limits, _uint(transactions[0].gas_price, 256, "gas price"))
+        except LaunchStateChanged:
+            raise
+        except Exception as error:
+            reason = f"native Nitro simulation capability is unavailable: {error}"
+            evidence = LaunchRpcSimulation("provisional", None, block, (), reason)
+            return _launch_simulation(plan, limits, evidence, transactions, (reason,), unknown=unknown)
     measured = simulate_transactions(client, [transaction.as_transaction() for transaction in transactions], block=block, limits=limits, fork=fork, validation=False)
-    cap = limits.gas_cap(block)
+    compute_cap = limits.compute_cap(block)
+    envelope_cap = limits.gas_cap(block)
     if measured.confidence != "stateful" or not measured.successful:
         reasons = (measured.reason,) if measured.reason else tuple(f"{transaction.kind} reverted: {call.error or call.return_data}" for transaction, call in zip(transactions, measured.calls) if not call.success)
-        return LaunchSimulation(measured.confidence, False, block, measured.backend, tuple(transactions), reasons or ("the exact sequence could not be measured",), measured)
-    if not measured.complete:
-        missing = transactions[len(measured.calls):]
-        return LaunchSimulation(measured.confidence, False, block, measured.backend, tuple(transactions), tuple(f"{transaction.kind} could not be measured against actual preceding state" for transaction in missing), measured)
-    estimates = [limits.buffered_gas(call.gas_required if call.gas_required is not None else call.gas_used) for call in measured.calls]
-    if any(estimate > cap for estimate in estimates):
-        return LaunchSimulation("stateful", False, block, measured.backend, tuple(transactions), ("a measured transaction does not fit current limits with conservative headroom",), measured)
-    buffered = tuple(replace(transaction, gas_estimate=call.gas_required if call.gas_required is not None else call.gas_used, gas_used=call.gas_used, gas_limit=estimate, confidence="provisional", execution_fee=call.gas_used * transaction.gas_price, maximum_execution_fee=estimate * transaction.gas_price) for transaction, call, estimate in zip(transactions, measured.calls, estimates))
-    # Re-execute the exact buffered gas limits. gasUsed alone is not a proof
-    # of sufficient forwarded gas (EIP-150) or the final transaction envelope.
+        execution = "failed" if any(not call.success for call in measured.calls) else "unavailable"
+        return _launch_simulation(plan, limits, measured, transactions, reasons or ("the exact sequence could not be measured",), execution_proof=execution, unknown=unknown)
+    buffered: list[LifecycleTransaction] = []
+    compute_budgets: list[int] = []
+    for transaction, call in zip(transactions, measured.calls):
+        compute = call.gas_required if call.gas_required is not None else call.gas_used
+        compute_budget = limits.buffered_gas(compute)
+        compute_budgets.append(compute_budget)
+        poster_gas, poster_fee = _nitro_poster_budget(client, transaction, block) if nitro else (0, 0)
+        gas_limit = compute_budget + (limits.buffered_gas(poster_gas) if nitro else 0)
+        gas_price = _uint(transaction.gas_price, 256, "gas price")
+        maximum_fee = _uint(gas_limit * gas_price, 256, "maximum execution fee")
+        buffered.append(replace(
+            transaction, gas_estimate=_uint(compute + poster_gas, 256, "gas estimate"),
+            compute_gas_estimate=compute if nitro else None, gas_used=call.gas_used,
+            gas_limit=gas_limit, confidence="provisional", execution_fee=_uint(call.gas_used * gas_price, 256, "execution fee"),
+            maximum_execution_fee=maximum_fee, poster_gas=poster_gas if nitro else None,
+            poster_fee=poster_fee if nitro else None, data_fee=0 if nitro else None,
+            data_fee_included_in_gas=nitro, total_fee=maximum_fee,
+        ))
+    if any(budget > compute_cap for budget in compute_budgets) or any(
+        not 0 < transaction.gas_limit < (1 << 64) or transaction.gas_limit > envelope_cap
+        for transaction in buffered
+    ):
+        return _launch_simulation(plan, limits, measured, buffered, ("a measured transaction does not fit current protocol/known policy with conservative headroom",), protocol_fit="failed", unknown=unknown)
+    # Nitro discovery has zero child base fee and measures compute only. The
+    # poster quote supplies a budget, never a subtraction-based compute proof.
+    # Native validation replay charges actual poster gas and enforces ArbOS's
+    # compute hold on the exact total envelope and actual sequential state.
     proof = simulate_transactions(client, [transaction.as_transaction() for transaction in buffered], block=block, limits=limits, fork=fork)
     failure = proof.reason if proof.confidence != "stateful" else _postcondition_failure(plan, buffered, proof, predicted)
     if failure is not None and proof.confidence == "stateful":
         failed_index = next((index for index, call in enumerate(proof.calls) if not call.success), None)
         if failed_index is not None and _gas_starvation(buffered[failed_index], proof.calls[failed_index], buffered[failed_index].gas_limit or 0):
-            ceiling = cap if cap > buffered[failed_index].gas_limit else None
-            if ceiling is not None and ceiling > buffered[failed_index].gas_limit:
+            poster_budget = limits.buffered_gas(buffered[failed_index].poster_gas or 0) if nitro else 0
+            ceiling = _uint(min(envelope_cap, compute_cap + poster_budget), 64, "replay gas ceiling")
+            if ceiling > buffered[failed_index].gas_limit:
                 replay = list(buffered)
-                replay[failed_index] = replace(replay[failed_index], gas_limit=ceiling, maximum_execution_fee=ceiling * replay[failed_index].gas_price)
+                maximum_fee = _uint(ceiling * replay[failed_index].gas_price, 256, "maximum execution fee")
+                replay[failed_index] = replace(replay[failed_index], gas_limit=ceiling, maximum_execution_fee=maximum_fee, total_fee=maximum_fee)
                 retry = simulate_transactions(client, [item.as_transaction() for item in replay], block=block, limits=limits, fork=fork)
                 if retry.confidence == "stateful":
                     retry_failure = _postcondition_failure(plan, replay, retry, predicted)
-                    if retry_failure is None and len(retry.calls) == len(replay) and retry.calls[failed_index].success:
-                        buffered = tuple(replace(item, gas_used=call.gas_used, execution_fee=call.gas_used * item.gas_price, confidence="stateful", gas_estimate=call.gas_required if call.gas_required is not None else item.gas_estimate) for item, call in zip(replay, retry.calls))
-                        failure, proof = None, retry
+                    if retry_failure is None and retry.complete:
+                        buffered, failure, proof = replay, None, retry
                     else:
                         failure = _refused_overlimit(replay[failed_index].kind)[0] + (f"; {retry_failure}" if retry_failure else "")
-                # A discovery RPC error keeps the original failure unchanged.
     if failure is not None or proof.confidence != "stateful":
-        return LaunchSimulation(proof.confidence, False, block, proof.backend, buffered, (failure or "the exact buffered sequence is unsupported",), proof)
-    buffered = tuple(replace(transaction, gas_used=call.gas_used, execution_fee=call.gas_used * transaction.gas_price, confidence="stateful") for transaction, call in zip(buffered, proof.calls))
-    if data_fee_estimator is not None:
+        return _launch_simulation(plan, limits, proof, buffered, (failure or "the exact buffered sequence is unsupported",),
+                                  execution_proof="failed" if proof.confidence == "stateful" else "unavailable",
+                                  protocol_fit="unknown", unknown=unknown)
+    buffered = [replace(transaction, gas_used=call.gas_used, execution_fee=_uint(call.gas_used * transaction.gas_price, 256, "execution fee"), confidence="stateful") for transaction, call in zip(buffered, proof.calls)]
+    if not nitro and data_fee_estimator is not None:
         fees = [_uint(data_fee_estimator(client, transaction.as_transaction(), block), 256, "data fee") for transaction in buffered]
-        buffered = tuple(replace(transaction, data_fee=fee) for transaction, fee in zip(buffered, fees))
+        buffered = [replace(transaction, data_fee=fee, total_fee=_uint((transaction.maximum_execution_fee or 0) + fee, 256, "total fee")) for transaction, fee in zip(buffered, fees)]
     balance = quantity(rpc(client, "eth_getBalance", [plan.creator, block.tag]))
-    required = sum(transaction.value + (transaction.maximum_execution_fee or 0) + (transaction.data_fee or 0) for transaction in buffered)
-    if required > balance:
-        assert_canonical(client, block)
-        return LaunchSimulation("stateful", False, block, proof.backend, buffered, ("creator native balance cannot fund remaining value and execution/data fee envelopes",), proof)
+    required = sum(transaction.value + (transaction.total_fee or 0) for transaction in buffered)
     assert_canonical(client, block)
-    unknown = limits.unknown_constraints()
-    reasons = ("applicable execution/calldata constraints are unknown: " + ", ".join(unknown),) if unknown else ()
-    return LaunchSimulation("stateful", not unknown, block, proof.backend, buffered, reasons, proof, unknown)
+    assert_chain(client, plan.chain_id)
+    if required > balance:
+        return _launch_simulation(plan, limits, proof, buffered, ("creator native balance cannot fund remaining value and execution/data fee envelopes",),
+                                  execution_proof="proved", protocol_fit="proved", unknown=unknown)
+    return _launch_simulation(plan, limits, proof, buffered, admitted=True, execution_proof="proved", protocol_fit="proved", unknown=unknown)
 
 
 def _groups(first: int, total: int, batch_size: int) -> list[tuple[int, int]]:
@@ -1742,7 +1931,7 @@ def plan_launch(
     if progress.mode is not None and progress.mode != mode:
         raise ValueError("the selected mode differs from canonical pending-launch execution metadata")
     block = progress.head_block
-    limits, limits_failure = _resolve_limits(client, limits_source, block, _address(account, "account"), plan.chain_id, plan.orchestrator)
+    limits = _resolve_limits(client, limits_source, block, _address(account, "account"), plan.chain_id, plan.orchestrator)
     predicted = predict_launch_token(client, plan, block=block)
     # Terminal launches are immutable; a head-only Active observation is not
     # confirmation-bound and never reaches this canonical branch.
@@ -1755,13 +1944,13 @@ def plan_launch(
     nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, block.tag]))
     pending_nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"]))
     gas_price = quantity(rpc(client, "eth_gasPrice", []))
-    cap = limits.gas_cap(block)
+    cap = min(limits.compute_cap(block), limits.gas_cap(block))
     groups = _groups(progress.prepared_markets, len(plan.markets), batch_size)
     transactions = _make_transactions(plan, mode, progress, approvals, groups, nonce=nonce, gas_cap=cap, gas_price=gas_price)
     if hex_bytes(rpc(client, "eth_getCode", [plan.creator, block.tag])) != "0x" or pending_nonce != nonce:
         reason = "direct contract-account execution is not a verified EOA route" if pending_nonce == nonce else "the account has unresolved pending/replaced transactions; wait and recover canonical state"
         evidence = LaunchRpcSimulation("provisional", None, block, (), reason)
-        simulation = LaunchSimulation("provisional", False, block, None, transactions, (reason,), evidence)
+        simulation = _launch_simulation(plan, limits, evidence, transactions, (reason,), unknown=limits.unknown_constraints())
         return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, transactions, approvals, progress, simulation, None, limits, batch_size, ("Preparation gas and deployed infrastructure cannot be recovered",), admissions, limits_source, token_factory=token_factory, token_factory_code_hash=token_factory_code_hash)
     atomic: LaunchSimulation | None = None
     if progress.phase == LifecyclePhase.NONE:
@@ -1778,11 +1967,17 @@ def plan_launch(
             if simulation.admitted or simulation.confidence != "stateful":
                 break
             split_index = None
-            for transaction, call in zip(transactions, simulation.evidence.calls):
+            for transaction_index, (transaction, call) in enumerate(zip(transactions, simulation.evidence.calls)):
                 if transaction.kind != "prepare" or transaction.market_count <= 1:
                     continue
-                required_gas = call.gas_required if call.gas_required is not None else call.gas_used
-                gas_failure = limits.buffered_gas(required_gas) > cap or (not call.success and (required_gas >= cap or "out of gas" in str(call.error).lower()))
+                reviewed = simulation.transactions[transaction_index]
+                if limits.protocol == "nitro" and reviewed.compute_gas_estimate is not None:
+                    required_gas = reviewed.compute_gas_estimate
+                else:
+                    required_gas = call.gas_required if call.gas_required is not None else call.gas_used
+                gas_failure = limits.buffered_gas(required_gas) > limits.compute_cap(block) or (
+                    reviewed.gas_limit is not None and reviewed.gas_limit > limits.gas_cap(block)
+                ) or (not call.success and (required_gas >= cap or "out of gas" in str(call.error).lower()))
                 if gas_failure:
                     split_index = next(index for index, group in enumerate(groups) if group[0] == transaction.first_market)
                     break
@@ -1796,11 +1991,8 @@ def plan_launch(
             first, count = groups[split_index]
             left = count // 2
             groups[split_index:split_index + 1] = [(first, left), (first + left, count - left)]
-    if limits_failure is not None:
-        simulation = replace(simulation, admitted=False, reasons=(*simulation.reasons, limits_failure))
-        if atomic is not None:
-            atomic = replace(atomic, admitted=False, reasons=(*atomic.reasons, limits_failure))
     assert_canonical(client, block)
+    assert_chain(client, plan.chain_id)
     return PlannedLaunch(plan, hash_launch_plan(plan), launch_id_of(plan), predicted, plan.chain_id, _address(account, "account"), mode, simulation.transactions, approvals, progress, simulation, atomic, limits, batch_size, ("Preparation gas and setup deployments are irreversible", "Cancellation refunds only unspent launch-isolated external funding, not launch-token inventory or gas"), admissions, limits_source, confirmations=confirmations, transaction_hashes=tuple(transaction_hashes), token_factory=token_factory, token_factory_code_hash=token_factory_code_hash)
 
 def _assert_planned_identity(launch: PlannedLaunch) -> None:
@@ -1850,17 +2042,43 @@ def simulate_launch_plan(client: Web3, launch: PlannedLaunch | LaunchPlanV1, *, 
     return current.simulation
 
 
+def _submission_preflight(submission_client: Web3, transaction: LifecycleTransaction, simulation: LaunchSimulation) -> LifecycleTransaction:
+    try:
+        if quantity(rpc(submission_client, "eth_chainId", [])) != transaction.chain_id:
+            raise ValueError("the submission RPC is connected to a different chain")
+        if transaction.gas_limit is None:
+            raise ValueError("the reviewed next transaction has no exact gas envelope")
+        if _uint(transaction.gas_limit, 64, "reviewed gas envelope") == 0:
+            raise ValueError("the reviewed next transaction gas must be a positive uint64")
+        envelope = rpc_transaction(transaction.as_transaction())
+        request = {key: envelope[key] for key in ("from", "to", "data", "value", "gas", "gasPrice") if key in envelope}
+        estimate = quantity(rpc(submission_client, "eth_estimateGas", [request, "latest"]))
+        if quantity(rpc(submission_client, "eth_chainId", [])) != transaction.chain_id:
+            raise ValueError("the submission RPC chain changed during preflight")
+        if not 0 < estimate <= transaction.gas_limit:
+            raise ValueError("the submission RPC estimate exceeds the exact reviewed gas envelope")
+    except Exception as error:
+        raise LaunchSubmissionPreflightError(f"submission RPC preflight failed: {error}", simulation) from error
+    if transaction.admission is None:
+        raise LaunchSubmissionPreflightError("the next transaction has no bound execution admission", simulation)
+    return replace(transaction, admission=replace(transaction.admission, transport_preflight="passed"))
+
+
 def build_next_transaction(
     client: Web3, launch: PlannedLaunch | LaunchPlanV1, *, account: str,
     mode: str | None = None, action: str = "continue", limits: LaunchExecutionLimits | LifecycleLimitResolver | None = None,
     prepare_batch_size: int | None = None, confirmations: int | None = None,
     transaction_hashes: Sequence[str] | None = None, fork: ControlledLaunchFork | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
+    submission_client: Web3 | None = None,
 ) -> LifecycleTransaction | None:
     """Read confirmed progress, revalidate and return only the next proven call.
 
     Replacements/reorgs are reconciled from canonical state. Terminal launches
     return None. Cancellation deliberately avoids disabled registry/adapters.
+    An optional submission_client performs only a read-only latest-state
+    estimate for this immediate call within its exact reviewed gas envelope.
+    Execution admission does not guarantee wallet transport acceptance.
     """
     if action not in {"continue", "cancel"}:
         raise ValueError("action must be 'continue' or 'cancel'")
@@ -1891,14 +2109,12 @@ def build_next_transaction(
             raise ValueError("cancellation execution metadata differs from the pending launch")
         _assert_confirmed_account_state(client, plan, progress)
         block = progress.head_block
-        limits, limits_failure = _resolve_limits(client, limits, block, _address(account, "account"), plan.chain_id, plan.orchestrator)
+        limits = _resolve_limits(client, limits, block, _address(account, "account"), plan.chain_id, plan.orchestrator)
         nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, block.tag]))
         if quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"])) != nonce or hex_bytes(rpc(client, "eth_getCode", [plan.creator, block.tag])) != "0x":
             raise LaunchStateChanged("cancellation requires a settled direct EOA transaction context")
-        transactions = _make_transactions(plan, selected, progress, (), (), nonce=nonce, gas_cap=limits.gas_cap(block), gas_price=quantity(rpc(client, "eth_gasPrice", [])), cancel=True)
+        transactions = _make_transactions(plan, selected, progress, (), (), nonce=nonce, gas_cap=min(limits.compute_cap(block), limits.gas_cap(block)), gas_price=quantity(rpc(client, "eth_gasPrice", [])), cancel=True)
         proof = _simulate_sequence(client, plan, transactions, block=block, predicted=progress.token, limits=limits, fork=fork, data_fee_estimator=data_fee_estimator)
-        if limits_failure is not None:
-            proof = replace(proof, admitted=False, reasons=(*proof.reasons, limits_failure))
     else:
         planned = plan_launch(client, plan, account=account, mode=selected, limits=limits, prepare_batch_size=prepare_batch_size, confirmations=confirmations, transaction_hashes=transaction_hashes, fork=fork, data_fee_estimator=data_fee_estimator)
         if isinstance(launch, PlannedLaunch):
@@ -1906,7 +2122,12 @@ def build_next_transaction(
         proof = planned.simulation
     if not proof.admitted:
         raise ValueError("the next transaction has no verified admission: " + "; ".join(proof.reasons))
-    return proof.transactions[0] if proof.transactions else None
+    next_transaction = proof.transactions[0] if proof.transactions else None
+    if next_transaction is not None and submission_client is not None:
+        next_transaction = _submission_preflight(submission_client, next_transaction, proof)
+        _check_client_identity(client, plan, account)
+        assert_canonical(client, proof.block)
+    return next_transaction
 
 
 def _verify_market_identity(plan: LaunchPlanV1, token: str, index: int, identity: Sequence[Any]) -> None:
@@ -2205,6 +2426,7 @@ __all__ = [
     "LAUNCH_ERC404_CAPABILITY_V1", "LAUNCH_MULTI_POSITION_CAPABILITY_V1",
     "V4_LIFECYCLE_CONFIG_SCHEMA", "ABYSS_LIFECYCLE_CONFIG_SCHEMA", "V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA",
     "POOL_BOUND_MARKET_ECONOMICS_DOMAIN_V1", "V4_LIFECYCLE_HOOK_PERMISSION_MASK", "V4_LIFECYCLE_HOOK_PERMISSIONS",
+    "NITRO_ARB_SYS_ADDRESS", "NITRO_ARB_GAS_INFO_ADDRESS", "NITRO_NODE_INTERFACE_ADDRESS",
     "LifecycleHookTopology", "ProfileTopologyV1", "LifecycleProfile",
     "LaunchBoundsV2", "LaunchGraphV2", "LaunchEnvelopeV2", "LifecycleDeveloperTerms",
     "LifecyclePoolBoundV4MarketConfig", "PoolBoundHookParametersV1",
@@ -2219,6 +2441,7 @@ __all__ = [
     "LifecycleTokenConfig", "LifecycleAssetFunding", "LifecycleFeeAssetPolicy", "LifecycleMarketConfig", "LifecycleInitialBuy",
     "LifecycleV4Position", "LifecycleV4MarketConfig", "LifecycleAbyssPosition", "LifecycleAbyssMarketConfig",
     "LifecycleApproval", "LifecycleTransaction", "LifecycleEvent", "LifecycleReceiptStatus",
+    "LifecycleAdmission", "LaunchSubmissionPreflightError",
     "launch_plan_from_dict", "launch_plan_to_dict", "to_launch_plan_tuple", "encode_launch_plan", "hash_launch_plan", "launch_id_of",
     "encode_lifecycle_v4_market_config", "decode_lifecycle_v4_market_config", "encode_lifecycle_abyss_market_config", "build_lifecycle_calldata",
     "predict_launch_token", "decode_lifecycle_events", "decode_lifecycle_launch_receipt",

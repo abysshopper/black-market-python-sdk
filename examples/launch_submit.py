@@ -40,15 +40,16 @@ def main(argv=None):
     parser.add_argument("--account", required=True)
     parser.add_argument("--mode", choices=("atomic", "staged"), required=True)
     parser.add_argument("--action", choices=("continue", "cancel"), default="continue")
-    parser.add_argument("--chain-gas-cap", type=int, required=True)
-    parser.add_argument("--rpc-gas-cap", type=int, required=True)
-    parser.add_argument("--account-gas-cap", type=int, required=True)
-    parser.add_argument("--calldata-cap", type=int, required=True)
-    parser.add_argument("--headroom-bps", type=int, default=2000)
+    parser.add_argument("--chain-gas-cap", type=int, help="Optional tightening transaction policy")
+    parser.add_argument("--rpc-gas-cap", type=int, help="Optional known RPC transaction envelope cap")
+    parser.add_argument("--account-gas-cap", type=int, help="Optional known direct-EOA transaction envelope cap")
+    parser.add_argument("--calldata-cap", type=int, help="Optional known calldata byte cap")
+    parser.add_argument("--headroom-bps", type=int, default=1500)
     parser.add_argument("--prepare-batch-size", type=int)
     parser.add_argument("--confirmations", type=int, default=1)
     parser.add_argument("--transaction-hash", action="append", default=[])
     parser.add_argument("--fork-rpc-url", help="Separate owned local Anvil fork; never the source execution node")
+    parser.add_argument("--submission-rpc-url", help="Optional read-only immediate-next submission RPC preflight")
     parser.add_argument("--isolated-fork", action="store_true", help="Assert exclusive ownership of the local fork")
     parser.add_argument("--finalize-bound", action="store_true", help="Explicitly mine/finalize draft bound5 salts before reviewing its final planHash")
     args = parser.parse_args(argv)
@@ -59,6 +60,7 @@ def main(argv=None):
     payload = json.loads(args.plan.read_text())
     plan = launch_plan_from_dict(payload.get("plan", payload))
     client = Web3(Web3.HTTPProvider(args.rpc_url))
+    submission_client = Web3(Web3.HTTPProvider(args.submission_rpc_url)) if args.submission_rpc_url else None
     fork = create_controlled_launch_fork(client, Web3(Web3.HTTPProvider(args.fork_rpc_url)), isolated=True) if args.fork_rpc_url else None
     if args.finalize_bound:
         plan = asyncio.run(prepare_pool_bound_lifecycle_plan(client, plan)).plan
@@ -79,17 +81,19 @@ def main(argv=None):
         "launchId": launch_id_of(plan), "mode": args.mode, "action": args.action,
         "note": "Unsigned output only; each wallet submission must revalidate live canonical state"}
     if args.action == "cancel":
-        next_transaction = build_next_transaction(client, plan, action="cancel", **options)
+        next_transaction = build_next_transaction(client, plan, action="cancel", submission_client=submission_client, **options)
         output["progress"] = read_launch_progress(client, plan, confirmations=args.confirmations, transaction_hashes=args.transaction_hash)
         output["nextTransaction"] = next_transaction.as_transaction() if next_transaction else None
+        output["nextAdmission"] = next_transaction.admission if next_transaction else None
     else:
         planned = plan_launch(client, plan, **options)
-        next_transaction = build_next_transaction(client, planned, account=args.account, fork=fork) if planned.admitted else None
+        next_transaction = build_next_transaction(client, planned, account=args.account, fork=fork, submission_client=submission_client) if planned.admitted else None
         output.update({"admitted": planned.admitted, "confidence": planned.confidence,
             "predictedToken": planned.predicted_token, "progress": planned.progress,
             "approvals": planned.approvals, "marketAdmissions": planned.market_admissions,
             "simulation": planned.simulation, "atomicSimulation": planned.atomic_simulation,
-            "nextTransaction": next_transaction.as_transaction() if next_transaction else None})
+            "nextTransaction": next_transaction.as_transaction() if next_transaction else None,
+            "nextAdmission": next_transaction.admission if next_transaction else None})
     print(json.dumps(output, default=json_value, indent=2))
     return 0
 
