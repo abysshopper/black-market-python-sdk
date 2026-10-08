@@ -35,7 +35,7 @@ from black_market_sdk import (
     LAUNCH_TOKEN_FACTORY_V1_ABI,
     MULTI_ASSET_REWARDS_V1_ABI,
     V4_FEE_LIQUIDITY_LOCKER_V2_ABI,
-    V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA,
+    V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6,
     LaunchApiClient,
     LaunchApiConfig,
     LaunchAttributionAuthorization,
@@ -43,7 +43,7 @@ from black_market_sdk import (
     LaunchPlanV1,
     LaunchPublishPending,
     LaunchSessionCreateRequest,
-    LaunchSessionMetadata,
+    LaunchSessionCreateMetadata,
     LaunchSessionPublishRequest,
     LifecycleAbyssMarketConfig,
     LifecycleAbyssPosition,
@@ -52,7 +52,8 @@ from black_market_sdk import (
     LifecycleInitialBuy,
     LifecycleMarketConfig,
     LifecyclePhase,
-    LifecyclePoolBoundV4MarketConfig,
+    LifecyclePoolBoundV4MarketConfigV6,
+    LifecycleReceiptReference,
     LifecycleTokenConfig,
     LifecycleV4Position,
     build_launch_attribution_typed_data,
@@ -63,12 +64,9 @@ from black_market_sdk import (
     encode_lifecycle_pool_bound_v4_market_config,
     get_launch_addresses,
     get_sqrt_ratio_at_tick,
-    hash_launch_plan,
-    launch_id_of,
     launch_plan_to_dict,
-    plan_launch,
     predict_launch_token,
-    prepare_pool_bound_lifecycle_plan,
+    prepare_and_plan_lifecycle_launch,
     read_launch_markets,
     read_launch_progress,
     read_lifecycle_profiles,
@@ -87,7 +85,6 @@ else:
 
 ZERO_ADDRESS = "0x" + "00" * 20
 UNIT = 10**18
-MARKET_BUDGET = 1100 * UNIT
 LIQUIDITY = 1000 * UNIT
 BUY_INPUT = 10**15
 CONFIRMATIONS = 1
@@ -241,19 +238,21 @@ def discover_profiles(client, configuration, artifacts, cancellation):
         profiles.extend(read_lifecycle_profiles(client, orchestrator=configuration["orchestrator"], offset=offset, limit=100))
     artifacts.event("profiles-discovered", registry=registry_address, profiles=profiles)
     v4 = [profile for profile in profiles if profile.admitted and profile.venue_kind == "uniswap-v4"
-          and profile.topology.hook_topology == 2 and profile.topology.config_version == 5
-          and profile.registration["configSchema"].lower() == hex_bytes(V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA)]
+          and profile.topology.hook_topology == 2 and profile.topology.config_version == 6
+          and profile.adapter.config_version == 6 and profile.envelope is not None
+          and profile.envelope.config_version == 6 and profile.developer_terms is not None
+          and profile.registration.config_schema.lower() == hex_bytes(V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6)]
     canonical_ids = {}
     for profile in profiles:
         if profile.venue_kind == "abyss":
-            implementation = profile.adapter["implementation"]
+            implementation = profile.adapter.implementation
             if implementation.lower() not in canonical_ids:
                 cancellation.check()
                 canonical_ids[implementation.lower()] = hex_bytes(contract(client, implementation, ABYSS_MARKET_ADAPTER_V1_ABI).functions.profileId(3).call())
     abyss = [profile for profile in profiles if profile.admitted and profile.venue_kind == "abyss"
              and profile.topology.config_version == 1
-             and profile.registration["configSchema"].lower() == hex_bytes(ABYSS_LIFECYCLE_CONFIG_SCHEMA)
-             and profile.id.lower() == canonical_ids[profile.adapter["implementation"].lower()]]
+             and profile.registration.config_schema.lower() == hex_bytes(ABYSS_LIFECYCLE_CONFIG_SCHEMA)
+             and profile.id.lower() == canonical_ids[profile.adapter.implementation.lower()]]
     return {"v4": v4, "abyss": abyss}
 
 
@@ -280,7 +279,12 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
     token0 = int(predicted, 16) < int(quote, 16)
     markets = []
     buys = []
+    base_budget = draft.token.supply // len(case["markets"])
     for market_index, spec in enumerate(case["markets"]):
+        budget = draft.token.supply - base_budget * market_index if market_index == len(case["markets"]) - 1 else base_budget
+        base_maximum = budget // spec["positions"]
+        maxima = tuple(budget - base_maximum * index if index == spec["positions"] - 1 else base_maximum
+                       for index in range(spec["positions"]))
         candidates = offerings[spec["venue"]]
         require(len(candidates) == 1, f"expected one admitted current {spec['venue']} offering, found {len(candidates)}", code="PROFILE_UNAVAILABLE")
         profile = candidates[0]
@@ -288,22 +292,24 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
         if spec["venue"] == "v4":
             envelope = profile.envelope
             require(envelope is not None, "bound V4 profile lacks its actual envelope", code="PROFILE_UNAVAILABLE")
-            positions = tuple(LifecycleV4Position(lower, upper, LIQUIDITY, ((market_index + 1) * 100 + index + 1).to_bytes(32, "big"), MARKET_BUDGET)
+            positions = tuple(LifecycleV4Position(lower, upper, LIQUIDITY, ((market_index + 1) * 100 + index + 1).to_bytes(32, "big"), maxima[index])
                               for index, (lower, upper) in enumerate(bands))
-            config = LifecyclePoolBoundV4MarketConfig(
-                version=5, lp_fee_pips=3000, tick_spacing=60, sqrt_price_x96=2**96, hook_fee_pips=10000,
+            config = LifecyclePoolBoundV4MarketConfigV6(
+                version=6, lp_fee_pips=3000, tick_spacing=60, sqrt_price_x96=2**96,
+                hook_fee_pips=10000, minimum_hook_fee_pips=1000,
+                fee_sensitivity_pips_seconds_per_tick=7654321,
                 fee_mode=spec.get("feeMode", 0), protocol_fee_denominator=envelope.protocol_fee_denominator,
                 treasury=envelope.protocol_treasury, external_liquidity_disabled=True, oracle_config_id=configuration["oracleConfigId"],
                 hook_salt=bytes(32), profile_id=profile.id, terms_digest=envelope.terms_digest,
                 developer_beneficiary=envelope.beneficiary, developer_fee_bps=0, positions=positions,
             )
             encoded = encode_lifecycle_pool_bound_v4_market_config(config)
-            version = 5
+            version = 6
         else:
-            positions = tuple(LifecycleAbyssPosition(lower, upper, LIQUIDITY, MARKET_BUDGET) for lower, upper in bands)
+            positions = tuple(LifecycleAbyssPosition(lower, upper, LIQUIDITY, maxima[index]) for index, (lower, upper) in enumerate(bands))
             encoded = encode_lifecycle_abyss_market_config(LifecycleAbyssMarketConfig(3, 3000, configuration["oracleConfigId"], 2**96, positions))
             version = 1
-        markets.append(LifecycleMarketConfig(profile.registration["adapterId"], profile.id, quote, MARKET_BUDGET, version, encoded))
+        markets.append(LifecycleMarketConfig(profile.registration.adapter_id, profile.id, quote, budget, version, encoded))
         for _ in range(case["buysPerMarket"]):
             buys.append(LifecycleInitialBuy(market_index, BUY_INPUT, 1, creator,
                                            get_sqrt_ratio_at_tick(887272) - 1 if token0 else get_sqrt_ratio_at_tick(-887272) + 1))
@@ -311,18 +317,6 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
     plan = replace(draft, markets=tuple(markets), buys=tuple(buys), fee_assets=fee_policies(predicted, quote, case),
                    funding=(LifecycleAssetFunding(quote, amount, 1, quote, amount, ZERO_ADDRESS, "0x"),))
     launch_plan_to_dict(plan)  # Validate the complete economics, not only the draft prediction.
-    if any(market.config_version == 5 for market in plan.markets):
-        def progress(observation):
-            cancellation.check()
-            artifacts.event("hook-salt-mining", observation=observation)
-        finalized = asyncio.run(prepare_pool_bound_lifecycle_plan(client, plan, on_progress=progress))
-        plan = finalized.plan
-        artifacts.event("hook-salts-finalized", deployments=finalized.deployments)
-    cancellation.check()
-    require(address_equal(predict_launch_token(client, plan), predicted), "finalization changed the predicted token")
-    artifacts.save("plan.json", launch_plan_to_dict(plan))
-    artifacts.result["chain"].update(planHash=hash_launch_plan(plan), launchId=launch_id_of(plan), mode=case["mode"])
-    artifacts.event("plan-prepared", planHash=hash_launch_plan(plan), launchId=launch_id_of(plan), predictedToken=predicted)
     return plan, predicted
 
 
@@ -332,7 +326,7 @@ def api_client(url, *, timeout=15):
 
 def stage_metadata(client, api, plan, artifacts, cancellation, *, wallet):
     artifacts.enter("api-stage")
-    metadata = LaunchSessionMetadata(name=plan.token.name, symbol=plan.token.symbol, description="Python SDK launch example: " + artifacts.case_id)
+    metadata = LaunchSessionCreateMetadata(name=plan.token.name, symbol=plan.token.symbol, description="Python SDK launch example: " + artifacts.case_id)
     key = "python-example-" + secrets.token_hex(16)
     nonce = "0x" + secrets.token_hex(32)
     deadline = int(time.time()) + 600
@@ -369,8 +363,8 @@ def stage_metadata(client, api, plan, artifacts, cancellation, *, wallet):
 
 def simulation_observation(launch):
     return {"admitted": launch.admitted, "confidence": launch.confidence, "backend": launch.simulation.backend,
-            "marketAdmissions": launch.market_admissions, "limits": launch.limits,
-            "simulation": launch.simulation, "atomicSimulation": launch.atomic_simulation,
+            "profiles": launch.profiles, "hookDeployments": launch.hook_deployments, "limits": launch.limits,
+            "simulation": launch.simulation,
             "tokenFactory": launch.token_factory, "tokenFactoryCodeHash": launch.token_factory_code_hash}
 
 
@@ -433,8 +427,18 @@ def admit_plan(client, plan, case, artifacts, cancellation):
     artifacts.enter("admission")
     limits = limit_resolver()
     cancellation.check()
-    launch = plan_launch(client, plan, account=plan.creator, mode=case["mode"], limits=limits,
-                         prepare_batch_size=1, confirmations=CONFIRMATIONS)
+    def progress(observation):
+        cancellation.check()
+        artifacts.event("hook-salt-mining", observation=observation)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(
+        client, plan, account=plan.creator, mode=case["mode"], limits=limits,
+        prepare_batch_size=1, confirmations=CONFIRMATIONS, on_progress=progress,
+    ))
+    cancellation.check()
+    artifacts.save("plan.json", launch_plan_to_dict(launch.plan))
+    artifacts.result["chain"].update(planHash=launch.plan_hash, launchId=launch.launch_id, mode=launch.mode)
+    artifacts.event("plan-prepared", planHash=launch.plan_hash, launchId=launch.launch_id,
+                    predictedToken=launch.predicted_token, deployments=launch.hook_deployments)
     observation = simulation_observation(launch)
     artifacts.save("admission.json", observation)
     artifacts.event("launch-admission", **observation)
@@ -444,12 +448,13 @@ def admit_plan(client, plan, case, artifacts, cancellation):
 
 def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet):
     hashes = []
+    references = []
     activation_receipt = None
     maximum_steps = len(plan.markets) + len(launch.approvals) + 2
     for index in range(maximum_steps + 1):
         artifacts.enter("build-next")
         cancellation.check()
-        step = build_next_transaction(client, launch, account=plan.creator, transaction_hashes=hashes, confirmations=CONFIRMATIONS, submission_client=client)
+        step = build_next_transaction(client, launch, account=plan.creator, receipts=references, confirmations=CONFIRMATIONS, submission_client=client)
         if step is None:
             break
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
@@ -466,7 +471,10 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet):
         cancellation.check()
         artifacts.enter("receipt-" + step.kind)
         receipt = wait_receipt(client, row, artifacts, cancellation)
-        progress = read_launch_progress(client, plan, confirmations=CONFIRMATIONS, transaction_hashes=hashes)
+        references.append(LifecycleReceiptReference(transaction_hash, confirmations=CONFIRMATIONS,
+                                                  observed_block_number=quantity(receipt["blockNumber"]),
+                                                  observed_block_hash=hex_bytes(receipt["blockHash"])))
+        progress = read_launch_progress(client, plan, confirmations=CONFIRMATIONS, receipts=references, mode=launch.mode)
         artifacts.event("canonical-progress", progress=progress)
         if step.kind in {"atomic", "activate"}:
             require(activation_receipt is None, "more than one activation was submitted", code="LIFECYCLE_SEQUENCE_MISMATCH")
@@ -478,7 +486,11 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet):
 
 def verify_chain(client, plan, case, predicted, receipt, hashes, artifacts, cancellation):
     artifacts.enter("verify-chain")
-    progress = read_launch_progress(client, plan, confirmations=CONFIRMATIONS, transaction_hashes=hashes)
+    references = tuple(LifecycleReceiptReference(row["transactionHash"], confirmations=CONFIRMATIONS,
+                                                observed_block_number=quantity(row["receipt"]["blockNumber"]),
+                                                observed_block_hash=hex_bytes(row["receipt"]["blockHash"]))
+                       for row in artifacts.receipts)
+    progress = read_launch_progress(client, plan, confirmations=CONFIRMATIONS, receipts=references, mode=case["mode"])
     expected_positions = sum(spec["positions"] for spec in case["markets"])
     require(progress.phase == LifecyclePhase.ACTIVE and not progress.awaiting_confirmations and address_equal(progress.token, predicted), "launch is not canonically Active at the predicted token")
     require(progress.market_count == len(plan.markets) == progress.prepared_markets and progress.position_count == expected_positions and progress.buy_count == len(plan.buys) and progress.mode == case["mode"], "actual lifecycle counts or mode differ from the committed case")
@@ -500,8 +512,21 @@ def verify_chain(client, plan, case, predicted, receipt, hashes, artifacts, canc
     token_observation = {name: getattr(token.functions, name)().call() for name in (
         "name", "symbol", "decimals", "totalSupply", "authority", "tokenFactory", "launchId", "rewardMode", "initialSupply", "active", "cancelled", "exclusionsFinalized", "feeHub", "rewardModule")}
     token_observation.update(address=predicted, kind=deployment_events[0]["kind"], runtimeBytes=len(code), runtimeHash=hex_bytes(Web3.keccak(code)))
+    transfer_abi = next(entry for entry in ERC20_ABI if entry.get("name") == "Transfer" and entry["type"] == "event")
+    transfer_topic = hex_bytes(Web3.keccak(text="Transfer(address,address,uint256)"))
+    transfers = [get_event_data(client.codec, transfer_abi, log)["args"] for log in receipt.get("logs", [])
+                 if address_equal(log.get("address"), predicted) and log.get("topics")
+                 and hex_bytes(log["topics"][0]) == transfer_topic]
+    burns = [event for event in transfers if address_equal(event["to"], ZERO_ADDRESS)]
+    burned = sum(event["value"] for event in burns)
+    require(all(address_equal(event["from"], plan.orchestrator) for event in burns),
+            "activation burned inventory from an unexpected owner")
+    token_observation["mintDustBurned"] = burned
     require(token_observation["name"] == plan.token.name and token_observation["symbol"] == plan.token.symbol and token_observation["decimals"] == 18
-            and token_observation["totalSupply"] == plan.token.supply == token_observation["initialSupply"], "actual token metadata or fixed supply differs from plan")
+            and token_observation["initialSupply"] == plan.token.supply
+            and token_observation["totalSupply"] == plan.token.supply - burned, "actual token metadata or mint-dust burn differs from plan")
+    require(token.functions.balanceOf(plan.orchestrator).call() == 0,
+            "activation retained launch-token inventory instead of burning mint dust")
     require(address_equal(token_observation["authority"], plan.orchestrator) and address_equal(token_observation["tokenFactory"], factory_address)
             and hex_bytes(token_observation["launchId"]) == progress.launch_id and token_observation["rewardMode"] == int(plan.token.reward_mode)
             and token_observation["active"] is True and token_observation["cancelled"] is False and token_observation["exclusionsFinalized"] is True,
@@ -568,6 +593,8 @@ def verify_chain(client, plan, case, predicted, receipt, hashes, artifacts, canc
         require(actual["buyIndex"] == index and actual["marketIndex"] == expected.market_index and address_equal(actual["recipient"], expected.recipient)
                 and address_equal(actual["quoteAsset"], plan.markets[expected.market_index].quote_asset)
                 and 0 < actual["quoteSpent"] <= expected.quote_amount_in and actual["tokenOut"] >= expected.min_token_out, "actual buy event order or economics differ from plan")
+    require(token.functions.balanceOf(plan.creator).call() == sum(buy["tokenOut"] for buy in buys),
+            "creator received inventory beyond its committed opening purchases")
     observation = {"status": "passed", "phase": progress.phase.name, "token": token_observation, "marketCount": len(markets),
                    "positionCount": expected_positions, "markets": markets, "orderedBuys": buys, "confirmations": CONFIRMATIONS,
                    "activationTransactionHash": hex_bytes(receipt["transactionHash"]), "activationBlockNumber": quantity(receipt["blockNumber"]),
@@ -684,6 +711,8 @@ def run(case, artifacts, cancellation):
     artifacts.enter("plan")
     plan, predicted = construct_plan(client, configuration, case, nonce, token_salt, artifacts, cancellation)
     launch = admit_plan(client, plan, case, artifacts, cancellation)
+    plan = launch.plan
+    require(address_equal(launch.predicted_token, predicted), "final preparation changed the predicted token")
     api = api_client(configuration["apiUrl"])
     recovery = stage_metadata(client, api, plan, artifacts, cancellation, wallet=wallet)
     artifacts.result["execution"] = "executed"

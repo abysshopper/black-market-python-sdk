@@ -1,7 +1,7 @@
 """Opt-in client and signing helpers for the Abyss launch metadata API.
 
-This module never creates a client or performs I/O at import time.  Callers own
-wallet signatures, idempotency keys, recovery state, and retry policy.
+This module never creates a client or performs I/O at import time. Callers own
+wallet signatures, idempotency keys and recovery state; bounded API retries are explicit.
 """
 
 from __future__ import annotations
@@ -11,21 +11,35 @@ import ipaddress
 import json
 import math
 import re
+import time
 import unicodedata
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Sequence, TypeAlias, Union
+from typing import Any, Callable, Literal, Mapping, Optional, Sequence, TypeAlias, TypedDict, Union, cast
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPHandler, HTTPSHandler, HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from ada_url import URL
 from eth_utils import is_address, keccak
+
+from .format import _ECMASCRIPT_TRIM_CHARACTERS
 
 
 LAUNCH_IMAGE_CONTENT_TYPES: tuple[str, ...] = ("image/png", "image/jpeg", "image/webp")
+LaunchImageContentType = Literal["image/png", "image/jpeg", "image/webp"]
+LaunchSessionStatus = Literal["awaiting_upload", "verifying_image", "ready_to_launch", "transaction_submitted", "awaiting_indexer", "optimistic", "final", "reorged", "expired", "rejected"]
+LaunchApiErrorCode = str
 MAX_LAUNCH_IMAGE_BYTES = 5 * 1024 * 1024
 
-_DEFAULT_API_URL = "https://api.abyss.trading"
+DEFAULT_LAUNCH_API_URL = "https://api.abyss.trading"
+LAUNCH_ATTRIBUTION_TYPES = {"LaunchAttribution": [
+    {"name": "chainId", "type": "uint256"}, {"name": "wallet", "type": "address"},
+    {"name": "metadataHash", "type": "bytes32"}, {"name": "imageSha256", "type": "bytes32"},
+    {"name": "imageContentType", "type": "string"}, {"name": "imageContentLength", "type": "uint256"},
+    {"name": "idempotencyKey", "type": "string"}, {"name": "nonce", "type": "bytes32"},
+    {"name": "deadline", "type": "uint256"},
+]}
 _ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 _ZERO_HASH = "0x" + "00" * 32
 _MAX_UINT256 = (1 << 256) - 1
@@ -38,27 +52,22 @@ _SIGNATURE_RE = re.compile(r"0x[0-9a-fA-F]{130}\Z")
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _ERROR_CODE_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}\Z")
 
-# ECMAScript WhiteSpace plus LineTerminator. Python's str.strip() additionally
-# removes a few C0 separators that ECMAScript leaves intact, so it cannot be
-# used for signature-bound canonical JSON.
-_ECMASCRIPT_TRIM_CHARACTERS = (
-    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
-    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
-    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
-)
 
 
 @dataclass(frozen=True)
 class LaunchApiConfig:
     """HTTPS API configuration, with an explicit loopback-only HTTP test opt-in."""
 
-    base_url: str = _DEFAULT_API_URL
+    base_url: str = DEFAULT_LAUNCH_API_URL
     timeout: float = 15.0
     allow_loopback_http: bool = False
+    retries: int = 3
 
     def __post_init__(self) -> None:
         if not isinstance(self.allow_loopback_http, bool):
             raise TypeError("allow_loopback_http must be a bool")
+        if not _is_int(self.retries) or self.retries < 0:
+            raise ValueError("retries must be a nonnegative attempt count")
         object.__setattr__(
             self, "base_url",
             _normalize_api_base_url(self.base_url, allow_loopback_http=self.allow_loopback_http),
@@ -112,6 +121,23 @@ class LaunchSessionMetadata:
 
 
 @dataclass(frozen=True)
+class LaunchSessionCreateMetadata:
+    """New upload-session metadata; the API, not the caller, assigns imageKey."""
+    name: str
+    symbol: str
+    description: str
+    website_url: Optional[str] = None
+    twitter_url: Optional[str] = None
+    telegram_url: Optional[str] = None
+    discord_url: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        _validate_session_metadata(self)
+        if not isinstance(self.description, str):
+            raise TypeError("metadata.description must be a string")
+
+
+@dataclass(frozen=True)
 class LaunchSessionImageDescriptor:
     """Image bytes bound into an attribution signature before direct upload."""
 
@@ -141,7 +167,7 @@ class LaunchSessionCreateRequest:
 
     chain_id: int
     wallet: str
-    metadata: LaunchSessionMetadata
+    metadata: LaunchSessionCreateMetadata
     authorization: LaunchAttributionAuthorization
     image: Optional[LaunchSessionImageDescriptor] = None
 
@@ -208,13 +234,57 @@ class LaunchSessionDirectUpload:
 
     url: str
     headers: Mapping[str, str]
-    expires_at: Optional[int] = None
+    expires_in_seconds: Optional[int] = None
 
     def __post_init__(self) -> None:
         _validate_direct_upload_url(self.url)
         object.__setattr__(self, "headers", MappingProxyType(_validate_signed_headers(self.headers)))
-        if self.expires_at is not None:
-            _assert_uint(self.expires_at, "expires_at")
+        if self.expires_in_seconds is not None:
+            _assert_uint(self.expires_in_seconds, "expires_in_seconds")
+
+
+class LaunchSessionResponseMetadata(TypedDict):
+    name: str
+    symbol: str
+    description: str | None
+    websiteUrl: str | None
+    twitterUrl: str | None
+    telegramUrl: str | None
+    discordUrl: str | None
+
+
+class LaunchSessionResponseImage(TypedDict):
+    sha256: str
+    contentType: LaunchImageContentType
+    contentLength: int
+    width: int | None
+    height: int | None
+
+
+class _LaunchSessionRequiredResponse(TypedDict):
+    sessionId: str
+    chainId: int
+    wallet: str
+    status: LaunchSessionStatus
+    metadata: LaunchSessionResponseMetadata
+    image: LaunchSessionResponseImage | None
+    canonicalStatus: Literal["pending", "optimistic", "final", "reorged"]
+    metadataStatus: Literal["queued", "ready", "needs_owner_action", "none"]
+    imageStatus: Literal["none", "upload_pending", "verifying", "ready", "rejected"]
+    retryable: bool
+    createdAt: str
+    updatedAt: str
+    sessionExpiresAt: str
+
+
+class LaunchSessionResponse(_LaunchSessionRequiredResponse, total=False):
+    """API JSON keys are retained verbatim; requests use idiomatic dataclasses."""
+    transactionHash: str | None
+    token: str | None
+    publishedAt: str
+    upload: Mapping[str, Any]
+    capability: str
+    imageUrl: str
 
 
 class LaunchApiError(RuntimeError):
@@ -320,14 +390,15 @@ def _read_bounded_response_body(response: Any) -> bytes:
 
 
 class LaunchApiClient:
-    """Explicit, no-retry client for the Abyss launch API and presigned uploads."""
+    """Opt-in metadata API client with bounded retries and non-retrying image PUTs."""
 
     def __init__(
         self,
-        config: LaunchApiConfig,
+        config: LaunchApiConfig | None = None,
         *,
         transport: Optional[LaunchApiTransport] = None,
     ) -> None:
+        config = config or LaunchApiConfig()
         if not isinstance(config, LaunchApiConfig):
             raise TypeError("config must be a LaunchApiConfig")
         if transport is not None and not callable(transport):
@@ -345,7 +416,7 @@ class LaunchApiClient:
         self,
         request: LaunchSessionCreateRequest,
         idempotency_key: str,
-    ) -> dict[str, Any]:
+    ) -> LaunchSessionResponse:
         """POST a signed metadata session and receive its recovery capability."""
 
         _validate_session_create_request(request)
@@ -363,7 +434,7 @@ class LaunchApiClient:
         chain_id: int,
         session_id: str,
         capability: str,
-    ) -> dict[str, Any]:
+    ) -> LaunchSessionResponse:
         """GET a private session for caller-managed recovery."""
 
         return self._request(
@@ -378,7 +449,7 @@ class LaunchApiClient:
         chain_id: int,
         session_id: str,
         capability: str,
-    ) -> dict[str, Any]:
+    ) -> LaunchSessionResponse:
         """POST for a replacement direct PUT URL when a session upload expires."""
 
         return self._request(
@@ -394,7 +465,7 @@ class LaunchApiClient:
         chain_id: int,
         session_id: str,
         capability: str,
-    ) -> dict[str, Any]:
+    ) -> LaunchSessionResponse:
         """POST that staged bytes are ready for API-side image verification."""
 
         return self._request(
@@ -411,7 +482,7 @@ class LaunchApiClient:
         session_id: str,
         capability: str,
         body: LaunchSessionPublishRequest,
-    ) -> dict[str, Any]:
+    ) -> LaunchSessionResponse:
         """POST a confirmed transaction; a 202 becomes ``LaunchPublishPending``."""
 
         _validate_publish_request(body)
@@ -557,24 +628,43 @@ class LaunchApiClient:
             _validate_header_value(idempotency_key, "idempotency_key")
             headers["Idempotency-Key"] = idempotency_key
         url = self._api_url(path, chain_id, query)
-        try:
-            response = self._transport(method, url, headers, body, self._config.timeout)
-        except LaunchApiError:
-            raise
-        except Exception:
-            raise LaunchApiError(0, "RPC_UNAVAILABLE") from None
-        if not isinstance(response, LaunchApiResponse):
-            raise LaunchApiError(0, "INVALID_RESPONSE")
-        if 200 <= response.status < 300:
-            payload = _parse_success_mapping(response)
-            if response.status == 202 and expect_pending:
-                raise LaunchPublishPending(payload, _retry_after_ms(response.headers) or 5_000)
-            return payload
-        raise LaunchApiError(
-            response.status,
-            _response_error_code(response),
-            retry_after_ms=_retry_after_ms(response.headers),
-        )
+        config, transport = self._config, self._transport
+        request_headers = MappingProxyType(headers)
+        last_error = LaunchApiError(0, "RPC_UNAVAILABLE")
+        for attempt in range(config.retries):
+            try:
+                response = transport(method, url, request_headers, body, config.timeout)
+            except Exception as error:
+                if isinstance(error, LaunchPublishPending):
+                    raise
+                if isinstance(error, LaunchApiError) and error.status not in (0, 429, 502, 503, 504):
+                    raise
+                last_error = error if isinstance(error, LaunchApiError) else LaunchApiError(0, "RPC_UNAVAILABLE")
+            else:
+                if not isinstance(response, LaunchApiResponse):
+                    raise LaunchApiError(0, "INVALID_RESPONSE")
+                if 200 <= response.status < 300:
+                    try:
+                        payload = _parse_success_mapping(response)
+                    except LaunchApiError as error:
+                        # An accepted publish is never resent, even when its
+                        # recovery response cannot be decoded safely.
+                        if response.status == 202 and expect_pending:
+                            raise
+                        last_error = error
+                    else:
+                        if response.status == 202 and expect_pending:
+                            raise LaunchPublishPending(payload, _retry_after_ms(response.headers) or 250)
+                        return cast(LaunchSessionResponse, payload)
+                else:
+                    last_error = LaunchApiError(response.status, _response_error_code(response),
+                        retry_after_ms=_retry_after_ms(response.headers) or 250)
+                    if response.status not in (429, 502, 503, 504):
+                        raise last_error
+            # Match the Node bounded backoff, including its final refused attempt.
+            # Signed bytes, key, capability, headers and transport stay bound.
+            time.sleep(0.750 * 2 ** attempt)
+        raise last_error from None
 
     def _api_url(
         self,
@@ -586,10 +676,11 @@ class LaunchApiClient:
             raise ValueError("launch API paths must start with /api/v1/")
         parameters = list(query)
         parameters.append(("chainId", str(chain_id)))
-        return f"{self._config.base_url}{path}?{urlencode(parameters)}"
+        base = urlsplit(self._config.base_url)
+        return urlunsplit((base.scheme, base.netloc, path, urlencode(parameters), ""))
 
 
-def canonical_launch_metadata_hash(metadata: LaunchSessionMetadata) -> str:
+def canonical_launch_metadata_hash(metadata: LaunchSessionMetadata | LaunchSessionCreateMetadata) -> str:
     """Keccak-256 of the exact JavaScript canonical session metadata JSON."""
 
     _validate_session_metadata(metadata)
@@ -598,11 +689,11 @@ def canonical_launch_metadata_hash(metadata: LaunchSessionMetadata) -> str:
             "name": _canonical_text(metadata.name),
             "symbol": _canonical_text(metadata.symbol),
             "description": _canonical_text(metadata.description if metadata.description is not None else ""),
-            "websiteUrl": metadata.website_url,
-            "twitterUrl": metadata.twitter_url,
-            "telegramUrl": metadata.telegram_url,
-            "discordUrl": metadata.discord_url,
-            "imageKey": metadata.image_key,
+            "websiteUrl": _canonical_url(metadata.website_url),
+            "twitterUrl": _canonical_url(metadata.twitter_url),
+            "telegramUrl": _canonical_url(metadata.telegram_url),
+            "discordUrl": _canonical_url(metadata.discord_url),
+            "imageKey": getattr(metadata, "image_key", None),
         }
     )
     return "0x" + keccak(primitive=canonical.encode("utf-8")).hex()
@@ -639,7 +730,7 @@ def build_launch_attribution_typed_data(
     *,
     chain_id: int,
     wallet: str,
-    metadata: LaunchSessionMetadata,
+    metadata: LaunchSessionMetadata | LaunchSessionCreateMetadata,
     image: Optional[LaunchSessionImageDescriptor] = None,
     idempotency_key: str,
     nonce: str,
@@ -664,17 +755,7 @@ def build_launch_attribution_typed_data(
     return {
         "types": {
             "EIP712Domain": _eip712_domain_types(),
-            "LaunchAttribution": [
-                {"name": "chainId", "type": "uint256"},
-                {"name": "wallet", "type": "address"},
-                {"name": "metadataHash", "type": "bytes32"},
-                {"name": "imageSha256", "type": "bytes32"},
-                {"name": "imageContentType", "type": "string"},
-                {"name": "imageContentLength", "type": "uint256"},
-                {"name": "idempotencyKey", "type": "string"},
-                {"name": "nonce", "type": "bytes32"},
-                {"name": "deadline", "type": "uint256"},
-            ],
+            "LaunchAttribution": [dict(field) for field in LAUNCH_ATTRIBUTION_TYPES["LaunchAttribution"]],
         },
         "primaryType": "LaunchAttribution",
         "domain": {
@@ -778,7 +859,7 @@ def _session_create_payload(request: LaunchSessionCreateRequest) -> dict[str, An
     return payload
 
 
-def _session_metadata_payload(metadata: LaunchSessionMetadata) -> dict[str, Any]:
+def _session_metadata_payload(metadata: LaunchSessionCreateMetadata) -> dict[str, Any]:
     payload: dict[str, Any] = {"name": metadata.name, "symbol": metadata.symbol}
     optional_fields = (
         ("description", metadata.description),
@@ -786,7 +867,6 @@ def _session_metadata_payload(metadata: LaunchSessionMetadata) -> dict[str, Any]
         ("twitterUrl", metadata.twitter_url),
         ("telegramUrl", metadata.telegram_url),
         ("discordUrl", metadata.discord_url),
-        ("imageKey", metadata.image_key),
     )
     for key, value in optional_fields:
         if value is not None:
@@ -856,6 +936,10 @@ def _canonical_text(value: str) -> str:
     return unicodedata.normalize("NFC", value).strip(_ECMASCRIPT_TRIM_CHARACTERS)
 
 
+def _canonical_url(value: str | None) -> str | None:
+    return None if value is None else URL(_canonical_text(value)).href
+
+
 def _parse_success_mapping(response: LaunchApiResponse) -> dict[str, Any]:
     if len(response.body) > _MAX_RESPONSE_BYTES:
         raise LaunchApiError(response.status, "INVALID_RESPONSE")
@@ -904,15 +988,17 @@ def _coerce_direct_upload(
     upload: Union[LaunchSessionDirectUpload, Mapping[str, Any]],
 ) -> tuple[str, dict[str, str]]:
     if isinstance(upload, LaunchSessionDirectUpload):
-        return upload.url, dict(upload.headers)
-    if not isinstance(upload, Mapping):
+        url, headers, expiry = upload.url, upload.headers, upload.expires_in_seconds
+    elif isinstance(upload, Mapping):
+        url, headers, expiry = upload.get("url"), upload.get("headers"), upload.get("expiresInSeconds")
+        if "method" in upload and upload["method"] != "PUT":
+            raise ValueError("upload.method must be PUT")
+    else:
         raise TypeError("upload must be a LaunchSessionDirectUpload or mapping")
-    url = upload.get("url")
-    headers = upload.get("headers")
     if not isinstance(url, str):
         raise TypeError("upload.url must be a string")
-    if "method" in upload and upload["method"] != "PUT":
-        raise ValueError("upload.method must be PUT")
+    if expiry is not None:
+        _assert_uint(expiry, "expires_in_seconds")
     _validate_direct_upload_url(url)
     return url, _validate_signed_headers(headers)
 
@@ -985,9 +1071,9 @@ def _mapping_field(mapping: Mapping[str, Any], snake_case: str, camel_case: str)
     return mapping.get(camel_case)
 
 
-def _validate_session_metadata(metadata: LaunchSessionMetadata) -> None:
-    if not isinstance(metadata, LaunchSessionMetadata):
-        raise TypeError("metadata must be a LaunchSessionMetadata")
+def _validate_session_metadata(metadata: LaunchSessionMetadata | LaunchSessionCreateMetadata) -> None:
+    if not isinstance(metadata, (LaunchSessionMetadata, LaunchSessionCreateMetadata)):
+        raise TypeError("metadata must be session construction or canonical metadata")
     _validate_required_metadata_text(metadata.name, "metadata.name")
     _validate_required_metadata_text(metadata.symbol, "metadata.symbol")
     _validate_optional_text(metadata.description, "metadata.description")
@@ -995,7 +1081,7 @@ def _validate_session_metadata(metadata: LaunchSessionMetadata) -> None:
     _validate_optional_text(metadata.twitter_url, "metadata.twitter_url")
     _validate_optional_text(metadata.telegram_url, "metadata.telegram_url")
     _validate_optional_text(metadata.discord_url, "metadata.discord_url")
-    _validate_optional_text(metadata.image_key, "metadata.image_key")
+    _validate_optional_text(getattr(metadata, "image_key", None), "metadata.image_key")
 
 
 def _validate_metadata_edit_document(metadata: LaunchMetadataEditDocument) -> None:
@@ -1044,6 +1130,8 @@ def _validate_session_create_request(request: LaunchSessionCreateRequest) -> Non
     _assert_chain_id(request.chain_id)
     _validate_address(request.wallet, "wallet")
     _validate_session_metadata(request.metadata)
+    if not isinstance(request.metadata, LaunchSessionCreateMetadata):
+        raise TypeError("new upload sessions require LaunchSessionCreateMetadata without caller-assigned image_key")
     _validate_attribution_authorization(request.authorization)
     if request.image is not None:
         _validate_image_descriptor(request.image)

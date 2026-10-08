@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Literal, Optional
 
 from .auction import ZERO_ADDRESS
 
-SupportedChainId = int
+SupportedChainId = Literal[31337, 4663, 46631]
 ANVIL_LOCAL_CHAIN_ID: SupportedChainId = 31337
 ROBINHOOD_MAINNET_CHAIN_ID: SupportedChainId = 4663
 WORKBENCH_CHAIN_ID: SupportedChainId = 46631
@@ -44,6 +44,34 @@ def default_rpc_url() -> str:
     return (
         _read_env("VITE_RPC_URL", "NEXT_PUBLIC_RPC_URL", "RPC_URL") or "http://127.0.0.1:8545"
     )
+
+
+@dataclass(frozen=True)
+class NativeCurrency:
+    name: str
+    symbol: str
+    decimals: int
+
+
+@dataclass(frozen=True)
+class ProtocolChain:
+    id: SupportedChainId
+    name: str
+    native_currency: NativeCurrency
+    rpc_urls: tuple[str, ...]
+    websocket_urls: tuple[str, ...] = ()
+    explorer_name: str | None = None
+    explorer_url: str | None = None
+    multicall3: str | None = None
+    testnet: bool | None = None
+
+
+_ETHER = NativeCurrency("Ether", "ETH", 18)
+ANVIL_LOCAL = ProtocolChain(31337, "Foundry", _ETHER, ("http://127.0.0.1:8545",), ("ws://127.0.0.1:8545",))
+WORKBENCH_CHAIN = ProtocolChain(46631, "Black Market Workbench", _ETHER, (default_rpc_url(),), testnet=True)
+ROBINHOOD_MAINNET = ProtocolChain(4663, "Robinhood Chain", _ETHER, (ROBINHOOD_MAINNET_RPC,),
+    explorer_name="Robinhood Chain Explorer", explorer_url=ROBINHOOD_MAINNET_EXPLORER, multicall3=ROBINHOOD_MULTICALL3)
+CHAINS: dict[SupportedChainId, ProtocolChain] = {chain.id: chain for chain in (ANVIL_LOCAL, ROBINHOOD_MAINNET, WORKBENCH_CHAIN)}
 
 
 def _env_addr(name: str, fallback: str = ZERO_ADDRESS) -> str:
@@ -84,28 +112,28 @@ class LaunchInfrastructureAddresses:
 
 
 ROBINHOOD_LAUNCH_INFRASTRUCTURE = LaunchInfrastructureAddresses(
-    orchestrator="0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E",
-    registry="0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee",
-    fee_owner_registry="0x15778Aad08e12D458B2848F035860e2a8c2a0725",
-    admin="0x119bB08D90753C5fa06C8f68cEb897af157D6416",
-    directory="0xa9d0F9Ff93AF569B7C11b5cDCE1E98D5a59F52DC",
-    fee_hub_factory="0x5c1FFa0F9fEB3f3f2704b752397f36f00072d252",
-    token_factory="0xa7467624E5A7a962f49a341Aa3fCE3eD20257b67",
-    erc20_deployer="0xA54Cf521d2566F030129a0DDEFff13366A049a4C",
-    erc404_deployer="0xba01E3Ce83F7192C03067e0A6f05050F0183FdFF",
-    staking_deployer="0x187E8204C1eFf3F20e254ceb6C6328C6eABb838e",
-    funding_escrow="0x13be9F6C4087d7eA3937c49bc174793162716312",
-    validator="0xb1e32359C4234993B0B1D245FFeF86688BaaaDC7",
-    lens="0x50bdA6937e3753665637538d62A8995b12a86A06",
+    orchestrator="0x91560876033d568d25CDe98C78c33ff8FC43962c",
+    registry="0xB2B0f9F36617810D67b8fC175153Aa10024C1358",
+    fee_owner_registry="0x64b5ca1f21B8E84305b0e4D847924dca39Eb1fcb",
+    admin="0x8394716C8Ce2a6775a691d5f09b2204362A897E1",
+    directory="0x1c7694Ed0F6624cC5794814261B1523E91986bb5",
+    fee_hub_factory="0xF14fD8D65D7833612A4bb909F1161731bb7039d3",
+    token_factory="0xd3cE64E49224a9a96075633f63761FE6BE22FE30",
+    erc20_deployer="0xD05B7F46Ba8D20C3Eb1EC9CB0323fBCFA9185359",
+    erc404_deployer="0x11224dd87831aBc4523ec667dad53bA9855557ac",
+    staking_deployer="0x4e7FdB41225BEAd22eD913E6B40F9d59C904d29D",
+    funding_escrow="0x7bc77946CeF52A178583FCe1EEB7751983cEC703",
+    validator="0x1f0b968CB7c70cBB445EEc5a63B19a40ABe2BF2C",
+    lens="0xAce93e3910561aC67c6179c3a27F133F5Ef78F25",
     pool_manager="0x8366a39CC670B4001A1121B8F6A443A643e40951",
     oracle_factory="0xe7feF2BC860B25bbdEB6F6AB96d88bAAa77ddad7",
-    custody="0xF0E5e79d0BC8243c1B0Afe031A39A8EAC5627f8b",
-    hook_deployer="0x9Cd433644237E6925deB13F3196cb44843de2DF6",
-    collector_deployer="0xb2A46C9C21d207455258E78ec448a307D6ea1E92",
-    collector_factory="0xf444dC28Aa7F6B3a8Ad5B7B3975d05a7A1fDF409",
-    pool_market_adapter="0xd9A7f35F2251dDa2506E50fCab2e52E6CE7a37d9",
-    abyss_market_adapter="0xeF509c6c9049D3260D5a90a56475d33f5BB47827",
-    abyss_source_factory="0x123669D891133B2FdB24e5613702530AA9be3E82",
+    custody="0x28B84e5B9E905493E24986C91Ef109C752505B58",
+    hook_deployer="0x1Df787Cc099B047A606059Ac80A8296779266f9e",
+    collector_deployer="0x1d9Aa696568F6D4b96914C7e35DEF33781826A48",
+    collector_factory="0x43b394fE6865EE6797c60FCCcd33D7D765214b52",
+    pool_market_adapter="0xb334b44509a5237a39cE364c159913F14b6D1186",
+    abyss_market_adapter="0x3ef760fcbbD618Ab6cB7E308e7fB39C93b9deFD0",
+    abyss_source_factory="0xAba6a07b31fe8DaC17FbF9691c69a6C65B95c7dB",
     wrapped_native=ROBINHOOD_WETH,
 )
 
@@ -117,6 +145,20 @@ LAUNCH_ADDRESSES: dict[SupportedChainId, LaunchInfrastructureAddresses] = {
 def get_launch_addresses(chain_id: SupportedChainId) -> LaunchInfrastructureAddresses:
     """Select configured infrastructure explicitly; unconfigured chains raise ``KeyError``."""
     return LAUNCH_ADDRESSES[chain_id]
+
+
+@dataclass(frozen=True)
+class LaunchApplicationAddresses:
+    launch_orchestrator: str
+    launch_implementation_registry: str
+    launch_fee_owner_registry: str
+
+
+ROBINHOOD_LAUNCH_APPLICATION = LaunchApplicationAddresses(
+    ROBINHOOD_LAUNCH_INFRASTRUCTURE.orchestrator,
+    ROBINHOOD_LAUNCH_INFRASTRUCTURE.registry,
+    ROBINHOOD_LAUNCH_INFRASTRUCTURE.fee_owner_registry,
+)
 
 
 @dataclass(frozen=True)
@@ -137,7 +179,7 @@ class AbyssInfrastructureAddresses:
 
 
 @dataclass(frozen=True)
-class ProtocolAddresses(AbyssInfrastructureAddresses):
+class ProtocolAddresses(AbyssInfrastructureAddresses, LaunchApplicationAddresses):
     lending_pool: str
     addresses_provider: str
     data_provider: str
@@ -182,6 +224,17 @@ def _abyss_infrastructure_from_env(
     )
 
 
+def _launch_application_from_env(fallback: LaunchApplicationAddresses) -> LaunchApplicationAddresses:
+    return LaunchApplicationAddresses(
+        _env_addr("LAUNCH_ORCHESTRATOR", fallback.launch_orchestrator),
+        _env_addr("LAUNCH_IMPLEMENTATION_REGISTRY", fallback.launch_implementation_registry),
+        _env_addr("LAUNCH_FEE_OWNER_REGISTRY", fallback.launch_fee_owner_registry),
+    )
+
+
+_ZERO_LAUNCH_APPLICATION = LaunchApplicationAddresses(ZERO_ADDRESS, ZERO_ADDRESS, ZERO_ADDRESS)
+
+
 
 
 _ZERO_ABYSS_INFRASTRUCTURE = AbyssInfrastructureAddresses(**{f: ZERO_ADDRESS for f in _ABYSS_ENV_KEYS})
@@ -206,14 +259,15 @@ ROBINHOOD_ABYSS_INFRASTRUCTURE = AbyssInfrastructureAddresses(
 #: Workbench deployment snapshot — override via env when redeploying.
 _WORKBENCH_DEFAULTS = ProtocolAddresses(
     **vars(ROBINHOOD_ABYSS_INFRASTRUCTURE),
-    lending_pool="0xe1576c5CF12F670911BEd5Cc0AEDBcD4E5E9550c",
-    addresses_provider="0x9Fcca440F19c62CDF7f973eB6DDF218B15d4C71D",
-    data_provider="0x79E8AB29Ff79805025c9462a2f2F12e9A496f81d",
+    **vars(_ZERO_LAUNCH_APPLICATION),
+    lending_pool="0x5D8878b145904425C598f12EB8eD550985369a82",
+    addresses_provider="0x892faB533E8D04135D902F94974e45dB48C17697",
+    data_provider="0x1f3faA42C1D5cC330f6BD0242B9a56d611bdC78a",
     ui_pool_data_provider=ZERO_ADDRESS,
     wallet_balance_provider=ZERO_ADDRESS,
-    aave_oracle="0x9c65f85425c619A6cB6D29fF8d57ef696323d188",
+    aave_oracle="0x6837B3cF5d959d01e07bf6DaB53f562877BF7d53",
     liquidation_executor=ZERO_ADDRESS,
-    protocol_vault="0xAe120F0df055428E45b264E7794A18c54a2a3fAF",
+    protocol_vault="0x83Ec5DbFEd6d972be89df88d3654EA2c70Fa2FB3",
     eth_usd_feed=ROBINHOOD_ETH_USD,
     weth=ROBINHOOD_WETH,
     weth_gateway=ZERO_ADDRESS,
@@ -226,6 +280,7 @@ _WORKBENCH_DEFAULTS = ProtocolAddresses(
 def _build_addresses() -> dict[SupportedChainId, ProtocolAddresses]:
     anvil = ProtocolAddresses(
         **vars(_abyss_infrastructure_from_env(_ZERO_ABYSS_INFRASTRUCTURE)),
+        **vars(_launch_application_from_env(_ZERO_LAUNCH_APPLICATION)),
         lending_pool=_env_addr("LENDING_POOL"),
         addresses_provider=_env_addr("ADDRESSES_PROVIDER"),
         data_provider=_env_addr("DATA_PROVIDER"),
@@ -244,6 +299,7 @@ def _build_addresses() -> dict[SupportedChainId, ProtocolAddresses]:
 
     mainnet = ProtocolAddresses(
         **vars(ROBINHOOD_ABYSS_INFRASTRUCTURE),
+        **vars(_launch_application_from_env(ROBINHOOD_LAUNCH_APPLICATION)),
         lending_pool="0x5D8878b145904425C598f12EB8eD550985369a82",
         addresses_provider="0x892faB533E8D04135D902F94974e45dB48C17697",
         data_provider="0x1f3faA42C1D5cC330f6BD0242B9a56d611bdC78a",
@@ -263,6 +319,7 @@ def _build_addresses() -> dict[SupportedChainId, ProtocolAddresses]:
     workbench = replace(
         _WORKBENCH_DEFAULTS,
         **vars(_abyss_infrastructure_from_env(ROBINHOOD_ABYSS_INFRASTRUCTURE)),
+        **vars(_launch_application_from_env(_ZERO_LAUNCH_APPLICATION)),
         lending_pool=_env_addr_public("LENDING_POOL", _WORKBENCH_DEFAULTS.lending_pool),
         addresses_provider=_env_addr_public("ADDRESSES_PROVIDER", _WORKBENCH_DEFAULTS.addresses_provider),
         data_provider=_env_addr_public("DATA_PROVIDER", _WORKBENCH_DEFAULTS.data_provider),

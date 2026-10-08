@@ -29,6 +29,22 @@ def test_health_factor_formatting_and_status():
     assert health_factor_status(2 * WAD) == "safe"
 
 
+def test_health_factor_matches_binary_js_to_fixed_rounding():
+    for wad, expected in (
+        (1125000000000000000, "1.13"),
+        (1625000000000000000, "1.63"),
+        (-1125000000000000000, "-1.13"),
+        (1124000000000000000, "1.12"),
+        (1126000000000000000, "1.13"),
+        (1005000000000000000, "1.00"),
+        (-1005000000000000000, "-1.00"),
+        (2675000000000000000, "2.67"),
+        (1000000000000000000000000, "1000000.00"),
+        ((1 << 256) - 1, "∞"),
+    ):
+        assert format_health_factor(wad) == expected
+
+
 def test_parse_health_factor_to_wad():
     assert parse_health_factor_to_wad("") is None
     assert parse_health_factor_to_wad("0") is None

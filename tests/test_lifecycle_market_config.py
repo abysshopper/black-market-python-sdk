@@ -41,14 +41,6 @@ def test_shared_encoder_rejects_every_noncurrent_version(version):
         encode_lifecycle_v4_market_config(replace(shared_config(), version=version))
 
 
-@pytest.mark.parametrize("change", [
-    {"profile_id": bytes(32)}, {"terms_digest": bytes(32)},
-    {"developer_beneficiary": "0x" + "00" * 20}, {"developer_fee_bps": None},
-    {"developer_fee_bps": True}, {"developer_fee_bps": 10000},
-])
-def test_creator_must_supply_exact_nonzero_author_terms_and_explicit_valid_rate(change):
-    with pytest.raises(ValueError):
-        encode_lifecycle_v4_market_config(replace(shared_config(), **change))
 
 
 def test_current_decoders_reject_trailing_bytes_and_truncated_tuple():

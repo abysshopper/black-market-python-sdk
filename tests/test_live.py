@@ -69,6 +69,37 @@ def test_ray_mul_rounds_half_up():
     assert ray_mul(1, RAY // 2 - 1) == 0
 
 
+@pytest.mark.parametrize("a,b,expected", [
+    (-1, RAY // 2, 0),
+    (-1, RAY // 2 + 1, 0),
+    (-2, RAY, -1),
+    (2, -RAY, -1),
+    (-2, -RAY, 2),
+    (-(10**40), RAY + 1, -(10**40) - 10**13 + 1),
+])
+def test_ray_mul_signed_intermediate_division_truncates_toward_zero(a, b, expected):
+    assert ray_mul(a, b) == expected
+
+
+def test_signed_ray_balances_use_same_truncation_in_live_user_normalization():
+    reserve = live_reserve_from_ui(_ui_row(
+        liquidityIndex=RAY, variableBorrowIndex=RAY,
+        totalScaledVariableDebt=-2,
+    ))
+    assert reserve.total_borrow == -1
+    user = live_user_from_ui({
+        "underlyingAsset": TOKEN,
+        "scaledATokenBalance": -2,
+        "scaledVariableDebt": -2,
+        "principalStableDebt": 0,
+        "usageAsCollateralEnabledOnUser": False,
+    }, reserve)
+    assert user.supplied_raw == -1
+    assert user.borrowed_raw == -1
+    assert user.supplied == pytest.approx(-1e-18)
+    assert user.borrowed == pytest.approx(-1e-18)
+
+
 def test_number_conversions():
     assert usd18_to_number(0) == 0.0
     assert usd18_to_number(PRICE_USD18) == 2_500.0

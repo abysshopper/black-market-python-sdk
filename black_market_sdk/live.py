@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Optional, Sequence, TypeVar
 
-from .format import RAY, ray_apr_to_apy_percent
+from .format import RAY, _trunc_div, ray_apr_to_apy_percent
 
 #: Native ETH sentinel used by `WalletBalanceProvider`.
 MOCK_ETH_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
@@ -17,7 +17,7 @@ MARKET_REFERENCE_CURRENCY_UNIT = 10**18
 
 
 def ray_mul(a: int, b: int) -> int:
-    return (a * b + RAY // 2) // RAY
+    return _trunc_div(a * b + RAY // 2, RAY)
 
 
 def usd18_to_number(price: int) -> float:
@@ -29,7 +29,7 @@ def usd18_to_number(price: int) -> float:
 def tokens_to_number(amount: int, decimals: int) -> float:
     if amount == 0:
         return 0.0
-    return amount / 10**decimals
+    return float(amount) / 10.0**decimals
 
 
 @dataclass(frozen=True)

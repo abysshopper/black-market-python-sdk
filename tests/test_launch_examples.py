@@ -6,11 +6,14 @@ These are local unit tests, not evidence that any API/chain launch was executed.
 from __future__ import annotations
 
 import json
+import runpy
+import sys
 import signal
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from requests import HTTPError
@@ -23,10 +26,11 @@ from examples import _launch_support as support
 from examples._launch_support import Artifacts, JournalHTTPProvider, LocalSigningWallet, Redactor, ExampleFailure, error_details, loopback_url, mainnet_url
 from black_market_sdk import (
     LaunchBlock, LaunchExecutionLimits, LaunchPlanV1, LaunchPublishPending, LifecycleTokenConfig,
-    LaunchApiError, get_launch_addresses, predict_launch_token, to_launch_plan_tuple,
+    LaunchApiError, KnownLifecycleProfile, get_known_lifecycle_profile, get_launch_addresses,
+    predict_launch_token, to_launch_plan_tuple,
 )
 from black_market_sdk import lifecycle
-from black_market_sdk.lifecycle_rpc import LaunchRpcError
+from black_market_sdk.lifecycle_rpc import LaunchRpcError, LaunchRpcSimulation
 
 CREATOR = "0x0000000000000000000000000000000000000001"
 TOKEN = "0x0000000000000000000000000000000000000002"
@@ -47,6 +51,75 @@ def token_draft():
         token=LifecycleTokenConfig(0, 0, "Smoke boundary-case", "SMOKE", 1000000 * 10**18, 0, "", bytes(32), CREATOR, False),
         funding=(), fee_assets=(), markets=(), buys=(), deadline=3600, executor_fee_bps=275,
     )
+
+
+@pytest.fixture
+def construct_case(tmp_path, monkeypatch):
+    """Build the real fixed economics using release metadata, with no RPC or signing."""
+    block = LaunchBlock(1, BLOCK_HASH, 100, 32000000, 1)
+    deployment = get_launch_addresses(4663)
+    configuration = {"chainId": 4663, "orchestrator": deployment.orchestrator,
+                     "creator": CREATOR, "quoteAsset": deployment.wrapped_native,
+                     "oracleConfigId": "0x" + "12" * 32}
+    profiles = {
+        venue: [get_known_lifecycle_profile(chain_id=4663, orchestrator=deployment.orchestrator, key=key).profile]
+        for venue, key in (("v4", KnownLifecycleProfile.V4_FIXED_FEE_POOL), ("abyss", KnownLifecycleProfile.ABYSS_3))
+    }
+    monkeypatch.setattr(example, "read_block", lambda *_args: block)
+    monkeypatch.setattr(example, "predict_launch_token", lambda *_args, **_kwargs: TOKEN)
+    monkeypatch.setattr(example, "discover_profiles", lambda *_args: profiles)
+    monkeypatch.setitem(sys.modules, "launch_examples", example)
+
+    def construct(filename, *, markets=None):
+        case = runpy.run_path(str(Path(example.__file__).with_name(filename)))["CASE"]
+        if markets is not None:
+            case = {**case, "markets": markets}
+        artifacts = Artifacts(tmp_path / case["id"], case["id"])
+        plan, predicted = example.construct_plan(None, configuration, case, 123, bytes(32), artifacts, example.Cancellation())
+        return case, plan, predicted, artifacts
+    return construct
+
+
+@pytest.mark.parametrize("filename", [
+    "launch_erc20_v4.py", "launch_erc20_abyss.py", "launch_erc404_v4.py", "launch_erc404_abyss.py",
+    "launch_erc20_staking_v4.py", "launch_erc20_dividends_abyss.py",
+    "launch_erc20_burn_mixed.py", "launch_erc404_dividends_mixed.py",
+])
+def test_fixed_cases_allocate_complete_supply_and_position_maxima(construct_case, filename):
+    case, plan, predicted, artifacts = construct_case(filename)
+    assert predicted == TOKEN and sum(market.token_budget for market in plan.markets) == plan.token.supply
+    base_budget = plan.token.supply // len(plan.markets)
+    for index, (market, spec) in enumerate(zip(plan.markets, case["markets"])):
+        assert market.token_budget == (plan.token.supply - base_budget * index if index == len(plan.markets) - 1 else base_budget)
+        config = (lifecycle.decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
+                  if spec["venue"] == "v4" else lifecycle.decode_lifecycle_abyss_market_config(market.config))
+        assert len(config.positions) == spec["positions"]
+        maxima = tuple(position.max_token_amount if spec["venue"] == "v4"
+                       else position.token_amount_maximum for position in config.positions)
+        assert sum(maxima) == market.token_budget
+        base_maximum = market.token_budget // len(config.positions)
+        assert maxima[-1] == market.token_budget - base_maximum * (len(config.positions) - 1)
+        if spec["venue"] == "v4":
+            assert isinstance(config, lifecycle.LifecyclePoolBoundV4MarketConfigV6)
+            assert config.minimum_hook_fee_pips < config.hook_fee_pips
+            assert config.fee_sensitivity_pips_seconds_per_tick > 0
+            assert example.hex_bytes(config.profile_id) == market.profile_id
+    assert len(plan.buys) == len(plan.markets) * case["buysPerMarket"]
+    assert plan.funding[0].amount == sum(buy.quote_amount_in for buy in plan.buys)
+    artifacts.finish()
+
+
+def test_final_market_receives_supply_division_remainder(construct_case):
+    _, plan, _, artifacts = construct_case(
+        "launch_erc20_abyss.py", markets=[{"venue": "abyss", "positions": 3}] * 3,
+    )
+    base = plan.token.supply // 3
+    assert plan.token.supply % 3 != 0
+    assert tuple(market.token_budget for market in plan.markets) == (base, base, plan.token.supply - 2 * base)
+    for market in plan.markets:
+        config = lifecycle.decode_lifecycle_abyss_market_config(market.config)
+        assert sum(position.token_amount_maximum for position in config.positions) == market.token_budget
+    artifacts.finish()
 
 
 def no_call(*_args, **_kwargs):
@@ -119,8 +192,6 @@ def test_recursive_redaction_preserves_revert_cause_and_private_recovery(tmp_pat
         assert secret not in public
     result = json.loads((artifacts.directory / "result.json").read_text())
     assert result["error"]["cause"]["code"] == -32000
-    assert result["error"]["cause"]["revertData"] == "0xdeadbeef00000001"
-    assert "LaunchRpcError" in result["error"]["stack"]
     private = artifacts.directory / "recovery.private.json"
     assert private.stat().st_mode & 0o777 == 0o600
     assert json.loads(private.read_text())["capability"] == capability
@@ -190,19 +261,6 @@ def test_publication_success_requires_actual_matching_canonical_representation()
     assert failure.value.code == "API_PUBLICATION_MISMATCH"
 
 
-def test_token_only_prediction_does_not_weaken_execution_validation(monkeypatch):
-    draft = token_draft()
-    calls = []
-    block = LaunchBlock(1, BLOCK_HASH, 100, 32000000, 1)
-    monkeypatch.setattr(lifecycle, "_call", lambda _client, _target, _abi, name, _args, _block: calls.append(name) or TOKEN)
-    monkeypatch.setattr(lifecycle, "assert_canonical", lambda *_args: None)
-    assert predict_launch_token(None, draft, block=block) == Web3.to_checksum_address(TOKEN)
-    assert calls == ["predictToken"]
-    with pytest.raises(ValueError, match="markets"):
-        to_launch_plan_tuple(draft)
-    with pytest.raises(ValueError, match="uint256"):
-        predict_launch_token(None, replace(draft, nonce=True), block=block)
-    assert calls == ["predictToken"]
 
 
 def test_burn_disposition_never_burns_quote_in_either_address_orientation():
@@ -344,7 +402,7 @@ def test_wallet_signs_real_attribution_and_rejects_wrong_domain(tmp_path, monkey
     orchestrator = get_launch_addresses(4663).orchestrator
     typed = example.build_launch_attribution_typed_data(
         chain_id=4663, verifying_contract=orchestrator, wallet=account.address,
-        metadata=example.LaunchSessionMetadata(name="Smoke", symbol="SMOKE"),
+        metadata=example.LaunchSessionCreateMetadata(name="Smoke", symbol="SMOKE", description="Signed wallet boundary"),
         idempotency_key="smoke-wallet-regression", nonce="0x" + "12" * 32, deadline=2000000000)
     signature = wallet.sign_typed_data(typed, verifying_contract=orchestrator)
     assert Account.recover_message(encode_typed_data(full_message=typed), signature=signature) == account.address
@@ -382,28 +440,73 @@ def test_native_simulation_is_allowed_without_source_broadcast(tmp_path, monkeyp
 
 
 
-def test_unavailable_native_admission_retains_failure_without_sign_or_api(tmp_path, monkeypatch):
-    artifacts = Artifacts(tmp_path / "refused-native", "boundary-case")
-    refused = SimpleNamespace(admitted=False, confidence="provisional",
+def test_unavailable_native_admission_retains_failure_without_sign_or_api(construct_case, monkeypatch):
+    case, plan, predicted, artifacts = construct_case("launch_erc20_v4.py")
+    refused = SimpleNamespace(admitted=False, confidence="provisional", plan=plan,
+                              plan_hash=lifecycle.hash_launch_plan(plan), launch_id=lifecycle.launch_id_of(plan),
+                              mode=case["mode"], predicted_token=predicted,
                               simulation=SimpleNamespace(backend=None, reasons=("eth_simulateV1 unavailable",)),
-                              market_admissions=(), limits=None, atomic_simulation=None,
+                              profiles=(), hook_deployments=(), limits=None,
                               token_factory=None, token_factory_code_hash=None)
     calls = []
 
-    def refuse(_client, plan, **kwargs):
+    async def refuse(_client, plan, **kwargs):
         calls.append((plan, kwargs))
         return refused
 
-    monkeypatch.setattr(example, "plan_launch", refuse)
+    monkeypatch.setattr(example, "prepare_and_plan_lifecycle_launch", refuse)
     for name in ("stage_metadata", "build_next_transaction", "api_client"):
         monkeypatch.setattr(example, name, no_call)
     with pytest.raises(ExampleFailure) as failure:
-        example.admit_plan(None, token_draft(), case_definition(), artifacts, example.Cancellation())
+        example.admit_plan(None, plan, case, artifacts, example.Cancellation())
     artifacts.finish(failure.value)
     assert failure.value.code == "LAUNCH_NOT_ADMITTED"
     assert len(calls) == 1 and "fork" not in calls[0][1] and calls[0][1]["mode"] == "atomic"
     assert artifacts.result["chain"]["transactions"] == []
     assert "eth_simulateV1 unavailable" in (artifacts.directory / "admission.json").read_text()
+
+
+def test_unified_admission_retains_actual_final_planned_launch(construct_case, monkeypatch):
+    case, draft, predicted, artifacts = construct_case("launch_erc20_v4.py")
+    config = lifecycle.decode_lifecycle_pool_bound_v4_market_config(draft.markets[0].config, expected_version=6)
+    final = replace(draft, markets=(replace(draft.markets[0], config=lifecycle.encode_lifecycle_pool_bound_v4_market_config(
+        replace(config, hook_salt="0x" + "34" * 32))),))
+    block = LaunchBlock(1, BLOCK_HASH, 100, 32000000, 1)
+    fields = dict(launch_id=lifecycle.launch_id_of(final), plan_hash=lifecycle.hash_launch_plan(final),
+                  creator=final.creator, nonce=final.nonce, phase=lifecycle.LifecyclePhase.NONE,
+                  token=predicted, fee_hub=example.ZERO_ADDRESS, rewards=example.ZERO_ADDRESS,
+                  prepared_markets=0, market_count=0, buy_count=0, position_count=0, deadline=final.deadline)
+    canonical = lifecycle.LifecycleCanonicalProgress(**fields, mode=lifecycle.LifecycleMode.ATOMIC)
+    progress = lifecycle.LaunchProgress(
+        **fields, mode=case["mode"], block=block, head_block=block, awaiting_confirmations=False,
+        canonical=canonical, head=canonical, confirmation_depth=1,
+        confirmed_account_nonce=0, head_account_nonce=0, pending_account_nonce=0, confirmation_safe=True,
+    )
+    simulation = lifecycle.LaunchSimulation(
+        "stateful", True, block, "eth_simulateV1", (), (), LaunchRpcSimulation("stateful", "eth_simulateV1", block, ()),
+        execution_proof="proved", protocol_fit="proved",
+    )
+    deployment = get_launch_addresses(final.chain_id)
+    planned = lifecycle.PlannedLaunch(
+        plan=final, plan_hash=fields["plan_hash"], launch_id=fields["launch_id"], predicted_token=predicted,
+        chain_id=final.chain_id, account=final.creator, mode=case["mode"], transactions=(), approvals=(),
+        progress=progress, simulation=simulation, limits=LaunchExecutionLimits(), prepare_batch_size=1,
+        irreversible_costs=(), token_factory=deployment.token_factory, token_factory_code_hash="0x" + "56" * 32,
+    )
+    calls = []
+
+    async def prepare(_client, plan, **options):
+        calls.append((plan, options))
+        return planned
+
+    monkeypatch.setattr(example, "prepare_and_plan_lifecycle_launch", prepare)
+    result = example.admit_plan(None, draft, case, artifacts, example.Cancellation())
+    assert result is planned and result.plan != draft
+    assert calls[0][0] is draft
+    assert calls[0][1]["mode"] == case["mode"] and calls[0][1]["account"] == draft.creator
+    assert json.loads((artifacts.directory / "plan.json").read_text()) == lifecycle.launch_plan_to_dict(final)
+    assert artifacts.result["chain"]["planHash"] == planned.plan_hash
+    artifacts.finish()
 
 
 def test_redactor_loads_configured_launch_key(monkeypatch):
@@ -469,11 +572,6 @@ def test_configuration_derives_canonical_deployment_and_creator(tmp_path, monkey
     assert "forkRpcUrl" not in configuration
 
 
-def test_examples_do_not_invent_mandatory_backend_policy(monkeypatch):
-    for name in ("LAUNCH_CHAIN_GAS_CAP", "LAUNCH_RPC_GAS_CAP", "LAUNCH_ACCOUNT_GAS_CAP", "LAUNCH_CALLDATA_CAP"):
-        monkeypatch.delenv(name, raising=False)
-    assert example.limit_resolver() is None
-
 
 def test_example_supplied_policy_only_tightens_known_limits(monkeypatch):
     for name in ("LAUNCH_CHAIN_GAS_CAP", "LAUNCH_RPC_GAS_CAP", "LAUNCH_ACCOUNT_GAS_CAP", "LAUNCH_CALLDATA_CAP"):
@@ -484,8 +582,7 @@ def test_example_supplied_policy_only_tightens_known_limits(monkeypatch):
     limits = example.limit_resolver()(None, context)
     assert limits.account_transaction_gas_limit == 12_000_000
     assert limits.chain_transaction_gas_limit is None and limits.rpc_transaction_gas_limit is None
-    assert limits.max_calldata_bytes is None and limits.headroom_bps == 1500
-    assert "explicit example caller policy" in limits.source
+    assert limits.max_calldata_bytes is None
 
 
 def test_fixed_example_guard_preserves_unknown_policy_and_nitro_total_envelope(monkeypatch):

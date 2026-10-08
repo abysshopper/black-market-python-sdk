@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from eth_account import Account
@@ -9,35 +10,21 @@ from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.middleware import SignAndSendRawMiddlewareBuilder
 
-from .addresses import (
-    ANVIL_LOCAL_CHAIN_ID,
-    ROBINHOOD_MAINNET_CHAIN_ID,
-    ROBINHOOD_MAINNET_RPC,
-    WORKBENCH_CHAIN_ID,
-    default_rpc_url,
-    is_supported_chain_id,
-)
-
-_DEFAULT_RPCS = {
-    ROBINHOOD_MAINNET_CHAIN_ID: ROBINHOOD_MAINNET_RPC,
-}
+from .addresses import ANVIL_LOCAL, ANVIL_LOCAL_CHAIN_ID, CHAINS
 
 
 def _resolve_rpc_url(chain_id: int, rpc_url: Optional[str]) -> str:
-    if rpc_url:
+    if rpc_url is not None:
         return rpc_url
-    if chain_id in _DEFAULT_RPCS:
-        return _DEFAULT_RPCS[chain_id]
-    return default_rpc_url()
+    configured = os.environ.get("RPC_URL")
+    return configured if configured is not None else CHAINS.get(chain_id, ANVIL_LOCAL).rpc_urls[0]
 
 
 def create_protocol_web3(
     chain_id: int = ANVIL_LOCAL_CHAIN_ID,
     rpc_url: Optional[str] = None,
 ) -> Web3:
-    """Read-only Web3 instance bound to a supported Black Market chain."""
-    if not is_supported_chain_id(chain_id):
-        raise ValueError(f"Unsupported chain id: {chain_id}")
+    """Read-only Web3 instance; unknown typed chain input uses local defaults."""
     return Web3(Web3.HTTPProvider(_resolve_rpc_url(chain_id, rpc_url)))
 
 

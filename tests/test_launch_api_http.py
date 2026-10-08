@@ -29,7 +29,7 @@ from black_market_sdk import (
     LifecycleTokenConfig,
     LaunchAttributionAuthorization,
     LaunchSessionCreateRequest,
-    LaunchSessionMetadata,
+    LaunchSessionCreateMetadata,
     build_launch_attribution_typed_data,
     get_launch_addresses,
 )
@@ -108,7 +108,7 @@ def signed_request(settings, account, key, metadata, *, wallet=None, orchestrato
 @pytest.fixture(scope="module")
 def metadata_session(api_settings, api_client, signed_account):
     key = "python-sdk-http-" + secrets.token_hex(16)
-    metadata = LaunchSessionMetadata(
+    metadata = LaunchSessionCreateMetadata(
         name="  Cafe\u0301 SDK  ", symbol=" PYHTTP ",
         description="  Real HTTP metadata session; no on-chain launch or image upload.  ",
         website_url="https://abyss.trading/",
@@ -198,7 +198,7 @@ def test_existing_session_rejects_malformed_and_wrong_capabilities(api_settings,
 ])
 def test_real_signature_domain_deadline_and_metadata_authorization_boundaries(api_settings, api_client, signed_account, boundary, status, code):
     key = "python-sdk-rejection-" + secrets.token_hex(16)
-    metadata = LaunchSessionMetadata(name="Authorization Boundary", symbol="AUTH", description="Bound metadata document")
+    metadata = LaunchSessionCreateMetadata(name="Authorization Boundary", symbol="AUTH", description="Bound metadata document")
     options = {}
     if boundary == "wallet":
         options["wallet"] = Account.create().address

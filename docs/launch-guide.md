@@ -4,34 +4,39 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
-Version **0.5.0** makes caller-supplied execution policy optional, separates exact
-execution/protocol proof from submission-RPC preflight, and reads native Nitro
-compute ceilings and poster budgets on chain4663. The default gas headroom is 15%.
+Version **0.7.0** is a breaking cutover to the October 8 mined graph. Execution mode
+is required (`atomic` or `staged`): no automatic selection or atomic-first fallback.
+Unified preparation returns the final `PlannedLaunch`, not an intermediate salt-only
+plan. Receipt recovery uses typed `LifecycleReceiptReference` values. Construction
+metadata is frozen release evidence; complete current admission still requires live
+canonical proof. Caller-supplied tightening policy remains optional.
 
 ## Deployed infrastructure
 
 `get_launch_addresses(4663)` returns the current mined `pool-launch-v1` infrastructure.
 The deployment's canonical manifest records successful receipts and runtime evidence
-at block **80,548,181**. Its live implementation registry contains two adapters and
-five admitted profiles: one pool-bound V4/config5 offering and four canonical
-Abyss/config1 variants. Discover profile IDs from the registry rather than hard-coding
-an SDK allowlist. Shared V4/config4 is a supported codec/topology for an explicitly
-selected, admitted deployment; it is not an offering of this mainnet deployment.
+at block **82,880,546**. Its live implementation registry contains two adapters and
+five admitted profiles: one pool-bound V4/config6/V2 offering and four canonical
+Abyss/config1 variants. Discover current profile IDs from the registry or select
+the matching frozen `KnownLifecycleProfile` metadata for offline construction.
+Neither frozen metadata nor an SDK key is a live admission certificate. Shared
+V4/config4 and pool-bound config5/V1 remain explicit codecs for matching admitted
+deployments, not mainnet defaults.
 
 | Contract | Address |
 | --- | --- |
-| Orchestrator | `0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E` |
-| Implementation registry | `0xaa8a410709B79cBA6F118F1be1FF568877A3B8Ee` |
-| Fee-owner registry | `0x15778Aad08e12D458B2848F035860e2a8c2a0725` |
-| Directory | `0xa9d0F9Ff93AF569B7C11b5cDCE1E98D5a59F52DC` |
-| Fee-hub factory | `0x5c1FFa0F9fEB3f3f2704b752397f36f00072d252` |
-| Token factory | `0xa7467624E5A7a962f49a341Aa3fCE3eD20257b67` |
-| Funding escrow | `0x13be9F6C4087d7eA3937c49bc174793162716312` |
-| Launch lens | `0x50bdA6937e3753665637538d62A8995b12a86A06` |
-| Pool-bound market adapter | `0xd9A7f35F2251dDa2506E50fCab2e52E6CE7a37d9` |
-| Hook deployer | `0x9Cd433644237E6925deB13F3196cb44843de2DF6` |
-| Collector factory | `0xf444dC28Aa7F6B3a8Ad5B7B3975d05a7A1fDF409` |
-| Canonical Abyss market adapter | `0xeF509c6c9049D3260D5a90a56475d33f5BB47827` |
+| Orchestrator | `0x91560876033d568d25CDe98C78c33ff8FC43962c` |
+| Implementation registry | `0xB2B0f9F36617810D67b8fC175153Aa10024C1358` |
+| Fee-owner registry | `0x64b5ca1f21B8E84305b0e4D847924dca39Eb1fcb` |
+| Directory | `0x1c7694Ed0F6624cC5794814261B1523E91986bb5` |
+| Fee-hub factory | `0xF14fD8D65D7833612A4bb909F1161731bb7039d3` |
+| Token factory | `0xd3cE64E49224a9a96075633f63761FE6BE22FE30` |
+| Funding escrow | `0x7bc77946CeF52A178583FCe1EEB7751983cEC703` |
+| Launch lens | `0xAce93e3910561aC67c6179c3a27F133F5Ef78F25` |
+| Pool-bound market adapter | `0xb334b44509a5237a39cE364c159913F14b6D1186` |
+| Hook deployer | `0x1Df787Cc099B047A606059Ac80A8296779266f9e` |
+| Collector factory | `0x43b394fE6865EE6797c60FCCcd33D7D765214b52` |
+| Canonical Abyss market adapter | `0x3ef760fcbbD618Ab6cB7E308e7fB39C93b9deFD0` |
 
 The frozen `LaunchInfrastructureAddresses` also includes the admin, validator,
 token/reward deployers, collector deployer, custody, pool manager, oracle factory,
@@ -88,33 +93,41 @@ fee arrays, so its predicted address can determine token-only range orientation.
 Prediction does not admit that draft for execution; complete-plan validation remains
 required by all execution builders.
 
-`LifecyclePoolBoundV4MarketConfig` requires inner and outer version **5**. Its fields
-in order are:
+`LifecyclePoolBoundV4MarketConfigV6` requires inner and outer version **6**. Its
+fields in order are:
 
 ```text
-version, lp_fee_pips, tick_spacing, sqrt_price_x96, hook_fee_pips, fee_mode,
+version, lp_fee_pips, tick_spacing, sqrt_price_x96, hook_fee_pips,
+minimum_hook_fee_pips, fee_sensitivity_pips_seconds_per_tick, fee_mode,
 protocol_fee_denominator, treasury, external_liquidity_disabled, oracle_config_id,
 hook_salt, profile_id, terms_digest, developer_beneficiary, developer_fee_bps,
 positions
 ```
 
-The exact config5 tuple is:
+The exact config6 tuple is:
 
 ```text
-(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,
- bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])
+(uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,
+ bytes32,bytes32,bytes32,bytes32,address,uint16,
+ (int24,int24,uint128,bytes32,uint256)[])
 ```
+
+`hook_fee_pips` is the maximum; the independent minimum must satisfy
+`0 <= minimum <= maximum <= 1,000,000`. Sensitivity is uint32 in fee-pips ×
+seconds/tick, not an implied minimum or LP fee. `LifecyclePoolBoundV4MarketConfigV5`
+is the explicit version5/V1 type without those two V2 policy fields.
+`LifecyclePoolBoundV4MarketConfig` is their type union, not a constructor.
 
 Each `LifecycleV4Position` has `tick_lower`, `tick_upper`, `liquidity`, `salt`, and
 `max_token_amount`. Position salts and the hook deployment salt are independent.
-`LifecycleV4MarketConfig` uses inner/outer version **4** and the same sequence
-without `hook_salt`. Current encode/decode helpers reject noncanonical bytes and
-require the exact author-bound fields; no fee or author rate is chosen for you.
+`LifecycleV4MarketConfig` uses inner/outer version **4** and the V1 sequence
+without `hook_salt`. Current codecs require canonical bytes and explicit author,
+fee and configuration fields; no fee or author rate is chosen for you.
 
 The inner profile ID must equal the market's outer ID. `developer_beneficiary` is
 the stable admitted author identity, not today's payout address. An explicit rate,
 including zero, must fit both the frozen envelope and live protocol maximum.
-Treasury and protocol denominator are frozen terms. LP/hook rates must be below
+Treasury and protocol denominator are frozen terms. LP fees must be below
 1,000,000 pips; fee mode, tick spacing, and position count must fit admitted bounds.
 
 Creators select `oracle_config_id` and `external_liquidity_disabled` per pool.
@@ -130,22 +143,39 @@ one V4 market per quote is permitted across both V4 topologies; an Abyss market
 may use that quote. Funding/fee-asset arrays are ascending and unique, fee
 allocations sum to 10,000 bps, and all committed quantities stay exact.
 
-## Pool-bound hook preparation
+All market `token_budget` values must sum exactly to the committed supply, and
+every market's position `max_token_amount` values must sum exactly to its budget.
+Divide using exact integers and place any remainder in the final market/position.
+These are intended allocations, not actual mint debits. Rounded mint residuals
+are burned during activation before buys; they are never a creator reserve.
+`inventory_recipient` does not authorize an unallocated supply remainder.
 
-`await prepare_pool_bound_lifecycle_plan(client, draft_plan)` returns a finalized
-plan plus exact per-market deployments. It locally mines valid CREATE2 hook salts,
-rereads the graph/factory binding, and preserves token identity. Review the finalized
-plan hash before submission. Economic plans cannot be rewritten after launch begins.
-`read_pool_bound_hook_deployment` accepts an unmined draft; `mine_pool_bound_hook_salt`
-supports cancellable local search. `build_pool_bound_hook_deployment_transaction`
-returns optional unsigned predeployment calldata without registration, initialization,
-fee-source binding, minting, custody sealing, buying, or opening.
+## Unified preparation and final admission
+
+`await prepare_and_plan_lifecycle_launch(client, draft_plan, account=creator,
+mode="staged")` locally mines exact CREATE2 hook salts, rereads constructor/graph
+bindings, and returns the final fully planned `PlannedLaunch`. Pass the explicitly
+selected `atomic` or `staged` mode; preparation never selects or changes it.
+Use `launch.plan`, `launch.plan_hash`, `launch.hook_deployments`, and
+`launch.simulation` for review. Do not plan the original draft again or reuse a
+diagnostic simulation as final admission. Require `launch.admitted` before
+requesting any signature or metadata staging.
+
+Optional `buy_slippage_bps` derives minimums from actual ordered diagnostic buy
+results, then proves the complete final protected plan. It does not rewrite a
+started launch. Economic plans and deployment salts are immutable after submission.
+`read_pool_bound_hook_deployment` accepts an unmined draft;
+`mine_pool_bound_hook_salt` supports cancellable local search.
+`build_pool_bound_hook_deployment_transaction` returns optional unsigned
+predeployment calldata without registration, initialization, fee-source binding,
+minting, custody sealing, buying, or opening.
 
 The market commitment domain is `black-market.pool-bound-market-economics.v1`.
 Only `hook_salt` is normalized: profile, terms, author, rate, economics, and every
 position remain committed. Prediction hashes the exact certified creation-code
-chunks plus the **one 18-field `PoolBoundHookParametersV1` constructor tuple** of
-`FixedFeePoolHookV1`. Initcode/runtime limits are 49,152/24,576 bytes. An existing
+chunks plus the version-matched constructor: `PoolBoundHookParametersV1` for
+config5 or `PoolBoundHookParametersV2` for config6, including independent minimum
+and sensitivity. Initcode/runtime limits are 49,152/24,576 bytes. An existing
 hook must match deployer-recorded runtime and exact constructor, key, dependency,
 and opening-state commitments; callback bits alone do not prove provenance.
 Shared topology separately authenticates its typed three-argument constructor.
@@ -164,10 +194,11 @@ Profile/dependency domains are `black-market.launch-profile.v2` and
 
 | API | Purpose |
 | --- | --- |
-| `plan_launch(client,plan,account=...,mode=...)` | Admission, funding, approvals, atomic-first proof, explicit grouping |
+| `prepare_and_plan_lifecycle_launch(client,plan,account=...,mode=...)` | Salt mining, optional buy protection, and final complete admission |
+| `plan_launch(client,plan,account=...,mode=...)` | Admission of already finalized economics in the explicit mode |
 | `simulate_launch_plan(client,launch,account=...)` | Reexecute against current canonical progress and caps |
 | `build_next_transaction(client,launch,account=...)` | Revalidate and emit only the next proven unsigned step |
-| `read_launch_progress(client,plan,confirmations=...,transaction_hashes=...)` | Canonical progress and confirmed/pending/replaced/orphaned receipt evidence |
+| `read_launch_progress(client,plan,mode=...,confirmations=...,receipts=...)` | Canonical progress and confirmed/pending/replaced/orphaned receipt evidence |
 | `read_launch_markets(client,plan,offset=...,limit=...)` | Canonical market/position/custody identities and live state |
 | `preview_lifecycle_fees(client,hub,executor=...)` | Current no-argument V3 `claimAndSplit()` through `eth_call` |
 
@@ -260,6 +291,12 @@ execution proof and failed protocol fit; it cannot emit a next transaction.
 Reread after receipts, replacement, reload, wallet switch, or reorg. Direct EOA
 execution and settled nonces remain required; contract accounts are not silently
 treated as supported wallets. Unconfirmed approvals and local counters are not authority.
+Pass `receipts=(LifecycleReceiptReference(transaction_hash,
+replacement_hash=..., confirmations=..., observed_block_number=...,
+observed_block_hash=...),)` rather than a bare hash sequence. Persist observed
+receipt block identity so reorg/replacement recovery remains bound to the reviewed
+transaction. `PlannedLaunch.receipt_references` retains that typed evidence;
+`progress.receipts` contains the resulting statuses.
 `build_next_transaction(..., action="cancel")` explicitly requests an eligible
 cancellation, refunding only unspent launch-isolated external funding, not gas,
 setup cost, or inventory disposed under the committed cancellation policy.
@@ -268,7 +305,7 @@ setup cost, or inventory disposed under the committed cancellation policy.
 # Hash your complete current economic plan offline; does not prove admission.
 : "${PLAN_JSON:?Set the path to your reviewed complete plan}"
 python examples/quickstart.py "$PLAN_JSON"
-# Encode a complete current config5 JSON (Solidity camelCase fields).
+# Encode a complete explicit config6 JSON (Solidity camelCase fields).
 : "${V4_CONFIG_JSON:?Set the path to your complete config}"
 python examples/launch_recipe.py "$V4_CONFIG_JSON"
 
@@ -359,11 +396,14 @@ Each invokes `run_launch_example(case)` in `examples/launch_examples.py`, suppor
 by `examples/_launch_support.py`. Copy these helpers alongside the selected example
 for use with an installed SDK. No source-tree import injection is used.
 ERC20 supply is 1,000,000 tokens; ERC404 supply is 10,000 tokens with 100-token NFT
-units. Position liquidity is `1000 * 10**18`, each market has a `1100 * 10**18`
-launch-token budget, and each opening buy uses `10**15` native input wrapped through
-canonical WETH. Config5 bound V4 and config1 canonical Abyss QUOTE_ORACLE profile3
-are discovered live; the full plan is salt-finalized and admitted without reducing
-its selected economics.
+units. Position liquidity is `1000 * 10**18`. The entire supply is apportioned
+across markets, then each market budget across position maxima, with exact final
+remainders. Actual mint dust burns rather than becoming creator inventory.
+Each opening buy uses `10**15` native input wrapped through canonical WETH.
+Config6 bound V4 and config1 canonical Abyss QUOTE_ORACLE profile3 are discovered
+live. V4 uses explicit maximum/minimum hook fees of 10,000/1,000 pips and
+sensitivity 7,654,321 fee-pips × seconds/tick. The unified call mines salts and
+admits the entire final plan without reducing selected economics or changing mode.
 
 Optional `NFT_BASE_URI` supplies your own hosted ERC404 NFT base URI; the default
 is empty and does not pretend a metadata service exists. NFT units/mirrors remain
@@ -371,12 +411,11 @@ part of the ERC404 case and on-chain verification.
 
 ### Example ceilings, signing, and API publication
 
-Default gas ceilings are 16,000,000 for chain/RPC/account; calldata is 131072 bytes
-and headroom is 1000 bps. These are **EXAMPLE ceilings, not verified provider or
-account limits**, and chain gas is bounded by every observed block gas limit.
+The examples do not invent chain/RPC/account/calldata ceilings. Protocol ceilings
+come from canonical SDK reads; unknown transport policy remains explicit.
 Optional `LAUNCH_CHAIN_GAS_CAP`, `LAUNCH_RPC_GAS_CAP`, `LAUNCH_ACCOUNT_GAS_CAP` and
-`LAUNCH_CALLDATA_CAP` environment values select reviewed positive integer ceilings;
-they do not bypass exact SDK full-case admission or replay.
+`LAUNCH_CALLDATA_CAP` select reviewed positive tightening limits. They do not
+bypass complete admission or replay. SDK gas headroom defaults to 1500 bps.
 
 The real SDK admission runs before signed API metadata staging. The wallet signs
 the complete attribution EIP-712 payload locally with creator/chain/domain checks
@@ -465,13 +504,17 @@ no proxy discovery or redirect forwarding.
 `build_launch_attribution_typed_data` and `build_launch_metadata_update_typed_data`
 require explicit `verifying_contract`. Callers own wallet signing, idempotency,
 recovery state, and retry decisions; no write is retried automatically.
+Session creation requires `LaunchSessionCreateMetadata`, including a string
+`description`; `LaunchSessionMetadata` represents canonical metadata and is not
+accepted as a create request. Callers cannot preassign `image_key` on creation.
+`LaunchSessionDirectUpload` uses the keyword `expires_in_seconds`.
 
 The example uses a real service and omits images so no object store is needed:
 
 ```sh
 export LAUNCH_API_TEST_URL=http://127.0.0.1:18763
 export LAUNCH_API_TEST_CHAIN_ID=4663
-export LAUNCH_API_TEST_ORCHESTRATOR=0xb75CBD17b9aecb7305B4DFcDa69595F783341c0E
+export LAUNCH_API_TEST_ORCHESTRATOR=0x91560876033d568d25CDe98C78c33ff8FC43962c
 python examples/launch_api_lifecycle.py
 
 # Explicitly sign/write only against a loopback test service.

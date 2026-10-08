@@ -26,6 +26,9 @@ EXPECTED_MODULES = {
     "black_market_sdk/lifecycle.py",
     "black_market_sdk/lifecycle_abis.py",
     "black_market_sdk/lifecycle_rpc.py",
+    "black_market_sdk/lifecycle_presets.py",
+    "black_market_sdk/_sdk_abi_data.json",
+    "black_market_sdk/_lifecycle_release_20261008.json",
     "black_market_sdk/live.py",
     "black_market_sdk/py.typed",
 }

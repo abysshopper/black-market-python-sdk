@@ -30,7 +30,7 @@ from black_market_sdk import (
     LaunchApiError,
     LaunchAttributionAuthorization,
     LaunchSessionCreateRequest,
-    LaunchSessionMetadata,
+    LaunchSessionCreateMetadata,
     build_launch_attribution_typed_data,
     get_launch_addresses,
 )
@@ -97,7 +97,7 @@ def main(argv=None) -> int:
             parser.error("set LAUNCH_API_TEST_ORCHESTRATOR explicitly for a non-mainnet test chain")
         orchestrator = get_launch_addresses(chain_id).orchestrator
     account = Account.from_key(private_key)
-    metadata = LaunchSessionMetadata(name="Python API Example", symbol="PYAPI", description="Metadata staged through the real SDK HTTP client.")
+    metadata = LaunchSessionCreateMetadata(name="Python API Example", symbol="PYAPI", description="Metadata staged through the real SDK HTTP client.")
     nonce = "0x" + secrets.token_hex(32)
     deadline = int(time.time()) + 600
     key = "python-example-" + secrets.token_hex(16)

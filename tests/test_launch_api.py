@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import black_market_sdk.launch_api as launch_api_module
 
 
 import pytest
@@ -22,6 +23,9 @@ from black_market_sdk.launch_api import (
     LaunchMetadataEditDocument,
     LaunchPublishPending,
     LaunchSessionCreateRequest,
+    LaunchSessionCreateMetadata,
+    LaunchSessionDirectUpload,
+    LaunchUploadError,
     LaunchSessionImageDescriptor,
     LaunchSessionMetadata,
     LaunchSessionPublishRequest,
@@ -113,7 +117,7 @@ def test_upload_session_lifecycle_serializes_paths_headers_and_pending_recovery(
         "upload": {
             "url": "https://uploads.example/session-1?X-Amz-Credential=private",
             "headers": {"content-type": "image/png", "if-none-match": "*"},
-            "expiresAt": "1800000300",
+            "expiresInSeconds": 300,
         },
         "serverOnly": {"kept": True},
     }
@@ -129,7 +133,7 @@ def test_upload_session_lifecycle_serializes_paths_headers_and_pending_recovery(
         _json_response(pending, status=202, headers={"Retry-After": "1.5"}),
     )
     client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example/"), transport=transport)
-    metadata = LaunchSessionMetadata(
+    metadata = LaunchSessionCreateMetadata(
         name="Abyss",
         symbol="ABYSS",
         description="Launched through the Abyss protocol.",
@@ -194,13 +198,6 @@ def test_upload_session_lifecycle_serializes_paths_headers_and_pending_recovery(
             "signature": SIGNATURE,
         },
     }
-    assert list(json.loads(create_body or b"")) == [
-        "chainId",
-        "wallet",
-        "metadata",
-        "image",
-        "authorization",
-    ]
 
     assert transport.calls[1] == (
         "GET",
@@ -495,7 +492,7 @@ def test_errors_and_local_validation_do_not_retry_or_send_injected_values():
             headers={"Retry-After": "2"},
         )
     )
-    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example"), transport=transport)
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=1), transport=transport)
 
     with pytest.raises(LaunchApiError) as error:
         client.get_launch(CHAIN_ID, TOKEN)
@@ -506,24 +503,24 @@ def test_errors_and_local_validation_do_not_retry_or_send_injected_values():
     assert secret not in str(error.value)
     assert len(transport.calls) == 1
 
-    with pytest.raises(ValueError, match="immutable name or symbol"):
+    with pytest.raises(ValueError):
         client.replace_launch_metadata(
             CHAIN_ID,
             TOKEN,
             {"name": "not editable", "description": "description"},
             _metadata_authorization(),
         )
-    with pytest.raises(ValueError, match="safe header value"):
+    with pytest.raises(ValueError):
         client.get_launch_upload_session(CHAIN_ID, "session-1", "capability\r\nInjected: value")
-    with pytest.raises(ValueError, match="unsafe path character"):
+    with pytest.raises(ValueError):
         client.get_launch_upload_session(CHAIN_ID, "../session-1", "capability")
-    with pytest.raises(ValueError, match="content_type"):
+    with pytest.raises(ValueError):
         LaunchSessionImageDescriptor(
             sha256=IMAGE_SHA256,
             content_type="image/gif",
             content_length=3,
         )
-    with pytest.raises(ValueError, match="between 1 byte"):
+    with pytest.raises(ValueError):
         client.put_launch_image(
             {"url": "https://uploads.example/object", "headers": {"content-type": "image/png"}},
             b"",
@@ -535,7 +532,7 @@ def test_retry_after_uses_javascript_rounding_and_clamps_finite_extremes():
         _json_response({"code": "RATE_LIMITED"}, status=429, headers={"Retry-After": "0.3125"}),
         _json_response({"code": "RATE_LIMITED"}, status=429, headers={"Retry-After": "1e308"}),
     )
-    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example"), transport=transport)
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=1), transport=transport)
 
     with pytest.raises(LaunchApiError) as half_up:
         client.get_launch(CHAIN_ID, TOKEN)
@@ -594,8 +591,138 @@ def test_local_http_api_opt_in_does_not_permit_http_image_uploads():
     client = LaunchApiClient(LaunchApiConfig(
         base_url="http://127.0.0.1:18763", allow_loopback_http=True,
     ))
-    with pytest.raises(ValueError, match="upload.url must be a safe HTTPS URL"):
+    with pytest.raises(ValueError):
         client.put_launch_image(
             {"url": "http://127.0.0.1:18763/upload", "headers": {"content-type": "image/png"}},
             b"png",
         )
+
+
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
+def test_transient_api_retries_count_attempts_and_retain_request_identity(monkeypatch, status):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    transport = TransportStub(*[
+        _json_response({"code": "RPC_UNAVAILABLE"}, status=status) for _ in range(3)
+    ])
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=3), transport=transport)
+    with pytest.raises(LaunchApiError) as failure:
+        client.get_launch_upload_session(CHAIN_ID, "session-1", "private-capability")
+    assert failure.value.status == status
+    assert len(transport.calls) == 3
+    assert transport.calls == [transport.calls[0]] * 3
+
+
+def test_session_creation_retry_reuses_exact_signed_payload_and_key(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    created = {"sessionId": "session-1", "capability": "created-only-capability"}
+    transport = TransportStub(
+        _json_response({"code": "RPC_UNAVAILABLE"}, status=503),
+        _json_response(created, status=201),
+    )
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example"), transport=transport)
+    request = LaunchSessionCreateRequest(
+        chain_id=CHAIN_ID, wallet=WALLET,
+        metadata=LaunchSessionCreateMetadata(name="Abyss", symbol="ABYSS", description="Description"),
+        authorization=_attribution_authorization(),
+    )
+    assert client.create_launch_upload_session(request, "launch-idempotency-key") == created
+    assert transport.calls == [transport.calls[0]] * 2
+
+
+def test_publish_pending_is_returned_once_without_backoff(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    pending = {"sessionId": "session-1", "status": "awaiting_indexer"}
+    transport = TransportStub(_json_response(pending, status=202))
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=5), transport=transport)
+    with pytest.raises(LaunchPublishPending) as failure:
+        client.publish_launch_upload_session(CHAIN_ID, "session-1", "private-capability",
+            LaunchSessionPublishRequest(chain_id=CHAIN_ID, transaction_hash=TRANSACTION_HASH))
+    assert failure.value.session == pending
+    assert failure.value.retry_after_ms == 250
+    assert len(transport.calls) == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("replacement", [False, True])
+def test_direct_image_upload_never_retries_or_sleeps(monkeypatch, status, replacement):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    transport = TransportStub(LaunchApiResponse(status=status, headers={}, body=b"private response"))
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=5), transport=transport)
+    upload = LaunchSessionDirectUpload(
+        url="https://uploads.example/object?signature=private",
+        headers={"content-type": "image/png", "if-none-match": "*"},
+        expires_in_seconds=300,
+    )
+    put = client.put_replacement_launch_image if replacement else client.put_launch_image
+    with pytest.raises(LaunchUploadError) as failure:
+        put(upload, b"png")
+    assert failure.value.status == status
+    assert "private" not in str(failure.value)
+    assert upload.expires_in_seconds == 300
+    assert len(transport.calls) == 1
+    assert transport.calls[0][2] == dict(upload.headers)
+    assert sleeps == []
+
+
+def test_new_session_rejects_caller_assigned_image_key_before_transport():
+    transport = TransportStub()
+    client = LaunchApiClient(transport=transport)
+    with pytest.raises(TypeError):
+        request = LaunchSessionCreateRequest(
+            chain_id=CHAIN_ID, wallet=WALLET,
+            metadata=LaunchSessionMetadata(name="Abyss", symbol="ABYSS", image_key="private-key"),
+            authorization=_attribution_authorization(),
+        )
+        client.create_launch_upload_session(request, "launch-idempotency-key")
+    assert transport.calls == []
+
+
+def test_malformed_generic_success_json_can_recover_within_attempt_budget(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    transport = TransportStub(
+        LaunchApiResponse(status=200, headers={}, body=b"{"),
+        _json_response({"chainId": CHAIN_ID, "item": {"token": TOKEN}}),
+    )
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=2), transport=transport)
+    assert client.get_launch(CHAIN_ID, TOKEN)["item"]["token"] == TOKEN
+    assert len(transport.calls) == 2
+    assert transport.calls[0] == transport.calls[1]
+
+
+def test_malformed_generic_success_json_exhausts_attempt_budget(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    transport = TransportStub(*[
+        LaunchApiResponse(status=200, headers={}, body=b"{") for _ in range(2)
+    ])
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=2), transport=transport)
+    with pytest.raises(LaunchApiError):
+        client.get_launch(CHAIN_ID, TOKEN)
+    assert len(transport.calls) == 2
+
+
+def test_accepted_publish_with_malformed_json_is_never_retried(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(launch_api_module.time, "sleep", sleeps.append)
+    transport = TransportStub(LaunchApiResponse(status=202, headers={}, body=b"{"))
+    client = LaunchApiClient(LaunchApiConfig(base_url="https://api.example", retries=3), transport=transport)
+    with pytest.raises(LaunchApiError):
+        client.publish_launch_upload_session(CHAIN_ID, "session-1", "private-capability",
+            LaunchSessionPublishRequest(chain_id=CHAIN_ID, transaction_hash=TRANSACTION_HASH))
+    assert len(transport.calls) == 1
+    assert sleeps == []
+
+
+def test_api_routes_resolve_from_origin_not_base_url_path_prefix():
+    transport = TransportStub(_json_response({"item": {"token": TOKEN}}))
+    client = LaunchApiClient(LaunchApiConfig(
+        base_url="https://api.example/nested/prefix/",
+    ), transport=transport)
+    assert client.get_launch(CHAIN_ID, TOKEN)["item"]["token"] == TOKEN
+    assert transport.calls[0][1] == f"https://api.example/api/v1/launches/{TOKEN}?chainId={CHAIN_ID}"

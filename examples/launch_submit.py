@@ -19,9 +19,9 @@ from web3 import Web3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from black_market_sdk import (
-    LaunchExecutionLimits, build_next_transaction, create_controlled_launch_fork,
+    LaunchExecutionLimits, LifecycleReceiptReference, build_next_transaction, create_controlled_launch_fork,
     hash_launch_plan, launch_id_of, launch_plan_from_dict, launch_plan_to_dict,
-    plan_launch, prepare_pool_bound_lifecycle_plan, read_launch_progress,
+    plan_launch, prepare_and_plan_lifecycle_launch, read_launch_progress,
 )
 
 
@@ -51,19 +51,19 @@ def main(argv=None):
     parser.add_argument("--fork-rpc-url", help="Separate owned local Anvil fork; never the source execution node")
     parser.add_argument("--submission-rpc-url", help="Optional read-only immediate-next submission RPC preflight")
     parser.add_argument("--isolated-fork", action="store_true", help="Assert exclusive ownership of the local fork")
-    parser.add_argument("--finalize-bound", action="store_true", help="Explicitly mine/finalize draft bound5 salts before reviewing its final planHash")
+    parser.add_argument("--finalize-bound", action="store_true", help="Mine exact draft bound5/bound6 salts and admit only the final plan")
     args = parser.parse_args(argv)
     if bool(args.fork_rpc_url) != args.isolated_fork:
         parser.error("--fork-rpc-url and --isolated-fork must be provided together")
     if args.finalize_bound and args.transaction_hash:
         parser.error("do not mutate deployment salts after submitting transaction evidence")
+    if args.finalize_bound and args.action == "cancel":
+        parser.error("cancellation recovers committed economics; it cannot finalize deployment salts")
     payload = json.loads(args.plan.read_text())
     plan = launch_plan_from_dict(payload.get("plan", payload))
     client = Web3(Web3.HTTPProvider(args.rpc_url))
     submission_client = Web3(Web3.HTTPProvider(args.submission_rpc_url)) if args.submission_rpc_url else None
     fork = create_controlled_launch_fork(client, Web3(Web3.HTTPProvider(args.fork_rpc_url)), isolated=True) if args.fork_rpc_url else None
-    if args.finalize_bound:
-        plan = asyncio.run(prepare_pool_bound_lifecycle_plan(client, plan)).plan
 
     def limits(_, context):
         return LaunchExecutionLimits(
@@ -76,22 +76,29 @@ def main(argv=None):
 
     options = {"account": args.account, "mode": args.mode, "limits": limits,
         "prepare_batch_size": args.prepare_batch_size, "confirmations": args.confirmations,
-        "transaction_hashes": tuple(args.transaction_hash), "fork": fork}
+        "receipts": tuple(LifecycleReceiptReference(value, confirmations=args.confirmations) for value in args.transaction_hash), "fork": fork}
+    planned = None
+    if args.finalize_bound:
+        planned = asyncio.run(prepare_and_plan_lifecycle_launch(client, plan, **options))
+        plan = planned.plan
     output = {"plan": launch_plan_to_dict(plan), "planHash": hash_launch_plan(plan),
         "launchId": launch_id_of(plan), "mode": args.mode, "action": args.action,
         "note": "Unsigned output only; each wallet submission must revalidate live canonical state"}
     if args.action == "cancel":
         next_transaction = build_next_transaction(client, plan, action="cancel", submission_client=submission_client, **options)
-        output["progress"] = read_launch_progress(client, plan, confirmations=args.confirmations, transaction_hashes=args.transaction_hash)
+        output["progress"] = read_launch_progress(client, plan, confirmations=args.confirmations,
+                                                receipts=options["receipts"], mode=args.mode)
         output["nextTransaction"] = next_transaction.as_transaction() if next_transaction else None
         output["nextAdmission"] = next_transaction.admission if next_transaction else None
     else:
-        planned = plan_launch(client, plan, **options)
-        next_transaction = build_next_transaction(client, planned, account=args.account, fork=fork, submission_client=submission_client) if planned.admitted else None
+        if planned is None:
+            planned = plan_launch(client, plan, **options)
+        next_transaction = build_next_transaction(client, planned, account=args.account, receipts=options["receipts"],
+                                                  fork=fork, submission_client=submission_client) if planned.admitted else None
         output.update({"admitted": planned.admitted, "confidence": planned.confidence,
             "predictedToken": planned.predicted_token, "progress": planned.progress,
-            "approvals": planned.approvals, "marketAdmissions": planned.market_admissions,
-            "simulation": planned.simulation, "atomicSimulation": planned.atomic_simulation,
+            "approvals": planned.approvals, "profiles": planned.profiles,
+            "hookDeployments": planned.hook_deployments, "simulation": planned.simulation,
             "nextTransaction": next_transaction.as_transaction() if next_transaction else None,
             "nextAdmission": next_transaction.admission if next_transaction else None})
     print(json.dumps(output, default=json_value, indent=2))
