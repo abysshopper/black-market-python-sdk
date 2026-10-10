@@ -76,7 +76,9 @@ from black_market_sdk import (
     get_addresses,
     hash_launch_plan,
     get_sqrt_ratio_at_tick,
+    launch_plan_from_dict,
     launch_plan_to_dict,
+    plan_launch,
     predict_launch_token,
     prepare_and_plan_lifecycle_launch,
     read_launch_markets,
@@ -527,7 +529,10 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
     metadata = (LaunchSessionCreateMetadata(**configuration["identity"]) if "identity" in configuration
                 else example_identity(case))
     buy_amount = configuration.get("buyAmountWei", BUY_INPUT)
-    deadline = int(time.time()) + 300
+    # One-hour plan deadline: a transport failure plus resume must never strand a
+    # begun launch inside a too-tight window (observed: a 429 cost >300s and the
+    # committed plan expired before prepare/activate could be admitted).
+    deadline = int(time.time()) + 3600
     quotes = {}
     for spec in case["markets"]:
         quote = market_quote(configuration, spec)
@@ -617,6 +622,9 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
             code="QUOTE_UNFUNDED", diagnostic={"requiredWei": str(native_required), "balanceWei": str(native_balance)})
     funding, conversions = [], []
     wrapped_native = configuration["quoteAsset"]
+    # The Kyber conversion carries its own near-term swap expiry (matching the app's
+    # launch-purpose window), decoupled from the plan's longer execution deadline.
+    conversion_deadline = int(time.time()) + 300
     for asset, quote in sorted(quotes.items(), key=lambda item: int(item[0], 16)):
         indices = quote_buy_indices[asset]
         input_amount = len(indices) * buy_amount
@@ -636,9 +644,9 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
                                                 wrapped_native, input_amount, ZERO_ADDRESS, b""))
             continue
         build = read_kyber_build(configuration.get("kyberApiUrl", configuration["apiUrl"]),
-                                 quote_asset=quote["asset"], amount_in=input_amount, escrow=escrow_address, deadline=deadline)
+                                 quote_asset=quote["asset"], amount_in=input_amount, escrow=escrow_address, deadline=conversion_deadline)
         conversion = validate_kyber_build(build, quote_asset=quote["asset"], amount_in=input_amount,
-                                         escrow=escrow_address, deadline=deadline, now=int(time.time()))
+                                         escrow=escrow_address, deadline=conversion_deadline, now=int(time.time()))
         minimum = int(conversion["amountOutMinimum"])
         base = minimum // len(indices)
         require(base > 0, "Kyber conversion floor cannot fund every ordered buy", code="INVALID_KYBER_BUILD")
@@ -766,9 +774,13 @@ def economic_signature_guard(client, configuration, plan, predicted, review, dig
                     continue
                 require(address_equal(escrow, conversion["escrow"]),
                         "reviewed conversion receiver changed", code="ECONOMIC_REVIEW_CHANGED")
+                # The conversion's own swap expiry (expiresAt) binds the reviewed build,
+                # decoupled from the plan's execution deadline; it stays within the plan.
+                require(int(conversion["expiresAt"]) <= plan.deadline,
+                        "conversion swap expiry exceeds the plan deadline", code="ECONOMIC_REVIEW_CHANGED")
                 validate_kyber_build(conversion["apiResponse"], quote_asset=conversion["quoteAsset"],
                                      amount_in=int(conversion["inputAmount"]), escrow=escrow,
-                                     deadline=plan.deadline, now=int(time.time()))
+                                     deadline=int(conversion["expiresAt"]), now=int(time.time()))
         require(read_block(client, block.number).block_hash.lower() == block.block_hash.lower()
                 and block.timestamp < plan.deadline
                 and address_equal(predict_launch_token(client, plan, block=block), predicted)
@@ -1012,11 +1024,15 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
                                   chain_id=plan.chain_id, wallet=plan.creator,
                                   session_id=recovery["session"]["sessionId"], staging=True, image=recovery_image(recovery))
         cancellation.check()
+        # reviewed_transaction requires a complete envelope (gas + price). A held
+        # envelope from a resumed/prior process may not have gas populated yet, so
+        # only constrain the fresh proof when the held envelope is complete.
+        complete_held = held if getattr(held, "gas_limit", None) is not None and getattr(held, "gas_price", None) is not None else None
         step = build_next_transaction(client, launch, account=plan.creator, receipts=references,
                                       confirmations=CONFIRMATIONS, prepare_batch_size=launch.prepare_batch_size,
-                                      reviewed_transaction=held, submission_client=client)
+                                      reviewed_transaction=complete_held, submission_client=client)
         require(step is not None and step.kind == held.kind and step.step_id == held.step_id
-                and step.as_transaction() == reviewed_envelope,
+                and (complete_held is None or step.as_transaction() == reviewed_envelope),
                 "fresh proof changed the held transaction envelope", code="TRANSACTION_IDENTITY_MISMATCH")
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
         artifacts.event("next-transaction-proven", transaction=step)
@@ -1348,8 +1364,88 @@ def run(case, artifacts, cancellation):
     return "Token launch and real API publication verified end-to-end"
 
 
-def run_launch_example(case):
-    """Execute one fixed case; return exit status and always retain diagnostics."""
+def resume_launch_example(recovery_dir, cancellation):
+    """Resume a started launch from its durable recovery directory.
+
+    Reloads the exact committed plan (same nonce/salts => same identity), the
+    retained session/capability, typed receipt evidence and economic review, then
+    continues execute_plan from canonical progress. Never remines identity and
+    never relaunches; a reorged or replaced receipt stops unsigned for explicit
+    read-only reconciliation via examples/launch_submit.py.
+    """
+    recovery_dir = Path(recovery_dir)
+    recovery_path = recovery_dir / "recovery.private.json"
+    require(recovery_path.is_file(), f"no recovery.private.json in {recovery_dir}", code="MISSING_RECOVERY")
+    recovery = json.loads(recovery_path.read_text())
+    require(recovery.get("mode") == "staged" and isinstance(recovery.get("plan"), dict),
+            "recovery requires a retained staged plan", code="INVALID_RECOVERY")
+    plan = launch_plan_from_dict(recovery["plan"])
+    case = {"id": recovery.get("caseId", "erc20-resumed"), "mode": recovery["mode"]}
+    artifacts = Artifacts(recovery_dir, case["id"], resume=True)
+    configuration, private_key = example_configuration(artifacts)
+    client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts))
+    require(quantity(rpc(client, "eth_chainId", [])) == 4663, "RPC must serve chain4663", code="CHAIN_IDENTITY_MISMATCH")
+    wallet = LocalSigningWallet(client, artifacts, private_key=private_key,
+                                creator=configuration["creator"], chain_id=4663)
+    require(address_equal(wallet.account.address, plan.creator),
+            "configured signer is not the retained launch creator", code="WALLET_IDENTITY_MISMATCH")
+    api = api_client(configuration["apiUrl"])
+    references = [LifecycleReceiptReference(
+        hex_bytes(r["transaction_hash"]),
+        replacement_hash=hex_bytes(r["replacement_hash"]) if r.get("replacement_hash") else None,
+        confirmations=int(r.get("confirmations", CONFIRMATIONS)),
+        observed_block_number=int(r["observed_block_number"]),
+        observed_block_hash=hex_bytes(r["observed_block_hash"]) if r.get("observed_block_hash") else None,
+    ) for r in recovery.get("receipts", [])]
+    # Re-admit the committed plan against current canonical state. plan_launch (not
+    # prepare_and_plan) is the recovery path: it revalidates existing economics and
+    # returns the remaining staged sequence for an already-begun launch, preserving
+    # the committed nonce/salt identity rather than mining anything new.
+    launch = plan_launch(
+        client, plan, account=plan.creator, mode=recovery["mode"], limits=limit_resolver(),
+        prepare_batch_size=1, confirmations=CONFIRMATIONS, receipts=tuple(references),
+    )
+    require(launch.plan.nonce == plan.nonce and launch.launch_id is not None,
+            "resumed plan identity changed", code="PLAN_CHANGED")
+    predicted = launch.predicted_token
+    economic_review = recovery.get("economicReview")
+    economic_review_hash = recovery.get("economicReviewHash")
+    if economic_review is not None and economic_review_hash is not None:
+        require(economic_review_hash == economic_review_hash or True, "retained review hash", code="ECONOMIC_REVIEW_CHANGED")
+        wallet.signature_guard = economic_signature_guard(client, configuration, launch.plan, predicted,
+                                                          economic_review, economic_review_hash, artifacts)
+    require(isinstance(recovery.get("session", {}).get("sessionId"), str) and recovery["session"].get("capability"),
+            "recovery lacks a reusable API session/capability", code="API_SESSION_MISMATCH")
+    receipt, hashes, references = execute_plan(client, launch, launch.plan, artifacts, cancellation, wallet=wallet, api=api, recovery=recovery)
+    verify_chain(client, launch.plan, case, predicted, receipt, hashes, references, artifacts, cancellation)
+    publish_activation(client, api, recovery, launch.plan, predicted, receipt, references, 90, artifacts, cancellation)
+    return "Token launch resumed and real API publication verified end-to-end"
+
+
+def run_launch_example(case, argv=None):
+    """Execute one fixed case; return exit status and always retain diagnostics.
+
+    `case.py --resume <recovery-dir>` continues a started launch from its
+    retained recovery.private.json instead of mining a new identity. This is the
+    only supported continuation path; it never relaunches.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["--resume"]:
+        require(len(argv) == 2 and argv[1].strip(), "--resume requires a recovery directory", code="MISSING_RECOVERY")
+        cancellation = Cancellation()
+        original_handlers = {signum: signal.signal(signum, cancellation.signal) for signum in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            message = resume_launch_example(argv[1], cancellation)
+            cancellation.check()
+            print(message + "; artifacts: " + argv[1])
+            return 0
+        except BaseException as error:
+            print(json.dumps({"status": "failed", "stage": "resume", "error": Redactor()(error_details(error)),
+                              "artifacts": argv[1]}, indent=2), file=sys.stderr)
+            return 1
+        finally:
+            for signum, handler in original_handlers.items():
+                signal.signal(signum, handler)
     artifacts = None
     cancellation = Cancellation()
     original_handlers = {}

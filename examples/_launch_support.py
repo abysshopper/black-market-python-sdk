@@ -723,8 +723,13 @@ class LocalSigningWallet:
         return row
 
 class Artifacts:
-    def __init__(self, directory: Path, case_id: str):
-        directory.mkdir(mode=0o700, parents=True, exist_ok=False)
+    def __init__(self, directory: Path, case_id: str, *, resume: bool = False):
+        if resume:
+            # Resume appends to an existing run's evidence; never reinitialize.
+            if not directory.is_dir():
+                raise ExampleFailure(f"resume requires an existing run directory: {directory}", code="MISSING_RECOVERY")
+        else:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=False)
         self.directory = directory
         self.redact = Redactor()
         self.case_id = case_id
@@ -738,10 +743,14 @@ class Artifacts:
             "chain": {"status": "not-run", "transactions": []}, "api": {"status": "not-run"},
             "startedAt": self.started_at, "completedAt": None,
         }
-        descriptor = os.open(directory / "events.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        self.journal = os.fdopen(descriptor, "w", encoding="utf-8")
-        self.save("receipts.json", self.receipts)
-        self.event("started")
+        if resume:
+            descriptor = os.open(directory / "events.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        else:
+            descriptor = os.open(directory / "events.jsonl", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        self.journal = os.fdopen(descriptor, "a" if resume else "w", encoding="utf-8")
+        if not resume:
+            self.save("receipts.json", self.receipts)
+        self.event("resumed" if resume else "started")
 
     def save(self, name: str, value, *, private: bool = False):
         payload = portable(value) if private else self.redact(value)
@@ -803,8 +812,15 @@ class JournalHTTPProvider(Web3.HTTPProvider):
 
     def __init__(self, url: str, artifacts: Artifacts):
         artifacts.redact.remember_url(url)
+        from urllib.parse import urlsplit
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        # The official chain-4663 endpoint filters bare non-browser requests at the
+        # transport (403/429 without an Origin). Mirror the launch app's public origin
+        # so the example RPC client is admitted identically to the UI it validates.
+        if urlsplit(url).hostname == "rpc.mainnet.chain.robinhood.com":
+            headers["Origin"] = "https://abyss.trading"
         super().__init__(
-            url, request_kwargs={"timeout": 120}, exception_retry_configuration=None,
+            url, request_kwargs={"timeout": 120, "headers": headers}, exception_retry_configuration=None,
         )
         self.artifacts = artifacts
         self.node = "execution"

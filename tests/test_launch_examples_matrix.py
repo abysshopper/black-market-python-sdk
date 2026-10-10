@@ -69,7 +69,8 @@ def test_new_cases_preserve_economics_and_fund_every_quote(construct_case, filen
             assert funding.kind == lifecycle.LifecycleFundingKind.SWAP and funding.input_asset == example.ZERO_ADDRESS
             assert funding.amount == int(conversion["amountOutMinimum"])
             assert funding.target == support.KYBER_ROUTER and funding.data == conversion["transaction"]["data"]
-            assert plan.deadline == conversion["expiresAt"]
+            # Conversion swap expiry is decoupled from, and within, the plan deadline.
+            assert conversion["expiresAt"] <= plan.deadline
     for market, pricing in zip(plan.markets, artifacts.economic_pricing["markets"]):
         usd, decimals, root = int(pricing["quote"]["priceUsdX18"]), pricing["quoteDecimals"], int(pricing["sqrtPriceX96"])
         ratio = Fraction(root * root, 1 << 192) if int(predicted, 16) < int(market.quote_asset, 16) else Fraction(1 << 192, root * root)
