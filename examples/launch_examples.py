@@ -1403,8 +1403,10 @@ def resume_launch_example(recovery_dir, cancellation):
     recovery_path = recovery_dir / "recovery.private.json"
     require(recovery_path.is_file(), f"no recovery.private.json in {recovery_dir}", code="MISSING_RECOVERY")
     recovery = json.loads(recovery_path.read_text())
-    require(recovery.get("mode") == "staged" and isinstance(recovery.get("plan"), dict),
-            "recovery requires a retained staged plan", code="INVALID_RECOVERY")
+    # Staged launches resume the begin/prepare/activate sequence; an already-Active
+    # atomic launch resumes straight to publication. Both reload the committed plan.
+    require(recovery.get("mode") in ("atomic", "staged") and isinstance(recovery.get("plan"), dict),
+            "recovery requires a retained atomic or staged plan", code="INVALID_RECOVERY")
     plan = launch_plan_from_dict(recovery["plan"])
     # Reconstruct the case fields the resume-reachable path reads (verify_chain uses
     # case["mode"] and per-market "positions" counts). tokenKind/rewardMode/buysPerMarket
