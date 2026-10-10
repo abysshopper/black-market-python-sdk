@@ -4,6 +4,16 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+## 0.8.0 release
+
+This release adds unstarted-launch topology validation, boundary tails enabled by
+default, and `position_gaps` replacing `staircase_boundaries`. Examples now default
+to unsigned dry runs; `--broadcast` explicitly authorizes execution without a hash
+prompt, while `--resume` preserves the original plan and metadata session.
+Reviewed transaction proof may consume the original gas padding but never silently
+raises the held gas or gas price. Configuration, financial state, receipt evidence,
+native execution proof, and canonical checks remain authoritative.
+
 Version **0.7.0** is a breaking cutover to the October 8 mined graph. Execution mode
 is required (`atomic` or `staged`): no automatic selection or atomic-first fallback.
 Unified preparation returns the final `PlannedLaunch`, not an intermediate salt-only

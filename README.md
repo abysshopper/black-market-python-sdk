@@ -10,6 +10,16 @@ Token launches, swaps, and lending with [web3.py](https://web3py.readthedocs.io)
 python -m pip install black-market-sdk
 ```
 
+## 0.8.0 release
+
+Launch planning now validates gap-free opening coverage and a funded permanent
+tail for each unstarted market. Position recipes enable the final boundary tail
+by default and use `position_gaps` instead of `staircase_boundaries`.
+The examples default to an unsigned dry run; `--broadcast` explicitly authorizes
+execution without a hash prompt, and `--resume` continues the retained plan and
+metadata session. Reviewed gas envelopes preserve their original padding during
+fresh proof, matching the Node SDK's exact held-gas/price behavior.
+
 ## 0.7.0 launch graph and breaking interfaces
 
 The packaged October 8, 2026 construction graph targets Robinhood chain `4663`:
