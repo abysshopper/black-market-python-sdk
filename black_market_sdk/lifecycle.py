@@ -2783,20 +2783,22 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
             unknown=unknown, failure_category=measured.failure_category)
     if diagnostic:
         return _launch_simulation(plan, limits, measured, measuring, unknown=unknown)
-    compute_budgets = tuple(limits.buffered_gas(call.gas_required if call.gas_required is not None else call.gas_used) for call in measured.calls)
+    # Headroom belongs to new envelopes. Reviewed execution may consume its
+    # original margin; exact replay must still fit at the held gas and price.
+    compute_budgets = tuple(
+        (call.gas_required if call.gas_required is not None else call.gas_used)
+        if reviewed_envelope is not None and index == 0
+        else limits.buffered_gas(call.gas_required if call.gas_required is not None else call.gas_used)
+        for index, call in enumerate(measured.calls))
     gas_limits = [compute + poster for compute, poster in zip(compute_budgets, poster_budgets)]
+    if reviewed_envelope is not None:
+        gas_limits[0] = reviewed_envelope[0]
     for index, gas in enumerate(gas_limits):
         if not 0 < gas < 1 << 64 or compute_budgets[index] > compute_cap or gas > envelope_cap:
             return _launch_simulation(plan, limits, measured, measuring, ("Compute/headroom or complete poster envelope exceeds current limits",),
                 protocol_fit="failed", unknown=unknown, failure_category="capacity",
                 capacity_constraint="compute" if compute_budgets[index] > compute_cap else "gas-envelope",
                 failed_transaction_id=transactions[index].step_id)
-    if reviewed_envelope is not None:
-        if reviewed_envelope[0] < gas_limits[0] or reviewed_envelope[0] > envelope_cap:
-            return _launch_simulation(plan, limits, measured, measuring, ("Reviewed gas cannot cover current minimum requirements or exceeds the current ceiling",),
-                protocol_fit="failed", unknown=unknown, failure_category="capacity", capacity_constraint="gas-envelope",
-                failed_transaction_id=transactions[0].step_id)
-        gas_limits[0] = reviewed_envelope[0]
     buffered = tuple(replace(transaction, gas_limit=gas) for transaction, gas in zip(transactions, gas_limits))
     # The selected measurement backend owns replay. A replay RPC refusal cannot
     # silently change evidence to a different backend or enlarge reviewed fees.
@@ -2819,12 +2821,6 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     if proof.confidence != "stateful" or not proof.complete and failed is None:
         return _launch_simulation(plan, limits, proof, buffered, (proof.reason or "Exact validated replay unavailable",),
             unknown=unknown, failure_category=proof.failure_category or "opaque")
-    if reviewed_envelope is not None and failed is None:
-        first = proof.calls[0]
-        if reviewed_envelope[0] < limits.buffered_gas(first.gas_required if first.gas_required is not None else first.gas_used):
-            return _launch_simulation(plan, limits, proof, buffered, ("Exact reviewed replay leaves insufficient current gas headroom",),
-                execution_proof="proved", protocol_fit="failed", unknown=unknown, failure_category="capacity",
-                capacity_constraint="gas-envelope", failed_transaction_id=transactions[0].step_id)
     estimated = []
     required = 0
     for index, (transaction, call) in enumerate(zip(buffered, proof.calls)):
@@ -3136,7 +3132,10 @@ def build_next_transaction(
     submission_client: Web3 | None = None, cancel_event: asyncio.Event | None = None,
     reviewed_transaction: LifecycleTransaction | Mapping[str, Any] | None = None,
 ) -> LifecycleTransaction | None:
-    """Rebuild and prove the exact next wire envelope, without trusting caller proof."""
+    """Rebuild and prove the exact next wire envelope, without trusting caller proof.
+
+    Fresh replay may consume reviewed headroom, never increase its gas or price.
+    """
     reviewed = _read_reviewed_transaction(reviewed_transaction)  # Validate before any RPC.
     if action not in {"continue", "cancel"}:
         raise ValueError("action must be 'continue' or 'cancel'")

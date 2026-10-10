@@ -266,6 +266,9 @@ class CanonicalRpcScenario:
         self.orphan = orphan
         self.reorganize_during_read = reorganize_during_read
         self.block_reads = 0
+        self.block_number = 51
+        self.block_hash = BLOCK_HASH
+        self.base_fee_per_gas = 1
 
     def progress(self, phase):
         if phase == 0:
@@ -285,14 +288,14 @@ class CanonicalRpcScenario:
             result = "0x"
         elif method == "eth_getBlockByNumber":
             self.block_reads += 1
-            number = 51 if params[0] == "latest" else int(params[0], 16)
-            block_hash = ORPHAN_HASH if self.reorganize_during_read and self.block_reads > 1 else BLOCK_HASH
-            result = {"number": hex(number), "hash": block_hash, "timestamp": hex(self.plan.deadline - 100), "gasLimit": hex(30_000_000), "baseFeePerGas": "0x1"}
+            number = self.block_number if params[0] == "latest" else int(params[0], 16)
+            block_hash = ORPHAN_HASH if self.reorganize_during_read and self.block_reads > 1 else self.block_hash
+            result = {"number": hex(number), "hash": block_hash, "timestamp": hex(self.plan.deadline - 100), "gasLimit": hex(30_000_000), "baseFeePerGas": hex(self.base_fee_per_gas)}
         elif method == "eth_call":
             data = bytes.fromhex(params[0]["data"][2:])
             selector, _ = function_signature("readLaunchProgress")
             if data[:4] == selector:
-                phase = self.latest_phase if params[1] == "0x33" else self.confirmed_phase
+                phase = self.latest_phase if params[1] == hex(self.block_number) else self.confirmed_phase
                 progress_entry = next(item for item in LAUNCH_LIFECYCLE_V1_ABI if item.get("name") == "readLaunchProgress")
                 result = "0x" + abi_encode([canonical_abi_type(progress_entry["outputs"][0])], [self.progress(phase)]).hex()
             else:
@@ -527,6 +530,9 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         super().__init__(request, **progress)
         self.compute_gas = compute_gas
         self.compute_gas_by_kind = compute_gas_by_kind or {}
+        self.replay_compute_gas_by_kind = {}
+        self.gas_price = 1
+        self.child_base_fee = None
         self.poster_gas = poster_gas
         self.actual_poster_gas = poster_gas if actual_poster_gas is None else actual_poster_gas
         self.balance = balance
@@ -652,10 +658,10 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         if method == "eth_getTransactionCount":
             return {"result": hex(self.pending_nonce if params[1] == "pending" else 0)}
         if method == "eth_gasPrice":
-            return {"result": "0x1"}
+            return {"result": hex(self.gas_price)}
         if method == "eth_call":
             transaction, tag = params
-            assert tag == "0x33"
+            assert tag == hex(self.block_number)
             target = transaction["to"].lower()
             if target in {"0x" + "00" * 19 + "64", "0x" + "00" * 19 + "6c"}:
                 if self.getter_override is not None:
@@ -691,7 +697,7 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
                 return {"result": "0x" + abi_encode([canonical_abi_type(item) for item in entry["outputs"]], values).hex()}
         if method == "eth_simulateV1":
             payload, tag = params
-            assert tag == "0x33"
+            assert tag == hex(self.block_number)
             blocks = payload["blockStateCalls"]
             if len(blocks) == 1 and len(blocks[0]["calls"]) == 3:
                 self.probes.append(payload)
@@ -718,6 +724,10 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
                 compute = self.compute_gas_by_kind.get(kind, self.compute_gas)
                 if kind == "prepare" and self.prepare_gas_per_market is not None:
                     compute = self.prepare_gas_per_market * arguments[2]
+                if payload["validation"]:
+                    compute = self.replay_compute_gas_by_kind.get(kind, compute)
+                    if self.child_base_fee is not None and int(transaction["gasPrice"], 16) < self.child_base_fee:
+                        return {"error": {"code": -32000, "message": "max fee per gas less than block base fee"}}
                 gas_used = compute + (self.actual_poster_gas if self.plan.chain_id == 4663 and payload["validation"] else 0)
                 requested = int(transaction["gas"], 16)
                 logs = self.logs(transaction)
@@ -1149,6 +1159,199 @@ def test_direct_eoa_and_settled_nonce_remain_required(monkeypatch, options):
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert not planned.admitted and planned.simulation.execution_proof == "unavailable"
     assert provider.simulations == []
+
+
+@pytest.mark.parametrize("prepare", [False, True], ids=["plan", "prepare-and-plan"])
+def test_staged_nitro_planner_returns_measured_wire_gas_envelopes(monkeypatch, prepare):
+    import asyncio
+
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=replace(plan(), chain_id=4663), scenario_options={
+            "tx_cap": 1 << 50, "block_cap": 1 << 50, "poster_gas": 75_000,
+            "compute_gas_by_kind": {"begin": 4_000_000, "prepare": 7_000_000, "activate": 8_000_000},
+        })
+    committed = hash_launch_plan(request), encode_launch_plan(request)
+    if prepare:
+        planned = asyncio.run(lifecycle.prepare_and_plan_lifecycle_launch(
+            client, request, account=request.creator, mode="staged"))
+    else:
+        planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+    gas_limits = [transaction.gas_limit for transaction in planned.transactions]
+    assert planned.admitted
+    assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
+    assert all(gas is not None and 0 < gas < 50_000_000 for gas in gas_limits)
+    assert gas_limits == [4_686_250, 8_136_250, 9_286_250]
+    assert gas_limits == [transaction.gas_limit for transaction in planned.simulation.transactions]
+    for transaction in planned.transactions:
+        assert transaction.gas_price == 2
+        assert transaction.as_transaction()["gas"] == transaction.gas_limit
+        assert transaction.as_transaction()["gasPrice"] == transaction.gas_price
+        assert transaction.maximum_execution_fee == transaction.gas_limit * transaction.gas_price
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    held = planned.transactions[0]
+    current = build_next_transaction(client, planned, reviewed_transaction=held)
+    assert current.as_transaction() == held.as_transaction()
+    assert (hash_launch_plan(request), encode_launch_plan(request)) == committed
+
+
+@pytest.mark.parametrize("mode", ["atomic", "staged"])
+@pytest.mark.parametrize("drift", ["compute", "poster-quote", "poster-actual", "headroom", "replay-compute"])
+def test_reviewed_nitro_envelope_can_consume_original_margin_at_fresh_block(monkeypatch, mode, drift):
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=replace(plan(), chain_id=4663),
+        scenario_options={"compute_gas": 8_026_829, "poster_gas": 1_373})
+    provider.gas_price, provider.base_fee_per_gas = 40_124_000, 20_062_000
+    committed = hash_launch_plan(request), encode_launch_plan(request)
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode=mode)
+    held = planned.transactions[0]
+    assert planned.admitted and held.gas_limit == 9_232_433 and held.gas_price == 40_124_000
+    provider.block_number += 1
+    provider.block_hash = ORPHAN_HASH
+    provider.gas_price, provider.base_fee_per_gas = 40_230_000, 20_110_000
+    provider.child_base_fee = 20_111_000
+    if drift == "compute":
+        provider.compute_gas += 153
+    elif drift == "poster-quote":
+        provider.poster_gas += 1
+    elif drift == "poster-actual":
+        provider.actual_poster_gas += 1
+    elif drift == "replay-compute":
+        provider.replay_compute_gas_by_kind[held.kind] = provider.compute_gas + 153
+    policy = LaunchExecutionLimits(headroom_bps=2_000) if drift == "headroom" else None
+    provider.simulations.clear()
+    submission = SubmissionRpcScenario(request.chain_id,
+        estimate=provider.compute_gas + provider.actual_poster_gas)
+    original = provider.make_request
+
+    def response(method, params):
+        return submission.make_request(method, params) if method == "eth_estimateGas" else original(method, params)
+
+    monkeypatch.setattr(provider, "make_request", response)
+    current = build_next_transaction(client, planned, reviewed_transaction=held,
+        submission_client=client, limits=policy)
+    assert current.as_transaction() == held.as_transaction()
+    assert current.admission.block_number == 52 and current.admission.block_hash == ORPHAN_HASH
+    assert current.admission.execution_proof == current.admission.protocol_fit == "proved"
+    assert current.admission.transport_preflight == "passed"
+    assert current.maximum_execution_fee == held.gas_limit * held.gas_price
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    for payload in provider.simulations:
+        assert all(int(block["calls"][0]["gasPrice"], 16) == held.gas_price
+            and "baseFeePerGas" not in block["blockOverrides"]
+            and "stateOverrides" not in block for block in payload["blockStateCalls"])
+    replay = provider.simulations[-1]["blockStateCalls"]
+    assert int(replay[0]["calls"][0]["gas"], 16) == held.gas_limit
+    envelope, tag = submission.requests[0][1]
+    assert tag == "latest" and int(envelope["gas"], 16) == held.gas_limit
+    assert int(envelope["gasPrice"], 16) == held.gas_price
+    assert all(method not in {"eth_sendTransaction", "eth_sendRawTransaction"} for method in provider.operations)
+    assert (hash_launch_plan(request), encode_launch_plan(request)) == committed
+
+
+@pytest.mark.parametrize("violation", [
+    "compute-cap", "envelope-cap", "compute-exhaustion", "poster-exhaustion",
+    "base-fee", "balance", "revert", "incomplete", "submission-cap",
+])
+def test_reviewed_nitro_envelope_still_refuses_real_capacity_fee_and_proof_failures(monkeypatch, violation):
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=replace(plan(), chain_id=4663), scenario_options={"poster_gas": 20_000})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+    held = planned.transactions[0]
+    assert planned.admitted and held.gas_limit == 138_000 and held.gas_price == 2
+    policy = None
+    if violation == "compute-cap":
+        provider.tx_cap = provider.compute_gas - 1
+    elif violation == "envelope-cap":
+        policy = LaunchExecutionLimits(account_transaction_gas_limit=held.gas_limit - 1)
+    elif violation == "compute-exhaustion":
+        provider.replay_compute_gas_by_kind[held.kind] = held.gas_limit - provider.actual_poster_gas + 1
+    elif violation == "poster-exhaustion":
+        provider.actual_poster_gas = held.gas_limit - provider.compute_gas + 1
+    elif violation == "base-fee":
+        provider.base_fee_per_gas = provider.child_base_fee = held.gas_price + 1
+    elif violation == "balance":
+        provider.balance = sum(transaction.value + transaction.maximum_execution_fee
+            for transaction in planned.transactions) - 1
+    elif violation in {"revert", "incomplete"}:
+        provider.replay_failure = violation
+    provider.simulations.clear()
+    submission = SubmissionRpcScenario(request.chain_id,
+        estimate=held.gas_limit + 1 if violation == "submission-cap" else held.gas_limit)
+    with pytest.raises(ValueError) as failure:
+        build_next_transaction(client, planned, reviewed_transaction=held, limits=policy,
+            submission_client=SimpleNamespace(provider=submission))
+    error = failure.value
+    if violation == "submission-cap":
+        assert error.code == "SUBMISSION_PREFLIGHT_FAILED"
+        assert error.simulation.admitted and error.simulation.transport_preflight == "failed"
+    else:
+        assert error.code == "PLAN_NOT_ADMITTED" and not error.simulation.admitted
+        assert submission.requests == []
+    if violation in {"compute-cap", "envelope-cap"}:
+        assert error.simulation.protocol_fit == "failed"
+        assert error.simulation.capacity_constraint == ("compute" if violation == "compute-cap" else "gas-envelope")
+        assert [payload["validation"] for payload in provider.simulations] == [False]
+    else:
+        assert [payload["validation"] for payload in provider.simulations] == [False, True]
+        replay = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
+        assert int(replay["gas"], 16) == held.gas_limit
+        assert int(replay["gasPrice"], 16) == held.gas_price
+    if violation in {"compute-exhaustion", "poster-exhaustion"}:
+        assert error.simulation.failure_category == "capacity"
+        assert error.simulation.failed_transaction_id == held.step_id
+    elif violation == "balance":
+        assert error.simulation.failure_category == "affordability"
+    assert all(method not in {"eth_sendTransaction", "eth_sendRawTransaction"} for method in provider.operations)
+
+
+@pytest.mark.parametrize("reviewed", [False, True])
+def test_future_envelope_enlargement_preserves_reviewed_immediate_gas_and_price(monkeypatch, reviewed):
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=replace(plan(), chain_id=4663), scenario_options={"poster_gas": 20_000})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+    held = planned.transactions[0]
+    provider.replay_compute_gas_by_kind["prepare"] = 160_000
+    provider.gas_price = 3
+    provider.simulations.clear()
+    current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None)
+    assert current.admission.admitted
+    assert current.gas_limit == (held.gas_limit if reviewed else 32_023_000)
+    assert current.gas_price == (held.gas_price if reviewed else provider.gas_price)
+    assert current.maximum_execution_fee == current.gas_limit * current.gas_price
+    assert [payload["validation"] for payload in provider.simulations] == [False, True, True]
+    for payload in provider.simulations[1:]:
+        blocks = payload["blockStateCalls"]
+        assert len(blocks) == 3
+        if reviewed:
+            assert int(blocks[0]["calls"][0]["gas"], 16) == held.gas_limit
+        assert all(int(block["calls"][0]["gasPrice"], 16) == current.gas_price for block in blocks)
+    enlarged = provider.simulations[-1]["blockStateCalls"]
+    assert int(enlarged[1]["calls"][0]["gas"], 16) == 32_023_000
+    assert int(enlarged[2]["calls"][0]["gas"], 16) == 32_023_000
+
+
+@pytest.mark.parametrize("mode", ["atomic", "staged"])
+def test_reviewed_generic_evm_envelope_may_consume_its_original_headroom(monkeypatch, mode):
+    lifecycle, request, provider, client = wire_planning(monkeypatch)
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode=mode)
+    held = planned.transactions[0]
+    provider.compute_gas += 153
+    current = build_next_transaction(client, planned, reviewed_transaction=held)
+    assert current.as_transaction() == held.as_transaction()
+    assert current.admission.admitted and current.gas_used == 100_153
+
+
+@pytest.mark.parametrize("nitro", [False, True])
+def test_reviewed_cancellation_envelope_may_consume_its_original_headroom(monkeypatch, nitro):
+    request = replace(plan(), chain_id=4663) if nitro else plan()
+    _, request, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"latest_phase": 1, "confirmed_phase": 1})
+    held = build_next_transaction(client, request, account=request.creator, mode="staged", action="cancel")
+    provider.compute_gas += 153
+    current = build_next_transaction(client, request, account=request.creator, mode="staged",
+        action="cancel", reviewed_transaction=held)
+    assert current.as_transaction() == held.as_transaction()
+    assert current.admission.admitted and current.gas_used == 100_153
 
 
 def test_staged_mode_only_partitions_empty_preparation_not_activation(monkeypatch):
