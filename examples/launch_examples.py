@@ -46,6 +46,7 @@ from black_market_sdk import (
     LaunchExecutionLimits,
     LaunchPlanV1,
     LaunchPublishPending,
+    LaunchUploadError,
     LaunchSessionCreateRequest,
     LaunchSessionCreateMetadata,
     LaunchSessionImageDescriptor,
@@ -1093,7 +1094,12 @@ def verify_chain(client, plan, case, predicted, receipt, hashes, references, art
     token_observation = {name: getattr(token.functions, name)().call() for name in (
         "name", "symbol", "decimals", "totalSupply", "authority", "tokenFactory", "launchId", "rewardMode", "initialSupply", "active", "cancelled", "exclusionsFinalized", "feeHub", "rewardModule")}
     token_observation.update(address=predicted, kind=deployment_events[0]["kind"], runtimeBytes=len(code), runtimeHash=hex_bytes(Web3.keccak(code)))
-    transfer_abi = next(entry for entry in ERC20_ABI if entry.get("name") == "Transfer" and entry["type"] == "event")
+    # The SDK's ERC20_ABI is function-only (reads); the canonical Transfer event is
+    # declared here explicitly for activation mint-dust burn accounting.
+    transfer_abi = {"name": "Transfer", "type": "event", "anonymous": False, "inputs": [
+        {"name": "from", "type": "address", "indexed": True},
+        {"name": "to", "type": "address", "indexed": True},
+        {"name": "value", "type": "uint256", "indexed": False}]}
     transfer_topic = hex_bytes(Web3.keccak(text="Transfer(address,address,uint256)"))
     transfers = [get_event_data(client.codec, transfer_abi, log)["args"] for log in receipt.get("logs", [])
                  if address_equal(log.get("address"), predicted) and log.get("topics")
@@ -1380,7 +1386,15 @@ def resume_launch_example(recovery_dir, cancellation):
     require(recovery.get("mode") == "staged" and isinstance(recovery.get("plan"), dict),
             "recovery requires a retained staged plan", code="INVALID_RECOVERY")
     plan = launch_plan_from_dict(recovery["plan"])
-    case = {"id": recovery.get("caseId", "erc20-resumed"), "mode": recovery["mode"]}
+    # Reconstruct the case fields the resume-reachable path reads (verify_chain uses
+    # case["mode"] and per-market "positions" counts). tokenKind/rewardMode/buysPerMarket
+    # are only consumed by construct_plan, which resume never runs. Venue, quote and
+    # position counts come from the retained economic review, so the case reflects the
+    # committed plan rather than a fresh descriptor.
+    review_markets = (recovery.get("economicReview") or {}).get("markets") or []
+    case = {"id": recovery.get("caseId", "erc20-resumed"), "mode": recovery["mode"],
+            "markets": [{"venue": m["venue"], "positions": len(m["positions"])} for m in review_markets]}
+    require(len(case["markets"]) == len(plan.markets), "retained review markets differ from the committed plan", code="INVALID_RECOVERY")
     artifacts = Artifacts(recovery_dir, case["id"], resume=True)
     configuration, private_key = example_configuration(artifacts)
     client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts))
@@ -1416,6 +1430,61 @@ def resume_launch_example(recovery_dir, cancellation):
                                                           economic_review, economic_review_hash, artifacts)
     require(isinstance(recovery.get("session", {}).get("sessionId"), str) and recovery["session"].get("capability"),
             "recovery lacks a reusable API session/capability", code="API_SESSION_MISMATCH")
+    progress = read_launch_progress(client, plan, confirmations=CONFIRMATIONS, receipts=tuple(references), mode=recovery["mode"])
+    if progress.phase == LifecyclePhase.ACTIVE:
+        # Already Active: recover the activation receipt from retained evidence and
+        # go straight to chain verification + publication; never re-execute.
+        # The activation is the last confirmed receipt (staged: begin/prepare/activate).
+        retained = recovery.get("receipts", [])
+        require(retained, "an Active resume requires retained activation receipt evidence", code="MISSING_RECOVERY")
+        activation = retained[-1]
+        receipt = rpc(client, "eth_getTransactionReceipt", [activation["transaction_hash"]])
+        require(receipt is not None and quantity(receipt["status"]) == 1
+                and quantity(receipt["blockNumber"]) == int(activation["observed_block_number"])
+                and hex_bytes(receipt["blockHash"]).lower() == hex_bytes(activation["observed_block_hash"]).lower(),
+                "retained activation inclusion changed; reconcile read-only, never replay", code="RECEIPT_REORGED")
+        # Complete a pending image upload against the retained session before publish:
+        # an Active resume may have activated before the image finished staging.
+        # Refresh the live session first — the retained copy may predate a completed upload.
+        # The capability is a secret the API never echoes; carry it across the refresh.
+        retained_capability = recovery["session"]["capability"]
+        session = api.get_launch_upload_session(plan.chain_id, recovery["session"]["sessionId"], retained_capability)
+        artifacts.redact.learn(session)
+        session = {**session, "capability": session.get("capability") or retained_capability}
+        recovery["session"] = session
+        artifacts.save("recovery.private.json", recovery, private=True)
+        descriptor = recovery_image(recovery)
+        if descriptor is not None and session.get("imageStatus") != "ready":
+            require(isinstance(session.get("upload"), dict) and session.get("status") == "awaiting_upload",
+                    "live session is not awaiting the original image upload", code="API_SESSION_MISMATCH")
+            require(os.environ.get("EXAMPLE_IMAGE_PATH"),
+                    "Active resume with an unready image requires EXAMPLE_IMAGE_PATH to reload the original bytes",
+                    code="INVALID_IMAGE")
+            image_bytes, reloaded = load_example_image(os.environ["EXAMPLE_IMAGE_PATH"])
+            require("0x" + hashlib.sha256(image_bytes).hexdigest() == descriptor.sha256
+                    and len(image_bytes) == descriptor.content_length,
+                    "reloaded image bytes differ from the retained signed descriptor", code="INVALID_IMAGE")
+            cancellation.check()
+            try:
+                api.put_launch_image(session["upload"], image_bytes)
+            except LaunchUploadError as upload_error:
+                # A presigned PUT URL expires; renew it once and retry the same bytes.
+                if upload_error.status not in (403, 410, 412):
+                    raise
+                artifacts.event("image-upload-url-expired", status=upload_error.status)
+                session = api.renew_launch_upload_url(plan.chain_id, session["sessionId"], recovery["session"]["capability"])
+                artifacts.redact.learn(session)
+                require(isinstance(session.get("upload"), dict), "renewed session did not issue a fresh upload URL", code="API_SESSION_MISMATCH")
+                api.put_launch_image(session["upload"], image_bytes)
+            verified = api.complete_launch_upload(plan.chain_id, session["sessionId"], recovery["session"]["capability"])
+            artifacts.redact.learn(verified)
+            recovery["session"] = verified
+            recovery["lastSession"] = verified
+            artifacts.save("recovery.private.json", recovery, private=True)
+            artifacts.event("image-verified", session=verified)
+        verify_chain(client, launch.plan, case, predicted, receipt, [], tuple(references), artifacts, cancellation)
+        publish_activation(client, api, recovery, launch.plan, predicted, receipt, tuple(references), 90, artifacts, cancellation)
+        return "Active token launch publication verified end-to-end (resumed)"
     receipt, hashes, references = execute_plan(client, launch, launch.plan, artifacts, cancellation, wallet=wallet, api=api, recovery=recovery)
     verify_chain(client, launch.plan, case, predicted, receipt, hashes, references, artifacts, cancellation)
     publish_activation(client, api, recovery, launch.plan, predicted, receipt, references, 90, artifacts, cancellation)
