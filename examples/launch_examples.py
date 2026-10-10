@@ -1,4 +1,4 @@
-"""Shared runner for deliberate real token-launch examples and validation cases."""
+"""Shared dry-run and explicit-broadcast runner for fixed token-launch cases."""
 
 from __future__ import annotations
 
@@ -745,13 +745,6 @@ def review_economics(launch, artifacts, cancellation):
     artifacts.save("economic-review.json", {"reviewHash": digest, "review": review})
     print(json.dumps(artifacts.redact({"reviewHash": digest, "review": review}), indent=2), flush=True)
     cancellation.check()
-    accepted = os.environ.get("EXAMPLE_ECONOMIC_REVIEW_HASH")
-    if accepted is None and sys.stdin.isatty():
-        accepted = input("Authorize these exact economics by entering the review hash: ").strip()
-    require(accepted == digest, "exact economic review hash was not explicitly authorized",
-            code="ECONOMIC_REVIEW_REQUIRED", diagnostic={"reviewHash": digest})
-    cancellation.check()
-    artifacts.save("economic-admission.json", {"reviewHash": digest, "acceptedAt": int(time.time())})
     return review, digest
 
 
@@ -1340,20 +1333,19 @@ def publish_activation(client, api, recovery, plan, predicted, receipt, referenc
     raise ExampleFailure("real API did not index and publish the activation before the bounded deadline", code="API_INDEX_TIMEOUT", diagnostic={"lastSession": last_pending, "transactionHash": transaction_hash, "timeoutSeconds": timeout_seconds})
 
 
-def run(case, artifacts, cancellation):
+def run(case, artifacts, cancellation, *, broadcast=False):
     configuration, private_key = example_configuration(artifacts)
     configuration["identity"] = portable(example_identity(case))
     image = load_example_image(os.environ["EXAMPLE_IMAGE_PATH"]) if os.environ.get("EXAMPLE_IMAGE_PATH") else None
-    artifacts.result.update(network="chain4663", scope="end-to-end", execution="requested")
+    artifacts.result.update(network="chain4663", scope="end-to-end",
+                            execution="requested" if broadcast else "dry-run")
     artifacts.result["api"].update(url=configuration["apiUrl"])
     client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts))
-    wallet = LocalSigningWallet(client, artifacts, private_key=private_key,
-                                creator=configuration["creator"], chain_id=4663)
     artifacts.enter("provenance")
     cancellation.check()
     require(quantity(rpc(client, "eth_chainId", [])) == 4663,
             "RPC must serve chain4663", code="CHAIN_IDENTITY_MISMATCH")
-    require(not client.eth.get_code(wallet.account.address), "creator must be an empty-code EOA",
+    require(not client.eth.get_code(configuration["creator"]), "creator must be an empty-code EOA",
             code="CHAIN_IDENTITY_MISMATCH")
     orchestrator = contract(client, configuration["orchestrator"], LAUNCH_LIFECYCLE_V1_ABI)
     require(bool(client.eth.get_code(orchestrator.address)), "canonical orchestrator has no runtime",
@@ -1368,6 +1360,7 @@ def run(case, artifacts, cancellation):
     nonce = secrets.randbits(256)
     token_salt = "0x" + secrets.token_hex(32)
     artifacts.save("run.json", {"configuration": configuration, "case": case,
+                              "executionMode": "broadcast" if broadcast else "dry-run",
                               "nonce": str(nonce), "tokenSalt": token_salt,
                               "policy": "Optional explicit tightening policy; native protocol ceilings are read at the canonical block"})
     artifacts.enter("plan")
@@ -1376,6 +1369,15 @@ def run(case, artifacts, cancellation):
     plan = launch.plan
     require(address_equal(launch.predicted_token, predicted), "final preparation changed the predicted token")
     review, review_hash = review_economics(launch, artifacts, cancellation)
+    if not broadcast:
+        artifacts.result["chain"]["status"] = "planned"
+        artifacts.enter("dry-run-complete")
+        return "Dry-run launch plan and economic review saved"
+    cancellation.check()
+    artifacts.save("economic-admission.json", {"authorization": "--broadcast", "reviewHash": review_hash,
+                                              "acceptedAt": int(time.time())})
+    wallet = LocalSigningWallet(client, artifacts, private_key=private_key,
+                                creator=configuration["creator"], chain_id=4663)
     wallet.signature_guard = economic_signature_guard(client, configuration, plan, predicted, review, review_hash, artifacts)
     api = api_client(configuration["apiUrl"])
     recovery = stage_metadata(client, api, plan, artifacts, cancellation, wallet=wallet,
@@ -1526,15 +1528,22 @@ def resume_launch_example(recovery_dir, cancellation):
 
 
 def run_launch_example(case, argv=None):
-    """Execute one fixed case; return exit status and always retain diagnostics.
+    """Plan one fixed case by default; --broadcast explicitly authorizes execution.
 
     `case.py --resume <recovery-dir>` continues a started launch from its
     retained recovery.private.json instead of mining a new identity. This is the
     only supported continuation path; it never relaunches.
     """
     argv = list(sys.argv[1:] if argv is None else argv)
+    command = shlex.join([sys.executable, sys.argv[0]])
+    if argv not in ([], ["--broadcast"]) and not (
+            len(argv) == 2 and argv[0] == "--resume" and argv[1].strip()
+            and not argv[1].lstrip().startswith("-")):
+        print(f"Usage: {command} [--broadcast | --resume <dir>]", file=sys.stderr)
+        print("No mode flag: dry run. --broadcast: sign, submit, and publish. "
+              "--resume <dir>: continue the retained launch.", file=sys.stderr)
+        return 2
     if argv[:1] == ["--resume"]:
-        require(len(argv) == 2 and argv[1].strip(), "--resume requires a recovery directory", code="MISSING_RECOVERY")
         cancellation = Cancellation()
         original_handlers = {signum: signal.signal(signum, cancellation.signal) for signum in (signal.SIGINT, signal.SIGTERM)}
         try:
@@ -1549,6 +1558,9 @@ def run_launch_example(case, argv=None):
         finally:
             for signum, handler in original_handlers.items():
                 signal.signal(signum, handler)
+    broadcast = argv == ["--broadcast"]
+    if not broadcast:
+        print("DRY RUN — no transactions signed or broadcast.", flush=True)
     artifacts = None
     cancellation = Cancellation()
     original_handlers = {}
@@ -1559,10 +1571,13 @@ def run_launch_example(case, argv=None):
         artifacts = Artifacts(directory, case["id"])
         for signum in (signal.SIGINT, signal.SIGTERM):
             original_handlers[signum] = signal.signal(signum, cancellation.signal)
-        message = run(case, artifacts, cancellation)
+        message = run(case, artifacts, cancellation, broadcast=broadcast)
         cancellation.check()
         artifacts.finish()
         print(message + "; artifacts: " + str(artifacts.directory))
+        if not broadcast:
+            print("To execute, re-run this case with --broadcast:", flush=True)
+            print(command + " --broadcast", flush=True)
         return 0
     except BaseException as error:
         if artifacts is not None:

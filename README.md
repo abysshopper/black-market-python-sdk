@@ -110,10 +110,11 @@ python examples/quickstart.py
 
 The quickstart reads available launch profiles without a wallet.
 
-For token launches, set `LAUNCH_API_URL` and exactly one local signer in your
+For token launches, set `LAUNCH_API_URL` and exactly one local key source in your
 working folder's `.env`: `PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` to an owner-only
 V3 JSON keystore (`EXAMPLE_KEYSTORE_PASSWORD` defaults to the empty string).
-An optional `RPC_URL` overrides the default endpoint. Run one case:
+Both modes derive the public creator address; dry-run never constructs the wallet
+signer. An optional `RPC_URL` overrides the default endpoint. Run one case to plan:
 
 ```sh
 python examples/launch_erc20_v4.py
@@ -128,6 +129,27 @@ python examples/launch_erc20_multi_quote.py
 python examples/launch_erc20_depth_v4.py
 python examples/launch_erc20_dividends_multiquote_mixed.py
 ```
+
+Every command above defaults to **dry run**: it leads with
+`DRY RUN — no transactions signed or broadcast.`, performs discovery, pricing,
+image-descriptor and funding preparation plus complete SDK admission, prints the
+full economic review, saves artifacts, and exits without signing, chain submission,
+image upload, or publication. It ends with the exact command to execute:
+
+```sh
+python examples/launch_erc20_v4.py --broadcast
+```
+
+Choosing **`--broadcast` is execution authorization**: it runs the complete launch
+and publication without a review-hash prompt or supplied hash. The computed hash
+is still printed and saved as provenance. Planner admission, signature-bound
+economics, canonical/reorg barriers, image verification, and deadlines remain
+enforced. Broadcast prepares a fresh plan; it does not execute the previous dry-run
+artifact. After a partial execution, run the same case with `--resume <dir>` to
+continue the original launch instead of creating another one. Invalid,
+duplicate, or mixed mode flags fail immediately with usage text. See
+[`examples/README.md`](examples/README.md) for the two-step flow and all environment
+variables.
 
 | File | Case |
 | --- | --- |
@@ -154,8 +176,8 @@ SDK-catalogued $1 peg and six-decimal recipe.
 
 Optional `EXAMPLE_TOKEN_NAME`, `EXAMPLE_TOKEN_SYMBOL`, and
 `EXAMPLE_TOKEN_DESCRIPTION` override case identity. `EXAMPLE_IMAGE_PATH` selects
-a PNG/JPEG/WebP file (at most 5 MiB): its exact digest/type/length are reviewed,
-signed, uploaded, and API-verified before chain submission. Final success additionally
+a PNG/JPEG/WebP file (at most 5 MiB): dry-run reviews its exact digest/type/length;
+broadcast signs, uploads, and API-verifies those bytes before chain submission. Final success additionally
 requires the public token DTO's image reference and one bounded HTTP 200 image GET;
 served digest/type/length and any inferred API transformation are retained.
 Unset means metadata-only.
@@ -182,8 +204,9 @@ halts the real runner before another signature or publication; reconcile retaine
 evidence explicitly with this read-only command, never automatically re-launch.
 Do not use `--finalize-bound` once receipt evidence exists.
 
-Launch examples spend real funds and publish to your configured API.
-Plans, transaction hashes, receipts, and errors are saved in `launch-results/`.
+Only `--broadcast` (or an explicit `--resume <dir>` continuation) spends real funds
+and publishes to your configured API. Dry-run plans, economic reviews, admission
+evidence, and execution hashes, receipts, and errors are saved in `launch-results/`.
 Keep `.env` and private recovery files out of Git.
 
 [Example source](https://github.com/abysshopper/black-market-python-sdk/tree/main/examples)

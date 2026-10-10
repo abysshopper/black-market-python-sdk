@@ -379,11 +379,13 @@ remaining work; never automatically repeat an orphaned step.
 ## Standalone token-launch examples
 
 These examples use the installed public `black_market_sdk` and run one fixed case
-per file. **Invoking an example with a configured wallet is your deliberate
-execution action: real funds are spent and token/market/custody state is permanent.**
-There are no CLI parameters, fixture files, default keys, chain-only mode, or
-unsigned plan-only variant. Use `launch_recipe.py` / `launch_submit.py` above for
-the separate unsigned plan workflow.
+per file. **No mode flag means dry run: no transactions are signed or broadcast.**
+Use `--broadcast` to deliberately spend real funds and publish; token/market/custody
+state is permanent. `--resume <dir>` continues an existing execution without
+regenerating its identity. Unknown, duplicate, or combined mode flags fail before
+configuration, artifacts, or RPC/API calls, with usage text. There are no fixture
+files, default keys, or chain-only execution mode. `launch_recipe.py` /
+`launch_submit.py` remain the separate saved-plan construction/read-only tools.
 
 ### Setup once
 
@@ -396,7 +398,7 @@ cp examples/.env.example .env
 chmod 600 .env
 ```
 
-Set `LAUNCH_API_URL` and exactly one signer source before any RPC/API call:
+Set `LAUNCH_API_URL` and exactly one key source before any RPC/API call:
 `PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` to a local owner-only V3 JSON keystore.
 `EXAMPLE_KEYSTORE_PASSWORD` defaults to `""`; empty-password scrypt keystores work
 through `eth_account.Account.decrypt` without another dependency. Reads are bounded,
@@ -405,6 +407,12 @@ decryption determines the creator and checks any declared address. Neither/both
 signer sources are errors; no key/password is logged. The API must run the real
 launch router, session database, `LaunchActivated` indexer and public DTO against
 the execution chain. There is no guessed production API or silent API skip.
+
+Dry-run uses the key only to derive the public creator address (including keystore
+decryption when configured); it never constructs `LocalSigningWallet` or signs.
+It still needs the configured RPC/API for discovery, prices, funding builds, and
+native simulation. All variables are listed in [`../examples/README.md`](../examples/README.md)
+and the copyable `examples/.env.example`.
 
 `RPC_URL` defaults to `ROBINHOOD_MAINNET_RPC`. Remote RPC/API URLs require HTTPS;
 explicit loopback HTTP is accepted for owned local services. API URL credentials,
@@ -452,7 +460,7 @@ the signed type/length/SHA; differing bytes are permitted as an inferred API
 transformation within the image MIME family, explicitly recorded with served
 digest/type/length in `published-image.json`. Failure is nonzero and retains evidence.
 
-### One command per case
+### Dry run, then broadcast
 
 ```sh
 python examples/launch_erc20_v4.py
@@ -466,6 +474,32 @@ python examples/launch_erc404_dividends_mixed.py
 python examples/launch_erc20_multi_quote.py
 python examples/launch_erc20_depth_v4.py
 python examples/launch_erc20_dividends_multiquote_mixed.py
+```
+
+All eleven commands above default to the same unsigned planning path. Output starts
+with **`DRY RUN — no transactions signed or broadcast.`** The runner discovers
+profiles, derives economics, freezes the optional image descriptor, builds funding,
+mines/proves the final protected plan, prints the full economic review, and saves
+`run.json`, `plan.json`, `admission.json`, `economic-review.json`, events, empty
+receipts, and `result.json`. Successful dry-run exits 0 with execution `dry-run`,
+chain status `planned`, and API status `not-run`; failed admission still exits
+nonzero. No wallet signer, attribution signature, chain submission, image upload,
+or publication is performed. The last output line is the exact same case command
+with `--broadcast`, using the running Python interpreter:
+
+```sh
+python examples/launch_erc20_v4.py --broadcast
+```
+
+`--broadcast` alone authorizes the full execution path, **without interactive
+economic-review admission or any supplied review hash**. It prepares and reviews a
+fresh plan against current state; the earlier dry-run is evidence, not a saved
+execution commitment. Planner admission, bound economics at every signature,
+canonical/reorg checks, image verification, and deadlines still apply. Never rerun
+a partially submitted case as a fresh broadcast; continue its retained directory:
+
+```sh
+python examples/launch_erc20_v4.py --resume launch-results/<original-run>
 ```
 
 | File | Fixed case |
@@ -581,22 +615,22 @@ deadline, source client and creator. `economic-review.json` displays and retains
 the exact target, original API snapshot/provenance, upstream age and retrieval
 time, minted and expected retained supply, token order, opening unit price/
 valuations, position budgets/liquidity/rounding burns, fees, protected buys and
-final plan. Before the first signature,
-the operator must type its exact hash, or supply `EXAMPLE_ECONOMIC_REVIEW_HASH`
-with that exact value for an explicitly supervised noninteractive run. A fresh
-invocation generates a different original plan; an old review hash cannot admit it.
+final plan. The hash is computed, printed, and saved as provenance in both modes,
+not requested as input. Only `--broadcast` proceeds beyond the review; its
+`economic-admission.json` records `authorization: "--broadcast"` and that review
+hash as evidence. A fresh invocation generates a different original plan.
 Every attribution and transaction signature retrieves a validated snapshot from
 the same selected API and checks the bound source, target, supply, predicted
 order and original plan against current canonical RPC state. Any API origin,
 chain, any quote identity/decimals, WETH direct-anchor identity or exact USD
-price change requires a new explicit economic review, never an automatically
+price change requires a fresh plan and economic review, never an automatically
 rewritten intent. API index/graph blocks and retrieval/upstream times may advance
 with unchanged price and identity while the original review remains retained.
 An unchanged old upstream timestamp remains old and is displayed as such.
 Invalid or unavailable snapshots cannot authorize the original intent.
-Source RPC signing and
-unlocked-account sends are forbidden. Hash admission does not substitute for
-independent authorization of every signature by the supervising signer.
+Source RPC signing and unlocked-account sends are forbidden. The `--broadcast`
+choice authorizes local signing and execution; it never replaces the signature
+guard or SDK's independent admission of the exact immediate command.
 
 Before `eth_sendRawTransaction`, the computed signed hash and exact unsigned
 envelope are fsynced to `receipts.json` as a broadcast attempt. Raw bytes are
@@ -631,12 +665,17 @@ no user output option. Artifacts remain after errors or Ctrl+C:
 | --- | --- |
 | `run.json`, `plan.json` | Redacted case/configuration, fresh nonce/salt and finalized plan diagnostics; not authoritative recovery intent |
 | `events.jsonl`, `admission.json` | Stages/timing, actual backend/admission, gas/envelope proof, redacted RPC failures/revert traces |
-| `economic-review.json`, `economic-admission.json` | Exact pricing/supply/allocation/fee/buy review and explicitly admitted review hash before signing |
+| `economic-review.json` | Exact pricing/supply/allocation/fee/buy review and computed review hash as provenance, in both modes |
+| `economic-admission.json` | Broadcast-only evidence: `authorization: "--broadcast"`, computed review hash, and timestamp; never a hash input gate |
 | `receipts.json`, `chain.json` | Pre-broadcast computed hashes/envelopes, real receipts, Active token/markets/custody/buys |
 | `api.json`, `result.json` | Actual publication DTO when reached, failed stage/traceback/causal/revert/API details |
 | `recovery.private.json` | Mode0600 exact finalized portable plan, economic review/hash, original mode/confirmations, signed API request, session capability, activation hash and latest response |
 | `published-image.json` | Optional bounded public image GET: HTTP200, served MIME/length/digest, original descriptor, and explicit inferred transformation evidence |
 | `signed-<hash>.private.json` | Mode0600 signed raw transaction, exact envelope and computed hash |
+
+Dry runs retain the complete planning/review evidence and empty receipts; chain,
+API, signed-transaction, and private session/recovery artifacts are produced only
+when their execution phases are reached.
 
 Never share private files. The original finalized plan, mode and confirmation
 policy are fsynced privately before the first attribution signature and retained

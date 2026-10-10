@@ -369,9 +369,21 @@ class Redactor:
         except ValueError:
             pass
 
+    @staticmethod
+    def _is_broadcast_admission(value):
+        """Only the exact public mode-evidence record has non-secret authorization."""
+        return (isinstance(value, Mapping) and len(value) == 3
+                and value.get("authorization") == "--broadcast"
+                and isinstance(value.get("reviewHash"), str)
+                and re.fullmatch(r"0x[0-9a-fA-F]{64}", value["reviewHash"]) is not None
+                and type(value.get("acceptedAt")) is int and value["acceptedAt"] > 0)
+
     def learn(self, value):
         if isinstance(value, Mapping):
+            public_admission = self._is_broadcast_admission(value)
             for key, item in value.items():
+                if key == "authorization" and public_admission:
+                    continue
                 normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
                 if _SECRET_KEY.search(normalized):
                     self.remember(item)
@@ -418,8 +430,10 @@ class Redactor:
         value = portable(value)
         self.learn(value)
         if isinstance(value, Mapping):
+            public_admission = self._is_broadcast_admission(value)
             return {
-                str(key): REDACTED if _SECRET_KEY.search(re.sub(r"[^a-z0-9]", "", str(key).lower()))
+                str(key): "--broadcast" if key == "authorization" and public_admission
+                else REDACTED if _SECRET_KEY.search(re.sub(r"[^a-z0-9]", "", str(key).lower()))
                 else self.public_api_origin(item) if str(key) == "apiOrigin" else self(item)
                 for key, item in value.items()
             }

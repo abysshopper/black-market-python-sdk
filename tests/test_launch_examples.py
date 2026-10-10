@@ -240,7 +240,8 @@ def test_existing_output_is_never_replaced(tmp_path):
 
 
 def test_interrupt_preserves_submitted_hash_and_meaningful_result(tmp_path, monkeypatch):
-    def interrupted(_args, artifacts, cancellation):
+    def interrupted(_args, artifacts, cancellation, *, broadcast):
+        assert broadcast is True
         artifacts.result.update(scope="end-to-end", execution="executed")
         artifacts.result["chain"]["status"] = "executing"
         artifacts.enter("receipt-atomic")
@@ -250,7 +251,7 @@ def test_interrupt_preserves_submitted_hash_and_meaningful_result(tmp_path, monk
 
     monkeypatch.setattr(example, "run", interrupted)
     monkeypatch.chdir(tmp_path)
-    assert example.run_launch_example(case_definition()) == 1
+    assert example.run_launch_example(case_definition(), argv=["--broadcast"]) == 1
     output = next((tmp_path / "launch-results").iterdir())
     receipts = json.loads((output / "receipts.json").read_text())
     result = json.loads((output / "result.json").read_text())
@@ -635,7 +636,7 @@ def test_missing_configuration_fails_before_transport_with_durable_result(tmp_pa
     monkeypatch.setenv("LAUNCH_API_URL", "https://api.example")
     monkeypatch.delenv(missing)
     monkeypatch.setattr(example, "JournalHTTPProvider", no_call)
-    assert example.run_launch_example(case_definition()) == 1
+    assert example.run_launch_example(case_definition(), argv=[]) == 1
     output = next((tmp_path / "launch-results").iterdir())
     result = json.loads((output / "result.json").read_text())
     assert result["error"]["code"] == "INVALID_CONFIGURATION"
@@ -1051,15 +1052,13 @@ def proved_review_launch(plan):
                                                       evidence=SimpleNamespace(calls=[call])))
 
 
-def test_economic_review_requires_exact_hash_and_reports_proved_all_in_price(construct_case, monkeypatch, capsys):
+def test_economic_review_retains_hash_as_provenance_and_reports_proved_all_in_price(construct_case, monkeypatch, capsys):
     _, plan, _, artifacts = construct_case("launch_erc20_v4.py")
     artifacts.redact.remember_url(API_ORIGIN)
     launch = proved_review_launch(plan)
-    monkeypatch.delenv("EXAMPLE_ECONOMIC_REVIEW_HASH", raising=False)
-    monkeypatch.setattr(example.sys, "stdin", SimpleNamespace(isatty=lambda: False))
-    with pytest.raises(ExampleFailure) as failure:
-        example.review_economics(launch, artifacts, example.Cancellation())
-    assert failure.value.code == "ECONOMIC_REVIEW_REQUIRED"
+    monkeypatch.setattr("builtins.input", no_call)
+    monkeypatch.setattr(example.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    review, digest = example.review_economics(launch, artifacts, example.Cancellation())
     saved = json.loads((artifacts.directory / "economic-review.json").read_text())
     assert not (artifacts.directory / "economic-admission.json").exists()
     output = int(saved["review"]["simulatedBuys"][0]["tokenOut"])
@@ -1070,10 +1069,8 @@ def test_economic_review_requires_exact_hash_and_reports_proved_all_in_price(con
     assert saved["review"]["quotes"][0]["sourceTimestamp"] == "1791552898"
     assert saved["review"]["quotes"][0]["retrievedAt"] == str(PRICE_RETRIEVED_AT)
     assert saved["review"]["quotes"][0]["upstreamAgeSeconds"] == "7200"
-    monkeypatch.setenv("EXAMPLE_ECONOMIC_REVIEW_HASH", saved["reviewHash"])
-    review, digest = example.review_economics(launch, artifacts, example.Cancellation())
-    assert digest == saved["reviewHash"] and review["expectedRetainedSupply"] == artifacts.economic_pricing["expectedRetainedSupply"]
-    assert json.loads((artifacts.directory / "economic-admission.json").read_text())["reviewHash"] == digest
+    assert digest == saved["reviewHash"] == example.economic_review_hash(review)
+    assert review["expectedRetainedSupply"] == artifacts.economic_pricing["expectedRetainedSupply"]
     assert digest in capsys.readouterr().out
     artifacts.finish()
 
@@ -1117,12 +1114,7 @@ def test_unchanged_api_price_preserves_explicit_review_and_allows_signer(constru
     configuration = {"chainId": 4663, "quoteAsset": plan.markets[0].quote_asset, "apiUrl": API_ORIGIN}
     client = SimpleNamespace(provider=SimpleNamespace(endpoint_uri="https://reviewed.invalid"))
     launch = proved_review_launch(plan)
-    monkeypatch.setattr(example.sys, "stdin", SimpleNamespace(isatty=lambda: False))
-    monkeypatch.setenv("EXAMPLE_ECONOMIC_REVIEW_HASH", "not-the-review")
-    with pytest.raises(ExampleFailure):
-        example.review_economics(launch, artifacts, example.Cancellation())
-    saved = json.loads((artifacts.directory / "economic-review.json").read_text())
-    monkeypatch.setenv("EXAMPLE_ECONOMIC_REVIEW_HASH", saved["reviewHash"])
+    monkeypatch.setattr("builtins.input", no_call)
     review, digest = example.review_economics(launch, artifacts, example.Cancellation())
     original_quote = dict(review["quotes"][0])
     snapshot = price_snapshot()
