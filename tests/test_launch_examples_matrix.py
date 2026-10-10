@@ -629,16 +629,19 @@ def test_image_publication_binds_public_key_type_length_and_url(tmp_path):
     key = f"launches/4663/{TOKEN.lower()}/{UPLOAD_ID}"
     image_url = "https://images.example/" + key
     image = {"sha256": descriptor.sha256, "contentType": "image/png", "contentLength": len(PNG), "width": 1, "height": 1}
+    # Sessions carry no imageUrl; the public URL is on the DTO item, and image
+    # type/length are nested under item.metadata (matching the real launch DTO).
     session = metadata_session(token=TOKEN, transactionHash=TX_HASH, status="optimistic", canonicalStatus="optimistic",
-                               image=image, imageStatus="ready", imageUrl=image_url)
+                               image=image, imageStatus="ready")
     item = {"token": TOKEN, "transactionHash": TX_HASH, "blockHash": BLOCK_HASH, "blockNumber": "16", "canonicalStatus": "optimistic",
             "launchedToken": {"name": plan.token.name, "symbol": plan.token.symbol},
-            "metadata": {"document": {**metadata_document(), "imageKey": key}},
-            "imageUrl": image_url, "imageContentType": "image/png", "imageContentLength": str(len(PNG))}
+            "metadata": {"document": {**metadata_document(), "imageKey": key},
+                         "imageContentType": "image/png", "imageContentLength": str(len(PNG))},
+            "imageUrl": image_url}
     detail = {"chainId": 4663, "indexedBlock": "16", "item": item}
     receipt = {"transactionHash": TX_HASH, "blockHash": BLOCK_HASH, "blockNumber": "0x10"}
     example.verify_publication(session, detail, plan, TOKEN, receipt, "session", signed_metadata(), image=descriptor)
-    wrong = {**detail, "item": {**item, "imageContentLength": "1"}}
+    wrong = {**detail, "item": {**item, "metadata": {**item["metadata"], "imageContentLength": "1"}}}
     with pytest.raises(ExampleFailure) as failure:
         example.verify_publication(session, wrong, plan, TOKEN, receipt, "session", signed_metadata(), image=descriptor)
     assert failure.value.code == "API_PUBLICATION_MISMATCH"
@@ -705,10 +708,12 @@ def test_image_publication_cannot_pass_without_public_image_get(tmp_path, monkey
     url = "https://images.example/" + key
     staged = metadata_session(image=image, imageStatus="ready")
     published = metadata_session(token=TOKEN, transactionHash=TX_HASH, status="optimistic", canonicalStatus="optimistic",
-                                 image=image, imageStatus="ready", imageUrl=url)
+                                 image=image, imageStatus="ready")
     item = {"token": TOKEN, "transactionHash": TX_HASH, "blockHash": BLOCK_HASH, "blockNumber": "16", "canonicalStatus": "optimistic",
-            "launchedToken": {"name": plan.token.name, "symbol": plan.token.symbol}, "metadata": {"document": {**metadata_document(), "imageKey": key}},
-            "imageUrl": url, "imageContentType": "image/png", "imageContentLength": str(len(PNG))}
+            "launchedToken": {"name": plan.token.name, "symbol": plan.token.symbol},
+            "metadata": {"document": {**metadata_document(), "imageKey": key},
+                         "imageContentType": "image/png", "imageContentLength": str(len(PNG))},
+            "imageUrl": url}
     api = SimpleNamespace(config=SimpleNamespace(base_url=API_ORIGIN, timeout=15), get_launch_upload_session=lambda *_args: staged,
                           publish_launch_upload_session=lambda *_args: published,
                           get_launch=lambda *_args: {"chainId": 4663, "indexedBlock": "16", "item": item})

@@ -103,9 +103,13 @@ def load_example_image(path):
 def read_published_image(url, descriptor, *, timeout_seconds=15):
     """One bounded public GET, retaining identity or inferred transformation evidence."""
     # The published image is a public CDN read (e.g. the R2 bucket host), not an API
-    # endpoint — do not apply the API origin/credential/query restrictions. HTTPS only,
-    # no credentials or fragment, mirroring the node's exampleImageUrl contract.
-    source = mainnet_url(url, api=False)
+    # endpoint — do not apply the API origin/credential restrictions. HTTPS for public
+    # hosts, owned loopback HTTP for local integration, mirroring node's exampleImageUrl.
+    parts = urlsplit(url)
+    if parts.scheme == "http" and parts.hostname in {"localhost", "127.0.0.1", "::1"}:
+        source = loopback_url(url)
+    else:
+        source = mainnet_url(url, api=False)
     timeout = min(15, timeout_seconds)
     if timeout <= 0:
         raise ExampleFailure("published image verification deadline expired", code="IMAGE_PUBLICATION_UNAVAILABLE")
