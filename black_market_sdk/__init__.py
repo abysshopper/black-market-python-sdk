@@ -94,8 +94,9 @@ from .launch import (
     DEFAULT_LAUNCH_TARGET_MARKET_CAP_USD, LAUNCH_REWARD_DURATION, LAUNCH_ORACLE_CONFIG_ID,
     LAUNCH_DEADLINE_SECONDS, LAUNCH_BUY_SLIPPAGE_BPS,
     LaunchPoolRecipe, LaunchPositionRange, LaunchPositionRanges, LaunchInitialBuyEstimate,
-    LaunchDistributionPreset, LaunchVenue, LaunchStaircaseBoundaries,
+    LaunchDistributionPreset, LaunchVenue, LaunchPositionGaps,
     derive_launch_pool_recipe, derive_launch_position_ranges, estimate_launch_initial_buy,
+    assert_launch_topology_coverage,
     derive_launch_buy_sqrt_price_limit_x96, get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio,
 )
 from .launch_api import (

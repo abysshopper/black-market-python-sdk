@@ -34,6 +34,19 @@ from black_market_sdk import (
     build_launch_attribution_typed_data,
     get_launch_addresses,
 )
+if __package__:
+    from ._launch_support import save_private_state, validate_metadata_session
+else:
+    from _launch_support import save_private_state, validate_metadata_session
+
+
+def recovery_metadata(recovery):
+    document = recovery["request"]["metadata"]
+    return LaunchSessionCreateMetadata(
+        name=document["name"], symbol=document["symbol"], description=document["description"],
+        website_url=document.get("websiteUrl"), twitter_url=document.get("twitterUrl"),
+        telegram_url=document.get("telegramUrl"), discord_url=document.get("discordUrl"),
+    )
 
 
 def is_loopback(url: str) -> bool:
@@ -66,14 +79,23 @@ def main(argv=None) -> int:
     if not base_url:
         parser.error("LAUNCH_API_TEST_URL is required; start the real test API first")
     chain_id = int(os.environ.get("LAUNCH_API_TEST_CHAIN_ID", str(ROBINHOOD_MAINNET_CHAIN_ID)))
-    client = LaunchApiClient(LaunchApiConfig(base_url=base_url, allow_loopback_http=True))
+    client = LaunchApiClient(LaunchApiConfig(base_url=base_url, allow_loopback_http=True, retries=1))
 
     if not args.signed:
         if args.state_file is not None:
             recovery = json.loads(args.state_file.read_text())
             if recovery["chainId"] != chain_id or recovery["apiUrl"] != client.config.base_url:
                 parser.error("recovery state belongs to a different chain or API")
+            if not recovery.get("sessionId") or not recovery.get("capability"):
+                parser.error("original session issuance is unknown; reconcile the saved request with the service, never replay or create a new session")
             session = client.get_launch_upload_session(chain_id, recovery["sessionId"], recovery["capability"])
+            if "request" in recovery:
+                validate_metadata_session(session, recovery_metadata(recovery), chain_id=chain_id,
+                                          wallet=recovery["request"]["wallet"], session_id=recovery["sessionId"])
+            else:
+                # Legacy capability-only files retain GET recovery; no intent is invented.
+                if session.get("sessionId") != recovery["sessionId"] or session.get("chainId") != chain_id:
+                    raise RuntimeError("API changed the original recovery session")
             print(json.dumps({"sessionId": session["sessionId"], "status": session["status"], "metadata": session["metadata"]}, indent=2))
         else:
             # A random nonexistent ID needs no seeded launch, image store or indexer.
@@ -110,18 +132,32 @@ def main(argv=None) -> int:
         chain_id=chain_id, wallet=account.address, metadata=metadata,
         authorization=LaunchAttributionAuthorization(nonce=nonce, deadline=deadline, signature=signature),
     )
-    # Reserve the private destination before writing to the API; never log the secret.
-    descriptor = os.open(args.state_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as state:
-        session = client.create_launch_upload_session(request, key)
-        recovery = {
-            "apiUrl": client.config.base_url, "chainId": chain_id, "orchestrator": orchestrator,
-            "sessionId": session["sessionId"], "capability": session["capability"], "idempotencyKey": key,
-        }
-        json.dump(recovery, state, indent=2)
-        state.write("\n")
+    # Store the exact wire request and key before the first POST can issue a capability.
+    recovery = {
+        "schema": "black-market.launch-api-example.v2",
+        "apiUrl": client.config.base_url, "chainId": chain_id, "orchestrator": orchestrator,
+        "idempotencyKey": key, "issuance": "unknown",
+        "request": {
+            "chainId": chain_id, "wallet": account.address,
+            "metadata": {"name": metadata.name, "symbol": metadata.symbol, "description": metadata.description},
+            "authorization": {"nonce": nonce, "deadline": str(deadline), "signature": signature},
+        },
+    }
+    save_private_state(args.state_file, recovery, create=True)
+    session = client.create_launch_upload_session(request, key)
+    # Retain the once-returned credentials even if response validation later refuses.
+    recovery.update(sessionId=session.get("sessionId"), capability=session.get("capability"),
+                    issuance="returned", session=session)
+    save_private_state(args.state_file, recovery)
+    validate_metadata_session(session, metadata, chain_id=chain_id, wallet=account.address, staging=True)
+    if not isinstance(session.get("capability"), str) or not session["capability"]:
+        raise RuntimeError("API did not return the original private capability")
     recovered = client.get_launch_upload_session(chain_id, session["sessionId"], session["capability"])
+    validate_metadata_session(recovered, metadata, chain_id=chain_id, wallet=account.address,
+                              session_id=session["sessionId"], staging=True)
     replay = client.create_launch_upload_session(request, key)
+    validate_metadata_session(replay, metadata, chain_id=chain_id, wallet=account.address,
+                              session_id=session["sessionId"], staging=True)
     if replay["sessionId"] != session["sessionId"] or "capability" in replay or "upload" in replay:
         raise RuntimeError("API idempotency or capability privacy contract was violated")
     print(json.dumps({"sessionId": recovered["sessionId"], "status": recovered["status"], "recoveryFile": str(args.state_file), "chainTransactionSent": False}, indent=2))

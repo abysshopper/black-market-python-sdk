@@ -4,6 +4,13 @@ This command never loads private keys, signs, source-broadcasts or publishes.
 Stateful simulation may execute only on an explicitly owned isolated local fork;
 normal RPCs use non-persisting eth_simulateV1. An unadmitted plan emits no next
 transaction. Cancellation uses canonical pending state, not disabled admission.
+
+Recovery accepts --receipts with typed snake_case reference JSON, or a plan
+wrapper containing "receipts". Preserve original observed block number/hash and
+replacement_hash; --transaction-hash alone cannot detect an orphaned original
+inclusion once that same transaction is mined in another block. Numeric reference
+fields are emitted as decimal strings for reuse. Reconcile read-only output
+explicitly before authorizing any remaining original work.
 """
 
 from __future__ import annotations
@@ -33,6 +40,58 @@ def json_value(value):
     raise TypeError(f"Unsupported planner output: {type(value).__name__}")
 
 
+def parse_receipt_references(value):
+    """Rehydrate exact SDK references without discarding original block evidence."""
+    if isinstance(value, dict):
+        value = value["receipts"]
+    if not isinstance(value, list):
+        raise ValueError("receipts must be a JSON array of typed receipt references")
+    fields = {"transaction_hash", "replacement_hash", "confirmations",
+              "observed_block_number", "observed_block_hash"}
+
+    def integer(raw, name):
+        if isinstance(raw, str):
+            if not (raw.isascii() and raw.isdecimal() and len(raw) <= 78
+                    and (raw == "0" or not raw.startswith("0"))):
+                raise ValueError(f"{name} must be an exact canonical decimal integer")
+            return int(raw)
+        if type(raw) is not int:
+            raise ValueError(f"{name} must be an exact integer or decimal string")
+        return raw
+
+    references = []
+    for row in value:
+        if not isinstance(row, dict) or not row.keys() <= fields or "transaction_hash" not in row:
+            raise ValueError("each receipt must contain SDK snake_case receipt-reference fields")
+        references.append(LifecycleReceiptReference(
+            transaction_hash=row["transaction_hash"], replacement_hash=row.get("replacement_hash"),
+            confirmations=integer(row.get("confirmations", 1), "confirmations"),
+            observed_block_number=(integer(row["observed_block_number"], "observed_block_number")
+                                   if row.get("observed_block_number") is not None else None),
+            observed_block_hash=row.get("observed_block_hash"),
+        ))
+    return tuple(references)
+
+
+def receipt_reference_json(references, statuses=()):
+    """Retain original evidence; enrich hash-only references with observed inclusion."""
+    by_hash = {status.transaction_hash.lower(): status for status in statuses}
+    result = []
+    for reference in references:
+        row = asdict(reference)
+        status = by_hash.get(reference.transaction_hash.lower())
+        if status is not None and status.status == "confirmed":
+            if row["observed_block_number"] is None:
+                row["observed_block_number"] = status.block_number
+            if row["observed_block_hash"] is None:
+                row["observed_block_hash"] = status.block_hash
+        row["confirmations"] = str(row["confirmations"])
+        if row["observed_block_number"] is not None:
+            row["observed_block_number"] = str(row["observed_block_number"])
+        result.append(row)
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("plan", type=Path)
@@ -47,7 +106,10 @@ def main(argv=None):
     parser.add_argument("--headroom-bps", type=int, default=1500)
     parser.add_argument("--prepare-batch-size", type=int)
     parser.add_argument("--confirmations", type=int, default=1)
-    parser.add_argument("--transaction-hash", action="append", default=[])
+    receipts_group = parser.add_mutually_exclusive_group()
+    receipts_group.add_argument("--receipts", type=Path, help="Typed receipt-reference JSON; retains original blocks and replacements")
+    receipts_group.add_argument("--transaction-hash", action="append", default=[],
+                                help="Hash-only convenience alias; cannot retain original inclusion/replacement evidence")
     parser.add_argument("--fork-rpc-url", help="Separate owned local Anvil fork; never the source execution node")
     parser.add_argument("--submission-rpc-url", help="Optional read-only immediate-next submission RPC preflight")
     parser.add_argument("--isolated-fork", action="store_true", help="Assert exclusive ownership of the local fork")
@@ -55,12 +117,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if bool(args.fork_rpc_url) != args.isolated_fork:
         parser.error("--fork-rpc-url and --isolated-fork must be provided together")
-    if args.finalize_bound and args.transaction_hash:
-        parser.error("do not mutate deployment salts after submitting transaction evidence")
     if args.finalize_bound and args.action == "cancel":
         parser.error("cancellation recovers committed economics; it cannot finalize deployment salts")
     payload = json.loads(args.plan.read_text())
     plan = launch_plan_from_dict(payload.get("plan", payload))
+    if args.receipts:
+        references = parse_receipt_references(json.loads(args.receipts.read_text()))
+    elif args.transaction_hash:
+        references = tuple(LifecycleReceiptReference(value, confirmations=args.confirmations)
+                           for value in args.transaction_hash)
+    else:
+        references = parse_receipt_references(payload.get("receipts", []))
+    if args.finalize_bound and references:
+        parser.error("do not mutate deployment salts after submitting transaction evidence")
     client = Web3(Web3.HTTPProvider(args.rpc_url))
     submission_client = Web3(Web3.HTTPProvider(args.submission_rpc_url)) if args.submission_rpc_url else None
     fork = create_controlled_launch_fork(client, Web3(Web3.HTTPProvider(args.fork_rpc_url)), isolated=True) if args.fork_rpc_url else None
@@ -76,7 +145,7 @@ def main(argv=None):
 
     options = {"account": args.account, "mode": args.mode, "limits": limits,
         "prepare_batch_size": args.prepare_batch_size, "confirmations": args.confirmations,
-        "receipts": tuple(LifecycleReceiptReference(value, confirmations=args.confirmations) for value in args.transaction_hash), "fork": fork}
+        "receipts": references, "fork": fork}
     planned = None
     if args.finalize_bound:
         planned = asyncio.run(prepare_and_plan_lifecycle_launch(client, plan, **options))
@@ -94,6 +163,7 @@ def main(argv=None):
         if planned is None:
             planned = plan_launch(client, plan, **options)
         next_transaction = build_next_transaction(client, planned, account=args.account, receipts=options["receipts"],
+                                                  prepare_batch_size=planned.prepare_batch_size,
                                                   fork=fork, submission_client=submission_client) if planned.admitted else None
         output.update({"admitted": planned.admitted, "confidence": planned.confidence,
             "predictedToken": planned.predicted_token, "progress": planned.progress,
@@ -101,6 +171,7 @@ def main(argv=None):
             "hookDeployments": planned.hook_deployments, "simulation": planned.simulation,
             "nextTransaction": next_transaction.as_transaction() if next_transaction else None,
             "nextAdmission": next_transaction.admission if next_transaction else None})
+    output["receipts"] = receipt_reference_json(references, output["progress"].receipts)
     print(json.dumps(output, default=json_value, indent=2))
     return 0
 

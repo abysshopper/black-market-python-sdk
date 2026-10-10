@@ -47,7 +47,7 @@ def config():
         hook_salt=(2**255 + 17).to_bytes(32, "big"), profile_id=PROFILE_ID,
         terms_digest=(57).to_bytes(32, "big"),
         developer_beneficiary="0x00000000000000000000000000000000000000d0", developer_fee_bps=250,
-        positions=(LifecycleV4Position(60, 120, 10**18, (2**250 + 31).to_bytes(32, "big"), 10**24),),
+        positions=(LifecycleV4Position(-887220, 0, 10**18, (2**250 + 31).to_bytes(32, "big"), 10**24),),
     )
 
 

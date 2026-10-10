@@ -7,6 +7,8 @@ package, runnable examples, and its tests.
 
 - `.agents/skills/sdk-usage/SKILL.md`: read protocol state and integrate public APIs.
 - `.agents/skills/token-launch/SKILL.md`: run or adapt token-launch/API examples.
+- `.agents/skills/launch-pricing/SKILL.md`: derive valuation/ranges, protect opening buys,
+  and bind admitted Kyber conversion calldata to lifecycle funding.
 
 Read the relevant skill before working on those paths.
 

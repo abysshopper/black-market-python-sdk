@@ -242,7 +242,7 @@ def test_example_metadata_authorization_is_accepted_and_recoverable(
     artifacts = Artifacts(tmp_path / "example-authorization", "authorization-boundary")
     wallet = LocalSigningWallet(None, artifacts, private_key=signed_account.key,
                                 creator=plan.creator, chain_id=plan.chain_id)
-    recovery = example.stage_metadata(None, api_client, plan, artifacts, example.Cancellation(), wallet=wallet)
+    recovery = example.stage_metadata(None, api_client, plan, artifacts, example.Cancellation(), wallet=wallet, mode="atomic")
     created = recovery["session"]
     recovered = api_client.get_launch_upload_session(
         plan.chain_id, created["sessionId"], created["capability"],

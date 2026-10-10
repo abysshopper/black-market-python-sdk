@@ -150,6 +150,53 @@ These are intended allocations, not actual mint debits. Rounded mint residuals
 are burned during activation before buys; they are never a creator reserve.
 `inventory_recipient` does not authorize an unallocated supply remainder.
 
+### Launch position-topology safety
+
+Every launch-created market must retain a **permanent tail with a nonzero token
+allocation**, bridged continuously from its opening price by the other positions.
+The tail's far endpoint is the protocol's usable spacing-aligned buy-push boundary,
+not mathematical infinity. A tail in an optional second market cannot cover a gap
+or replace the tail in the primary market.
+
+`derive_launch_position_ranges` now defaults
+`extend_final_range_to_boundary=True` (a breaking default change). Its final
+position reaches the boundary without adding inventory to the market's budget.
+The `position_gaps` option (`LaunchPositionGaps`) accepts `"source-gaps"` or
+`"adjacent"` for both Early Scarcity and Staircase. These two presets retain
+source gaps by default; choose `position_gaps="adjacent"` for continuous ranges
+without changing their source inventory weights or finite band widths. Smooth
+Ramp is always contiguous and rejects explicit `"source-gaps"`.
+
+The exported pure `assert_launch_topology_coverage(positions, opening_tick=...,
+tick_spacing=..., launched_token_is_quote=...)` accepts position attributes or
+mapping keys `tick_lower`, `tick_upper`, and `max_token_amount`. It validates the
+interval union, not the caller's order: overlapping bands and exact tick
+adjacency are valid. Opening containment uses `[lower, upper)` for launch token0,
+or `(lower, upper]` for token1's first downward crossing. The historical
+`launched_token_is_quote=True` convention means **launch token is token0**.
+Off-grid ticks, an uncovered opening, interior gaps, and a missing/zero-allocation
+tail raise `ValueError` with `TOPOLOGY_OFF_GRID_TICK`, `TOPOLOGY_OPENING_GAP`,
+`TOPOLOGY_INTERIOR_GAP`, and `MISSING_PERMANENT_TAIL` respectively.
+
+For **unstarted launches only**, `plan_launch` and
+`prepare_and_plan_lifecycle_launch` enforce this rule per market, using the pinned
+predicted token's actual address order, the opening tick derived from its configured
+sqrt price, V4's configured spacing, and Abyss's canonical fee-tier spacing.
+Started/waiting/in-flight and Active/Cancelled recovery skips this creation safety
+policy, like `buy_slippage_bps`: refusal cannot rewrite a committed on-chain plan.
+The planner flags are separate, explicit exceptions:
+
+- `allow_topology_gaps=True` skips **only interior gaps**, like the pure validator's
+  `allow_interior_gaps=True`; it does not permit a missing permanent tail.
+- `allow_missing_permanent_tail=True` skips **only** boundary reach and nonzero tail
+  allocation; it does not permit interior gaps.
+- Opening containment and tick alignment remain hard errors, even with both flags.
+  Exact market/supply and position/budget equality checks are unchanged.
+
+The exceptions are retained on `PlannedLaunch` and inherited during fresh
+simulation/build-next admission. They are SDK admission policy, not fields in
+`LaunchPlanV1`: they do not change ABI encoding, plan hashes, or committed calldata.
+
 ## Unified preparation and final admission
 
 `await prepare_and_plan_lifecycle_launch(client, draft_plan, account=creator,
@@ -317,9 +364,17 @@ python examples/launch_submit.py "$PLAN_JSON" --rpc-url "$RPC_URL" \
 # Known --chain-gas-cap/--rpc-gas-cap/--account-gas-cap/--calldata-cap only tighten.
 ```
 
-Supply `--transaction-hash` and `--confirmations` for recovery. Do not use
-`--finalize-bound` after submission. For complete deliberate launches, use the
-standalone examples below rather than a manifest or fixture-driven harness.
+For recovery, supply `--receipts receipt-references.json` and the original
+`--confirmations` depth. Reference JSON uses `transaction_hash`, optional
+`replacement_hash`, `confirmations`, `observed_block_number`, and
+`observed_block_hash`; numbers may be exact decimal strings and hashes are hex
+bytes32. A wrapper with `plan` and `receipts` is accepted, and unsigned output emits
+reusable typed `receipts` alongside progress. `--transaction-hash` remains a
+hash-only convenience alias: it lacks replacement and original inclusion evidence,
+so it cannot detect an orphaned inclusion after the same hash is mined elsewhere.
+Do not use `--finalize-bound` after submission or with retained receipt evidence.
+Reconcile original canonical progress read-only before deliberately authorizing
+remaining work; never automatically repeat an orphaned step.
 
 ## Standalone token-launch examples
 
@@ -341,18 +396,26 @@ cp examples/.env.example .env
 chmod 600 .env
 ```
 
-Edit working-directory `.env` to set `PRIVATE_KEY` and `LAUNCH_API_URL`. Both are
-required before any RPC/API call; the creator is derived from the key, never from
-an unlocked node account or a public development key. The API must run the real
-launch router, session database, current `LaunchActivated` indexer and public DTO
-against the execution chain. There is no guessed production API or silent API skip.
+Set `LAUNCH_API_URL` and exactly one signer source before any RPC/API call:
+`PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` to a local owner-only V3 JSON keystore.
+`EXAMPLE_KEYSTORE_PASSWORD` defaults to `""`; empty-password scrypt keystores work
+through `eth_account.Account.decrypt` without another dependency. Reads are bounded,
+reject symlinks/non-regular files, and enforce owner-only permissions; authenticated
+decryption determines the creator and checks any declared address. Neither/both
+signer sources are errors; no key/password is logged. The API must run the real
+launch router, session database, `LaunchActivated` indexer and public DTO against
+the execution chain. There is no guessed production API or silent API skip.
 
 `RPC_URL` defaults to `ROBINHOOD_MAINNET_RPC`. Remote RPC/API URLs require HTTPS;
 explicit loopback HTTP is accepted for owned local services. API URL credentials,
 queries and fragments are rejected. RPC URL credentials are redacted in diagnostics.
-The examples resolve canonical chain4663 addresses from `get_launch_addresses`,
-verify live escrow WETH/18 decimals, discover admitted profiles and the real
-registered **P1 `(1,4096)`** oracle from the bound V4 oracle factory.
+The examples resolve canonical chain4663 infrastructure from the SDK and validate
+live decimals for each selected quote (WETH/18 or USDG/6). Each market resolves oracle authority from its
+selected admitted V4 envelope graph or Abyss factory; Abyss-only cases do not need
+any V4 admission. WETH retains the registered P1 `(1,4096)` read. USDG discovers
+factory `OracleConfigRegistered` logs through the pinned block and revalidates
+each candidate with `oracleConfigs` at that block before deterministic compatible
+selection. No compatible registration means a loud unsigned refusal.
 
 Fixed chain4663 examples use the execution RPC's native simulation backend.
 Generic Anvil/Hardhat simulation cannot prove ArbOS metering and is not offered
@@ -368,6 +431,27 @@ Existing process environment wins. The small stdlib `.env` loader reads once and
 supports ordinary `KEY=value`, quoted values and comments, with no shell
 interpolation, command execution or extra dependency.
 
+Optional `EXAMPLE_TOKEN_NAME`, `EXAMPLE_TOKEN_SYMBOL`, and
+`EXAMPLE_TOKEN_DESCRIPTION` are NFC-normalized and trimmed. They must satisfy
+the API's 100/32/2000-codepoint bounds and the protocol's 128/32-byte name/symbol
+bounds. Identity is frozen into the economic review and signed metadata, not
+reread from environment after approval.
+
+`EXAMPLE_IMAGE_PATH` optionally selects PNG, JPEG or WebP bytes (maximum 5 MiB).
+Type is detected from content, not extension. The frozen SHA-256/type/length is
+included in the review and EIP-712 authorization. The original session's exact
+API-issued create-only presigned headers are used for one PUT, then the original
+session is refreshed and `complete_launch_upload` must verify it as ready before
+chain submission. No automatic image PUT retry or metadata-only fallback exists.
+Descriptor/dimensions and public image identity remain bound through publication.
+Unset preserves the metadata-only (`image:null`) flow.
+Final success also requires the indexed/public token DTO's non-null matching image
+reference and one bounded (15-second, 5-MiB, no-redirect/no-retry) GET of its public
+URL with HTTP200 and a non-empty body in the matching image MIME family. Identical bytes must match
+the signed type/length/SHA; differing bytes are permitted as an inferred API
+transformation within the image MIME family, explicitly recorded with served
+digest/type/length in `published-image.json`. Failure is nonzero and retains evidence.
+
 ### One command per case
 
 ```sh
@@ -379,6 +463,9 @@ python examples/launch_erc20_staking_v4.py
 python examples/launch_erc20_dividends_abyss.py
 python examples/launch_erc20_burn_mixed.py
 python examples/launch_erc404_dividends_mixed.py
+python examples/launch_erc20_multi_quote.py
+python examples/launch_erc20_depth_v4.py
+python examples/launch_erc20_dividends_multiquote_mixed.py
 ```
 
 | File | Fixed case |
@@ -391,19 +478,84 @@ python examples/launch_erc404_dividends_mixed.py
 | `launch_erc20_dividends_abyss.py` | ERC20/holder dividends, three Abyss positions, one buy, staged |
 | `launch_erc20_burn_mixed.py` | ERC20/3000-bps token burn, two dual-fee V4 + one Abyss position, one buy per market, staged |
 | `launch_erc404_dividends_mixed.py` | ERC404/holder dividends, two V4 + three Abyss positions, one buy per market, staged |
+| `launch_erc20_multi_quote.py` | ERC20/no rewards, V4 WETH + V4 USDG + Abyss WETH, one position/buy each, staged |
+| `launch_erc20_depth_v4.py` | ERC20/no rewards, four adjacent Early Scarcity V4 bands with increasing inventory and final boundary tail, one buy, staged |
+| `launch_erc20_dividends_multiquote_mixed.py` | ERC20/4000-bps dividends, V4 WETH/USDG two positions each + Abyss WETH three, three buys, staged |
+
+The three new cases are additive real-run validation candidates, not replacements
+for the original eight. Dual V4 markets use different quotes; Abyss may reuse WETH.
 
 Each invokes `run_launch_example(case)` in `examples/launch_examples.py`, supported
 by `examples/_launch_support.py`. Copy these helpers alongside the selected example
 for use with an installed SDK. No source-tree import injection is used.
 ERC20 supply is 1,000,000 tokens; ERC404 supply is 10,000 tokens with 100-token NFT
-units. Position liquidity is `1000 * 10**18`. The entire supply is apportioned
-across markets, then each market budget across position maxima, with exact final
-remainders. Actual mint dust burns rather than becoming creator inventory.
-Each opening buy uses `10**15` native input wrapped through canonical WETH.
+units. Pricing targets **$5,000 USD using the entire actual minted supply**, never
+a divided market budget. `derive_launch_pool_recipe` uses each market's actual
+predicted token order and quote decimals, fee3000 and spacing60. WETH uses one price
+snapshot from the selected `LAUNCH_API_URL` (`configuration.apiUrl`). Each read makes
+one GET to `/api/v1/token-prices?chainId=4663&limit=100`, with a 15-second transport timeout,
+elapsed retrieval checks, a 1-MiB body limit, no redirects, retries, pagination or
+global cache. The snapshot must contain exactly one ready, `priced=true` WETH row
+for chain4663 with an exact positive uint256 `priceUsdX18`, `source=anchor`, and
+direct reviewed Chainlink anchor identity, empty path and zero hops. Missing,
+unpriced, malformed, wrong-identity or unavailable snapshots refuse signing;
+there is no manual, external-provider or fixed 1:1 fallback.
+USDG's separate seed is its SDK-catalogued `usdPeg` price of `10**18` USD-X18 with
+six decimals. Every market, proved buy and post-buy valuation retains its own quote
+identity/decimals and original USD seed.
+
+This published API price is an **indicative USD launch-seeding valuation**, not an
+executable swap quote or chain/receipt authority. The review preserves API origin,
+exact price, index/graph blocks, original upstream `sourceTimestamp`, local
+`retrievedAt` and `upstreamAgeSeconds`. A newly retrieved snapshot does not make
+an old upstream observation fresh. The examples do not impose a 15-minute
+contract-round cutoff on the operator's selected API price. RPC still owns chain
+identity, canonical blocks, balances, nonce, token prediction, native execution
+proof and confirmed receipts; its block fields are distinct from API blocks.
+The full supply is apportioned across markets with an exact final remainder.
+Each one-position market uses its budget-funded recipe liquidity; multiple
+positions use `derive_launch_position_ranges` with the original requested count,
+Staircase (`early-scarcity` for Depth), `position_gaps="adjacent"` and the final
+boundary tail. Position allocation
+caps sum to their market budget and liquidity consumes that allocation except
+exact Solidity rounding dust, which burns rather than becoming creator inventory.
+Mixed venues share the same opening USD price.
+`EXAMPLE_TARGET_MARKET_CAP_USD` optionally overrides the target with a validated
+positive exact USD decimal of at most 18 fractional places. Target price and
+rounded opening valuation differ by tick-spacing rounding. The economic review
+separately shows minted supply, expected retained supply after dust burn, and
+both opening valuations. It also decodes the final proved ordered-buy receipt:
+all-in average execution prices include fees and price impact, and are **not**
+the post-buy marginal spot price. Confirmed `chain.json` records actual retained
+supply, live spot and post-buy valuation at each observed market block, using the
+original reviewed per-quote USD seed as its explicit conversion basis.
+Every ordered buy pays native ETH, default **10¹³ wei (0.00001 ETH)**.
+`EXAMPLE_BUY_AMOUNT_WEI` overrides that per-buy native input for every quote.
+The runner uses the API's fresh `POST /api/v1/quote/kyber/build?chainId=4663`
+with native `tokenIn=zeroAddress`, quote `tokenOut`, exact aggregate input,
+`sender=recipient=fundingEscrow`, conversion slippage **50 bps**, and a **300-second**
+launch-purpose expiry equal to the committed plan deadline. Build calldata decodes
+as the reviewed router's `swap`; currencies, escrow receiver, exact input, minimum
+output, executor/payload, flags, fees and native value must match.
+`EXAMPLE_KYBER_API_URL` optionally chooses a different Abyss API; its default is
+`LAUNCH_API_URL`. No independent preview is required: the build endpoint owns
+fresh route discovery. HTTP/build/refusal errors are retained without a retry/fallback.
+
+Native input is aggregated per quote (`buy count × per-buy ETH input`). Each
+`LifecycleFundingKind.SWAP` entry commits `input_asset=zeroAddress`, the reviewed
+router/data and API `amountOutMinimum`. That exact floor is apportioned over its
+ordered buys with a deterministic final remainder. Creators need native ETH for
+inputs and gas, not pre-funded WETH/USDG. Pinned registry target/spender/runtime
+and the complete SDK execution proof must admit every conversion; otherwise
+execution stops unsigned with the refusal, never NativeWrap/direct ERC20 funding
+or a separate wallet swap. The existing 50-bps protected token-output buys apply
+on top of conversion slippage.
 Config6 bound V4 and config1 canonical Abyss QUOTE_ORACLE profile3 are discovered
 live. V4 uses explicit maximum/minimum hook fees of 10,000/1,000 pips and
-sensitivity 7,654,321 fee-pips × seconds/tick. The unified call mines salts and
-admits the entire final plan without reducing selected economics or changing mode.
+sensitivity 7,654,321 fee-pips × seconds/tick. The unified call mines salts,
+derives ordered-buy minimum outputs with the reviewed **50-bps** protection,
+and proves the final protected plan without changing other economics or mode.
+Submitted recovery plans are never regenerated or given new minima.
 
 Optional `NFT_BASE_URI` supplies your own hosted ERC404 NFT base URI; the default
 is empty and does not pretend a metadata service exists. NFT units/mirrors remain
@@ -418,10 +570,33 @@ Optional `LAUNCH_CHAIN_GAS_CAP`, `LAUNCH_RPC_GAS_CAP`, `LAUNCH_ACCOUNT_GAS_CAP` 
 bypass complete admission or replay. SDK gas headroom defaults to 1500 bps.
 
 The real SDK admission runs before signed API metadata staging. The wallet signs
-the complete attribution EIP-712 payload locally with creator/chain/domain checks
-and signs exact SDK transaction envelopes without changing supplied gas, value,
-calldata, nonce or fees. Normal nonce/fee lookup occurs only for absent fields.
-Source RPC signing and unlocked-account sends are forbidden.
+the complete attribution EIP-712 payload locally with creator/chain/domain checks.
+The runner holds the original immediate command, then freshly proves it with
+`reviewed_transaction` and the actual `submission_client` immediately before signing.
+Subsequent staged commands each get one held review after their preceding receipt;
+preparation grouping and original receipt evidence are retained. Changed gas,
+gas price, calldata, value, target, sender, chain, nonce or command identity is
+refused, not silently expanded. The signing boundary also rechecks the launch
+deadline, source client and creator. `economic-review.json` displays and retains
+the exact target, original API snapshot/provenance, upstream age and retrieval
+time, minted and expected retained supply, token order, opening unit price/
+valuations, position budgets/liquidity/rounding burns, fees, protected buys and
+final plan. Before the first signature,
+the operator must type its exact hash, or supply `EXAMPLE_ECONOMIC_REVIEW_HASH`
+with that exact value for an explicitly supervised noninteractive run. A fresh
+invocation generates a different original plan; an old review hash cannot admit it.
+Every attribution and transaction signature retrieves a validated snapshot from
+the same selected API and checks the bound source, target, supply, predicted
+order and original plan against current canonical RPC state. Any API origin,
+chain, any quote identity/decimals, WETH direct-anchor identity or exact USD
+price change requires a new explicit economic review, never an automatically
+rewritten intent. API index/graph blocks and retrieval/upstream times may advance
+with unchanged price and identity while the original review remains retained.
+An unchanged old upstream timestamp remains old and is displayed as such.
+Invalid or unavailable snapshots cannot authorize the original intent.
+Source RPC signing and
+unlocked-account sends are forbidden. Hash admission does not substitute for
+independent authorization of every signature by the supervising signer.
 
 Before `eth_sendRawTransaction`, the computed signed hash and exact unsigned
 envelope are fsynced to `receipts.json` as a broadcast attempt. Raw bytes are
@@ -432,10 +607,20 @@ RPC transport retries are disabled and requests have a 120-second bound.
 Real receipts and canonical chain invariants prove token, markets, permanent
 custody and ordered buys. The API receives only the confirmed atomic/activate
 transaction hash. Only actual `202`/`LaunchPublishPending` responses are polled,
-respecting `Retry-After` within the 90-second deadline. Other errors fail immediately.
-The session and real `/api/v1/launches/<token>?chainId=4663` DTO must match the token,
-activation block/hash, canonical status and staged metadata; no invented projection
-fills an unavailable indexer.
+respecting `Retry-After` within the absolute 90-second deadline. Each HTTP call
+uses one attempt with the remaining timeout, reserving the client's final failed
+attempt backoff. Other errors fail immediately. Fresh original-session reads
+precede signatures and publication mutations. Required session fields, status
+cross-fields, unbound expiry, full canonical signed metadata and the original
+optional image descriptor/readiness are validated on creation, refresh and publication. The real
+`/api/v1/launches/<token>?chainId=4663` DTO must match the complete metadata,
+token and activation block/hash; no invented projection fills an unavailable indexer.
+Before every next-command review/signature and terminal verification, retained
+receipts must be canonically confirmed and free of reorgs. Publication additionally
+rereads the original activation receipt, block/hash, confirmation depth and
+canonical Active state before mutation and final success. Reorgs retain evidence
+and halt for explicit `launch_submit.py --receipts` read-only reconciliation;
+orphaned steps are never automatically re-signed.
 
 ### Retained results
 
@@ -444,19 +629,34 @@ no user output option. Artifacts remain after errors or Ctrl+C:
 
 | Artifact | Evidence |
 | --- | --- |
-| `run.json`, `plan.json` | Exact case/configuration, fresh nonce/salt, finalized portable plan |
+| `run.json`, `plan.json` | Redacted case/configuration, fresh nonce/salt and finalized plan diagnostics; not authoritative recovery intent |
 | `events.jsonl`, `admission.json` | Stages/timing, actual backend/admission, gas/envelope proof, redacted RPC failures/revert traces |
+| `economic-review.json`, `economic-admission.json` | Exact pricing/supply/allocation/fee/buy review and explicitly admitted review hash before signing |
 | `receipts.json`, `chain.json` | Pre-broadcast computed hashes/envelopes, real receipts, Active token/markets/custody/buys |
 | `api.json`, `result.json` | Actual publication DTO when reached, failed stage/traceback/causal/revert/API details |
-| `recovery.private.json` | Mode0600 exact signed API request, session capability, activation hash and latest response |
+| `recovery.private.json` | Mode0600 exact finalized portable plan, economic review/hash, original mode/confirmations, signed API request, session capability, activation hash and latest response |
+| `published-image.json` | Optional bounded public image GET: HTTP200, served MIME/length/digest, original descriptor, and explicit inferred transformation evidence |
 | `signed-<hash>.private.json` | Mode0600 signed raw transaction, exact envelope and computed hash |
 
-Never share private files. Public output recursively redacts all known keys,
-signatures, capabilities, authorization, secret environment values and endpoint
-credentials. A failure exits nonzero and preserves execution-chain state. There
+Never share private files. The original finalized plan, mode and confirmation
+policy are fsynced privately before the first attribution signature and retained
+unchanged through session/publication updates. Recover from that exact private
+intent and original receipts, never from redacted public plan diagnostics.
+Public output preserves structured property names while recursively redacting
+secret-named values, registered string secrets, signatures, capabilities,
+authorization, secret environment values and endpoint credentials.
+A failure exits nonzero and preserves execution-chain state. There
 is no automatic retry, relaunch or rollback. Inspect the original hash/token/session
 after a broadcast or API failure: another invocation deliberately creates another
 token, not a recovery attempt.
+
+`EXAMPLE_BUY_AMOUNT_WEI` optionally sets the exact **native ETH paid** for each
+opening buy as a positive canonical decimal uint256 wei string. The default is
+`10000000000000` (0.00001 ETH); `100000000000000` selects 0.0001 ETH. This changes
+the per-quote aggregate Kyber conversion inputs and resulting committed quote
+budgets together, not gas limits, liquidity, opening price or fees. No USDG-specific
+amount override or direct ERC20 funding path exists. Retain the exact protected
+plan and conversion calldata before signing.
 
 ## Stable authors, payouts, and fee claims
 
@@ -524,11 +724,18 @@ python examples/launch_api_lifecycle.py --signed --state-file launch-session.pri
 python examples/launch_api_lifecycle.py --state-file launch-session.private.json
 ```
 
-The capability is returned exactly once and saved in a new mode-0600 recovery file,
-never printed. An identical signed create request replays its session ID without
-reissuing capability/upload URLs. Protect that file, idempotency key, and exact
-signed request; regenerating a wall-clock deadline changes the body. Metadata-only
-sessions start `ready_to_launch` but do **not** represent an on-chain launch.
+Before the first create POST, the API-only example fsyncs the exact original wire
+request, signature and idempotency key to a new mode-0600 recovery file. A returned
+capability is retained by atomic, fsynced replacement of that same record before
+validation or further HTTP requests. The initial POST has one attempt. Unknown
+issuance stops and permits only service reconciliation, never replay or a new
+session. After a successful issuance, the example checks identical signed create
+idempotency without reissuing or overwriting the original capability.
+Capabilities are never printed. Version-2 records retain complete signed intent;
+legacy capability-only files remain GET-only recovery records and cannot establish
+the missing signed metadata intent. Protect the file and exact request; regenerating
+a wall-clock deadline changes the body. Metadata-only sessions start
+`ready_to_launch` but do **not** represent an on-chain launch.
 
 With an actual image-store configuration, callers can bind a descriptor, PUT the
 exact bytes with every issued header/create-only condition, complete verification,

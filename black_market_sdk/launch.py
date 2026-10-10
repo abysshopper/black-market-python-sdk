@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isqrt
-from typing import Literal
+from typing import Literal, Protocol
 
 from .abyss import ABYSS_FEE_TIERS
 from .auction import AUCTION_SUPPLY
@@ -16,7 +17,7 @@ LAUNCH_BUY_SLIPPAGE_BPS = 50
 DEFAULT_LAUNCH_TARGET_MARKET_CAP_USD = 5_000
 
 LaunchDistributionPreset = Literal["early-scarcity", "staircase", "smooth-ramp"]
-LaunchStaircaseBoundaries = Literal["source-gaps", "adjacent"]
+LaunchPositionGaps = Literal["source-gaps", "adjacent"]
 LaunchVenue = Literal["abyss", "uniswap-v4"]
 
 _Q32 = 1 << 32
@@ -134,12 +135,75 @@ def _orientation(value: bool) -> None:
         raise ValueError("launched_token_is_quote must be a boolean")
 
 
+def _usable_tick_bounds(spacing: int) -> tuple[int, int]:
+    return -(-_MIN_TICK // spacing) * spacing, _MAX_TICK // spacing * spacing
+
+
 def _launch_band(launch_tick: int, spacing: int, token0: bool) -> tuple[int, int]:
-    lower = -(-launch_tick // spacing) * spacing if token0 else -(-_MIN_TICK // spacing) * spacing
-    upper = _MAX_TICK // spacing * spacing if token0 else launch_tick // spacing * spacing
+    minimum, maximum = _usable_tick_bounds(spacing)
+    lower = -(-launch_tick // spacing) * spacing if token0 else minimum
+    upper = maximum if token0 else launch_tick // spacing * spacing
     if lower < _MIN_TICK or upper > _MAX_TICK or lower >= upper:
         raise ValueError("launch_tick cannot form a valid one-sided launch band")
     return lower, upper
+
+
+class _LaunchTopologyPosition(Protocol):
+    @property
+    def tick_lower(self) -> int: ...
+
+    @property
+    def tick_upper(self) -> int: ...
+
+    @property
+    def max_token_amount(self) -> int: ...
+
+
+def assert_launch_topology_coverage(
+    positions: Sequence[_LaunchTopologyPosition | Mapping[str, int]], *,
+    opening_tick: int, tick_spacing: int, launched_token_is_quote: bool,
+    allow_interior_gaps: bool = False,
+) -> None:
+    """Require opening coverage, continuous buy-side bands and a funded tail.
+
+    Positions expose ``tick_lower``, ``tick_upper`` and ``max_token_amount`` as
+    attributes or mapping keys. The historical orientation is token0 when true:
+    opening containment is [lower, upper), or (lower, upper] for token1's first
+    downward crossing. Overlaps and exact tick adjacency are valid. Allowing
+    interior gaps never waives the opening, grid or permanent-tail requirements.
+    """
+    _integer(opening_tick, _MIN_TICK, _MAX_TICK, "opening_tick")
+    _integer(tick_spacing, 1, 32767, "tick_spacing")
+    _orientation(launched_token_is_quote)
+    if not isinstance(allow_interior_gaps, bool):
+        raise ValueError("allow_interior_gaps must be a boolean")
+    minimum, maximum = _usable_tick_bounds(tick_spacing)
+    direction = 1 if launched_token_is_quote else -1
+    opening = direction * opening_tick
+    boundary = maximum if launched_token_is_quote else -minimum
+    bands = []
+    for position in positions:
+        lower = position["tick_lower"] if isinstance(position, Mapping) else position.tick_lower
+        upper = position["tick_upper"] if isinstance(position, Mapping) else position.tick_upper
+        cap = position["max_token_amount"] if isinstance(position, Mapping) else position.max_token_amount
+        if any(isinstance(tick, bool) or not isinstance(tick, int) or not minimum <= tick <= maximum or tick % tick_spacing for tick in (lower, upper)):
+            raise ValueError("TOPOLOGY_OFF_GRID_TICK: Position endpoints must be usable spacing-aligned ticks")
+        if lower >= upper:
+            raise ValueError("TOPOLOGY_OFF_GRID_TICK: Position tick_lower must be less than tick_upper")
+        _integer(cap, 0, _MAX_UINT256, "max_token_amount")
+        bands.append((lower, upper, cap) if launched_token_is_quote else (-upper, -lower, cap))
+    if not any(lower <= opening < upper for lower, upper, _ in bands):
+        raise ValueError("TOPOLOGY_OPENING_GAP: No position contains the opening tick on the buy-push side")
+    if not allow_interior_gaps:
+        covered = opening
+        for lower, upper, _ in sorted(bands):
+            if upper <= covered:
+                continue
+            if lower > covered:
+                raise ValueError(f"TOPOLOGY_INTERIOR_GAP: No position bridges ticks {direction * covered} and {direction * lower}")
+            covered = upper
+    if not any(upper == boundary and cap > 0 for _, upper, cap in bands):
+        raise ValueError("MISSING_PERMANENT_TAIL: A positive token allocation must reach the usable buy-push boundary")
 
 
 def derive_launch_pool_recipe(
@@ -207,14 +271,16 @@ def _ceil_div(numerator: int, denominator: int) -> int:
 def derive_launch_position_ranges(
     *, launch_sqrt_price_x96: int, launched_token_is_quote: bool, token_budget: int,
     tick_spacing: int, venue: LaunchVenue, distribution_preset: LaunchDistributionPreset,
-    position_count: int = 5, staircase_boundaries: LaunchStaircaseBoundaries | None = None,
-    extend_final_range_to_boundary: bool = False,
+    position_count: int = 5, position_gaps: LaunchPositionGaps | None = None,
+    extend_final_range_to_boundary: bool = True,
 ) -> LaunchPositionRanges:
     """Source-weighted Early Scarcity, Staircase or Smooth Ramp one-sided bands.
 
-    Only an explicit final tail reaches the finite usable boundary. Allocation
-    caps sum exactly to this pool's budget; actual rounded-up mint debits may be
-    lower and all unspent inventory is burned by lifecycle activation.
+    The final tail reaches the finite usable boundary by default. Allocation caps
+    sum exactly to this pool's budget; actual rounded-up mint debits may be lower
+    and all unspent inventory is burned by lifecycle activation.
+    Early Scarcity and Staircase retain source gaps unless ``position_gaps`` is
+    ``"adjacent"``; Smooth Ramp is always contiguous.
     """
     tick = get_tick_at_sqrt_ratio(launch_sqrt_price_x96)
     _integer(token_budget, 1, _MAX_UINT256, "token_budget")
@@ -227,10 +293,10 @@ def derive_launch_position_ranges(
     _integer(position_count, 2, 16, "position_count")
     if not isinstance(extend_final_range_to_boundary, bool):
         raise ValueError("extend_final_range_to_boundary must be a boolean")
-    if staircase_boundaries is not None and distribution_preset != "staircase":
-        raise ValueError("staircase_boundaries is only valid for the staircase preset")
-    if staircase_boundaries not in {None, "source-gaps", "adjacent"}:
-        raise ValueError("staircase_boundaries must be source-gaps or adjacent")
+    if position_gaps not in {None, "source-gaps", "adjacent"}:
+        raise ValueError("position_gaps must be source-gaps or adjacent")
+    if distribution_preset == "smooth-ramp" and position_gaps == "source-gaps":
+        raise ValueError("smooth-ramp does not support source-gaps")
     if tick % tick_spacing or get_sqrt_ratio_at_tick(tick) != launch_sqrt_price_x96:
         raise ValueError("Opening sqrt price must be an exact spacing-aligned tick")
     lower, upper = _launch_band(tick, tick_spacing, launched_token_is_quote)
@@ -258,10 +324,10 @@ def derive_launch_position_ranges(
         if cap <= 0:
             raise ValueError("Every position must have a positive allocated token cap")
         allocated += cap
-        if i:
+        if i and position_gaps != "adjacent":
             if distribution_preset == "early-scarcity":
                 distance += 2 + 4 * i // (n - 1)
-            elif distribution_preset == "staircase" and staircase_boundaries != "adjacent" and i * 4 // n != (i - 1) * 4 // n:
+            elif distribution_preset == "staircase" and i * 4 // n != (i - 1) * 4 // n:
                 distance += 3
         start = tick + direction * distance * tick_spacing
         distance += widths[i]

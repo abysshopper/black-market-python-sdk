@@ -22,6 +22,8 @@ from eth_utils import is_address, keccak, to_checksum_address
 from web3 import Web3
 
 from .addresses import ROBINHOOD_MAINNET_CHAIN_ID
+from .abyss import ABYSS_FEE_TIERS
+from .launch import assert_launch_topology_coverage, get_tick_at_sqrt_ratio
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -854,6 +856,36 @@ def _validate_launch_plan(plan: LaunchPlanV1) -> None:
         raise LifecyclePlanningError("INVALID_FUNDING", "Quote funding must cover all ordered buys")
 
 
+def _assert_plan_topology(
+    plan: LaunchPlanV1, token: str, *, allow_topology_gaps: bool,
+    allow_missing_permanent_tail: bool,
+) -> None:
+    for index, market in enumerate(plan.markets):
+        if market.config_version == 1:
+            config = decode_lifecycle_abyss_market_config(market.config)
+            tier = next((tier for tier in ABYSS_FEE_TIERS if tier.fee_pips == config.fee), None)
+            if tier is None:
+                raise LifecyclePlanningError("INVALID_MARKET", "Abyss fee has no canonical tick spacing")
+            spacing, price = tier.tick_spacing, config.opening_sqrt_price_x96
+            positions = tuple(dict(tick_lower=position.tick_lower, tick_upper=position.tick_upper,
+                max_token_amount=position.token_amount_maximum) for position in config.positions)
+        else:
+            config = decode_lifecycle_v4_market_config(market.config) if market.config_version == 4 else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
+            spacing, price, positions = config.tick_spacing, config.sqrt_price_x96, config.positions
+        try:
+            assert_launch_topology_coverage(positions, opening_tick=get_tick_at_sqrt_ratio(price),
+                tick_spacing=spacing, launched_token_is_quote=int(token, 16) < int(market.quote_asset, 16),
+                allow_interior_gaps=allow_topology_gaps)
+        except ValueError as error:
+            code, separator, message = str(error).partition(": ")
+            if code == "MISSING_PERMANENT_TAIL" and allow_missing_permanent_tail:
+                continue
+            if separator and code in {"TOPOLOGY_OPENING_GAP", "TOPOLOGY_INTERIOR_GAP",
+                "MISSING_PERMANENT_TAIL", "TOPOLOGY_OFF_GRID_TICK"}:
+                raise LifecyclePlanningError(code, f"Market {index}: {message}") from None
+            raise
+
+
 def launch_plan_to_dict(plan: LaunchPlanV1) -> dict[str, Any]:
     """Preserve committed text/casing and serialize wide quantities losslessly."""
     to_launch_plan_tuple(plan)
@@ -1589,6 +1621,7 @@ async def prepare_and_plan_lifecycle_launch(
     prepare_batch_size: int | None = None, confirmations: int = 1,
     receipts: Sequence[LifecycleReceiptReference] = (), fork: ControlledLaunchFork | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
+    allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
 ) -> PlannedLaunch:
     """Mine exact bound salts, protect actual buys, then prove only the final plan."""
     commitment = _validate_planning_intent(plan, account, mode, cancel_event)
@@ -1598,7 +1631,9 @@ async def prepare_and_plan_lifecycle_launch(
     protection = buy_slippage_bps is not None and bool(plan.buys)
     options = dict(account=account, mode=mode, limits=limits, prepare_batch_size=prepare_batch_size,
                    confirmations=confirmations, receipts=receipts, fork=fork,
-                   cancel_event=cancel_event, data_fee_estimator=data_fee_estimator)
+                   cancel_event=cancel_event, data_fee_estimator=data_fee_estimator,
+                   allow_topology_gaps=allow_topology_gaps,
+                   allow_missing_permanent_tail=allow_missing_permanent_tail)
     if not mining and not protection:
         return await asyncio.to_thread(_plan_launch, client, plan, **options)
     draft = launch_plan_from_dict(launch_plan_to_dict(plan))
@@ -2241,6 +2276,8 @@ class PlannedLaunch:
     limits_source: LaunchExecutionLimits | LifecycleLimitResolver | None = None
     confirmations: int = 1
     receipt_references: tuple[LifecycleReceiptReference, ...] = ()
+    allow_topology_gaps: bool = False
+    allow_missing_permanent_tail: bool = False
 
     @property
     def admitted(self) -> bool:
@@ -2890,11 +2927,13 @@ def plan_launch(
     confirmations: int = 1, receipts: Sequence[LifecycleReceiptReference] = (),
     fork: ControlledLaunchFork | None = None, cancel_event: asyncio.Event | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
+    allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
 ) -> PlannedLaunch:
     """Prove only the explicitly selected mode from fresh canonical state."""
     return _plan_launch(client, plan, account=account, mode=mode, limits=limits,
         prepare_batch_size=prepare_batch_size, confirmations=confirmations, receipts=receipts,
-        fork=fork, cancel_event=cancel_event, data_fee_estimator=data_fee_estimator)
+        fork=fork, cancel_event=cancel_event, data_fee_estimator=data_fee_estimator,
+        allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail)
 
 
 def _plan_launch(
@@ -2905,8 +2944,11 @@ def _plan_launch(
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
     block: LaunchBlock | None = None, owned_progress: LaunchProgress | None = None,
     diagnostic: bool = False, reviewed: _ReviewedTransaction | None = None,
+    allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
 ) -> PlannedLaunch:
     commitment = _validate_planning_intent(plan, account, mode, cancel_event)
+    if not isinstance(allow_topology_gaps, bool) or not isinstance(allow_missing_permanent_tail, bool):
+        raise ValueError("Topology gap options must be booleans")
     policy_fields = tuple(vars(limits).items()) if isinstance(limits, LaunchExecutionLimits) else None
     policy_guards: list[Callable[[], None]] = []
     with lifecycle_stage(client, "plan.context"):
@@ -2946,7 +2988,8 @@ def _plan_launch(
             profiles=tuple(profiles), hook_deployments=tuple(hooks), prerequisites=tuple(prerequisites),
             total_calldata_bytes=sum(transaction.calldata_bytes for transaction in transactions),
             limits_source=limits, confirmations=confirmations, receipt_references=tuple(receipts),
-            token_factory=token_factory, token_factory_code_hash=token_factory_code_hash)
+            token_factory=token_factory, token_factory_code_hash=token_factory_code_hash,
+            allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail)
     empty = LaunchRpcSimulation("stateful", None, block, ())
     if not progress.confirmation_safe or any(receipt.status in {"pending", "unconfirmed"} for receipt in progress.receipts):
         hooks = []
@@ -2959,6 +3002,9 @@ def _plan_launch(
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         terminal = _launch_simulation(plan, resolved_limits, empty, (), admitted=True, execution_proof="proved", protocol_fit="proved")
         return finish(terminal)
+    if progress.phase == LifecyclePhase.NONE:
+        _assert_plan_topology(plan, predicted, allow_topology_gaps=allow_topology_gaps,
+            allow_missing_permanent_tail=allow_missing_permanent_tail)
     with lifecycle_stage(client, "plan.inputs"):
         prerequisites, approvals = _read_funding(client, plan, block) if progress.phase == LifecyclePhase.NONE else ((), ())
         profiles, hooks, reasons = _read_plan_metadata(client, plan, predicted, block)
@@ -3048,7 +3094,9 @@ def simulate_launch_plan(
     current = _plan_launch(client, plan, account=account, mode=selected, limits=limits,
         prepare_batch_size=prepare_batch_size, confirmations=1 if confirmations is None else confirmations,
         receipts=() if receipts is None else receipts, fork=fork, cancel_event=cancel_event,
-        data_fee_estimator=data_fee_estimator)
+        data_fee_estimator=data_fee_estimator,
+        allow_topology_gaps=launch.allow_topology_gaps if isinstance(launch, PlannedLaunch) else False,
+        allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False)
     if isinstance(launch, PlannedLaunch):
         _assert_hook_deployments(launch, current)
     return current.simulation
@@ -3147,7 +3195,9 @@ def build_next_transaction(
         refreshed = _plan_launch(client, plan, account=account, mode=selected, limits=limits,
             prepare_batch_size=prepare_batch_size, confirmations=confirmations, receipts=receipts, fork=fork,
             cancel_event=cancel_event, data_fee_estimator=data_fee_estimator, block=block, owned_progress=progress,
-            reviewed=reviewed)
+            reviewed=reviewed,
+            allow_topology_gaps=launch.allow_topology_gaps if isinstance(launch, PlannedLaunch) else False,
+            allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False)
         proof = refreshed.simulation
         if not proof.admitted:
             raise LifecyclePlanningError("PLAN_NOT_ADMITTED", "; ".join(proof.reasons) or "Remaining launch execution cannot be proved", proof)

@@ -110,9 +110,10 @@ python examples/quickstart.py
 
 The quickstart reads available launch profiles without a wallet.
 
-For token launches, set `PRIVATE_KEY` and `LAUNCH_API_URL` in your working
-folder's `.env`. An optional `RPC_URL` overrides the default endpoint.
-Run one example for the token you want to create:
+For token launches, set `LAUNCH_API_URL` and exactly one local signer in your
+working folder's `.env`: `PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` to an owner-only
+V3 JSON keystore (`EXAMPLE_KEYSTORE_PASSWORD` defaults to the empty string).
+An optional `RPC_URL` overrides the default endpoint. Run one case:
 
 ```sh
 python examples/launch_erc20_v4.py
@@ -123,7 +124,63 @@ python examples/launch_erc20_staking_v4.py
 python examples/launch_erc20_dividends_abyss.py
 python examples/launch_erc20_burn_mixed.py
 python examples/launch_erc404_dividends_mixed.py
+python examples/launch_erc20_multi_quote.py
+python examples/launch_erc20_depth_v4.py
+python examples/launch_erc20_dividends_multiquote_mixed.py
 ```
+
+| File | Case |
+| --- | --- |
+| `launch_erc20_v4.py` | ERC20/no rewards, one V4 position and buy, atomic |
+| `launch_erc20_abyss.py` | ERC20/no rewards, one Abyss position and buy, atomic |
+| `launch_erc404_v4.py` | ERC404/no rewards, one V4 position and buy, staged |
+| `launch_erc404_abyss.py` | ERC404/no rewards, one Abyss position and buy, atomic |
+| `launch_erc20_staking_v4.py` | ERC20/staking, two V4 positions and ordered buys, staged |
+| `launch_erc20_dividends_abyss.py` | ERC20/dividends, three Abyss positions and one buy, staged |
+| `launch_erc20_burn_mixed.py` | ERC20/3000-bps token burn, two V4 + one Abyss positions, staged |
+| `launch_erc404_dividends_mixed.py` | ERC404/dividends, two V4 + three Abyss positions, staged |
+| `launch_erc20_multi_quote.py` | ERC20/no rewards, V4 WETH + V4 USDG + Abyss WETH, three buys, staged |
+| `launch_erc20_depth_v4.py` | ERC20/no rewards, four adjacent Early Scarcity V4 bands plus final tail, staged |
+| `launch_erc20_dividends_multiquote_mixed.py` | ERC20/4000-bps dividends, V4 WETH/USDG (two positions each) + Abyss WETH (three), three buys, staged |
+
+The three new cases are additive validation candidates; the original eight remain.
+Each buy pays **0.00001 ETH** by default (`EXAMPLE_BUY_AMOUNT_WEI=10000000000000`),
+converted inside launch escrow via a reviewed Kyber build from your Abyss API.
+`EXAMPLE_KYBER_API_URL` optionally selects a separate quote API; it defaults to
+`LAUNCH_API_URL`. Missing routes or conversion admission stop unsigned, with no
+native-wrap/direct-ERC20 fallback. Creators need native ETH for buys **and gas**,
+not pre-funded WETH/USDG. WETH uses the existing API USD anchor; USDG uses its
+SDK-catalogued $1 peg and six-decimal recipe.
+
+Optional `EXAMPLE_TOKEN_NAME`, `EXAMPLE_TOKEN_SYMBOL`, and
+`EXAMPLE_TOKEN_DESCRIPTION` override case identity. `EXAMPLE_IMAGE_PATH` selects
+a PNG/JPEG/WebP file (at most 5 MiB): its exact digest/type/length are reviewed,
+signed, uploaded, and API-verified before chain submission. Final success additionally
+requires the public token DTO's image reference and one bounded HTTP 200 image GET;
+served digest/type/length and any inferred API transformation are retained.
+Unset means metadata-only.
+
+### Read-only original-launch recovery
+
+`examples/launch_submit.py` never loads a signer, sends source-chain transactions,
+or publishes. Pass the exact private plan and original mode/confirmation policy:
+
+```sh
+python examples/launch_submit.py "$PLAN_JSON" --rpc-url "$RPC_URL" \
+  --account "$CREATOR" --mode staged --confirmations 1 --receipts "$RECEIPTS_JSON"
+```
+
+`--receipts` accepts an array of typed SDK reference objects with
+`transaction_hash`, optional `replacement_hash`, `confirmations`, and original
+`observed_block_number` / `observed_block_hash`. Numbers may be exact decimal
+strings; hashes remain `0x`-prefixed bytes32. A plan wrapper's `receipts` is also
+loaded, and output includes reusable typed `receipts` alongside canonical progress.
+Repeated `--transaction-hash` remains a convenience alias, but bare hashes cannot
+retain original inclusion blocks or replacement evidence and cannot detect an
+orphaned original inclusion after the same hash is re-mined. A detected reorg
+halts the real runner before another signature or publication; reconcile retained
+evidence explicitly with this read-only command, never automatically re-launch.
+Do not use `--finalize-bound` once receipt evidence exists.
 
 Launch examples spend real funds and publish to your configured API.
 Plans, transaction hashes, receipts, and errors are saved in `launch-results/`.

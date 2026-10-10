@@ -8,7 +8,7 @@ execution still requires an explicitly authorized chain scenario.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +21,9 @@ from eth_utils import keccak
 from black_market_sdk import (
     LAUNCH_PLAN_V1_ABI_TYPE,
     LAUNCH_LIFECYCLE_V1_ABI,
+    ABYSS_FEE_TIERS,
+    LAUNCH_DIRECTORY_V1_ABI,
+    LAUNCH_MARKET_ADAPTER_V1_ABI,
     LaunchBlock,
     LaunchExecutionLimits,
     LaunchStateChanged,
@@ -28,6 +31,7 @@ from black_market_sdk import (
     LifecycleTransaction,
     LifecycleLaunchPostcondition,
     LifecycleReceiptReference,
+    LifecyclePoolBoundV4MarketConfigV6,
     decode_lifecycle_abyss_market_config,
     encode_lifecycle_abyss_market_config,
     decode_lifecycle_launch_receipt,
@@ -37,7 +41,9 @@ from black_market_sdk import (
     decode_lifecycle_events,
     encode_launch_plan,
     decode_lifecycle_v4_market_config,
+    decode_lifecycle_pool_bound_v4_market_config,
     encode_lifecycle_v4_market_config,
+    encode_lifecycle_pool_bound_v4_market_config,
     hash_launch_plan,
     launch_id_of,
     launch_plan_from_dict,
@@ -76,14 +82,16 @@ def historical_plan():
 
 
 def plan(*, supply=None):
-    """Derive exact full-budget execution inputs without editing golden vectors."""
+    """Derive full-budget permanent tails without editing golden wire vectors."""
     request = historical_plan()
     supply = request.token.supply if supply is None else supply
     budgets = (supply // 2, supply - supply // 2)
     v4 = decode_lifecycle_v4_market_config(request.markets[0].config)
     abyss = decode_lifecycle_abyss_market_config(request.markets[1].config)
-    v4 = replace(v4, positions=(replace(v4.positions[0], max_token_amount=budgets[0]),))
-    abyss = replace(abyss, positions=(replace(abyss.positions[0], token_amount_maximum=budgets[1]),))
+    v4 = replace(v4, positions=(replace(v4.positions[0], tick_lower=-887220,
+        tick_upper=0, max_token_amount=budgets[0]),))
+    abyss = replace(abyss, positions=(replace(abyss.positions[0], tick_lower=-887220,
+        tick_upper=0, token_amount_maximum=budgets[1]),))
     return replace(request, token=replace(request.token, supply=supply), markets=(
         replace(request.markets[0], token_budget=budgets[0], config=encode_lifecycle_v4_market_config(v4)),
         replace(request.markets[1], token_budget=budgets[1], config=encode_lifecycle_abyss_market_config(abyss)),
@@ -117,8 +125,8 @@ def test_launch_receipt_is_a_typed_exact_ordered_result():
     assert receipt.token_out == tuple(buy.min_token_out for buy in request.buys)
     assert receipt.token.lower() == vector().get("predictedToken", "0x1000000000000000000000000000000000000001").lower()
 
-def function_signature(name):
-    entry = next(item for item in LAUNCH_LIFECYCLE_V1_ABI if item.get("name") == name and item["type"] == "function")
+def function_signature(name, abi=LAUNCH_LIFECYCLE_V1_ABI):
+    entry = next(item for item in abi if item.get("name") == name and item["type"] == "function")
     types = [canonical_abi_type(item) for item in entry["inputs"]]
     return keccak(text=name + "(" + ",".join(types) + ")")[:4], types
 
@@ -538,6 +546,42 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         self.poster_override = None
         self.endpoint_uri = "https://simulation.example"
 
+    def position_count(self, market_index=None):
+        count = 0
+        markets = self.plan.markets if market_index is None else (self.plan.markets[market_index],)
+        for market in markets:
+            if market.config_version == 1:
+                config = decode_lifecycle_abyss_market_config(market.config)
+            elif market.config_version == 4:
+                config = decode_lifecycle_v4_market_config(market.config)
+            else:
+                config = decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
+            count += len(config.positions)
+        return count
+
+    def prepared_market(self, market_index):
+        market = self.plan.markets[market_index]
+        token = vector().get("predictedToken", "0x1000000000000000000000000000000000000001")
+        currency0, currency1 = sorted((token, market.quote_asset), key=lambda value: int(value, 16))
+        manager = "0x" + f"{0xc0:040x}"
+        hook = "0x" + f"{0x1afc:040x}"
+        if market.config_version == 1:
+            config = decode_lifecycle_abyss_market_config(market.config)
+            fee, spacing = config.fee, next(tier.tick_spacing for tier in ABYSS_FEE_TIERS if tier.fee_pips == config.fee)
+            price, venue, factory, pool, pool_id = config.opening_sqrt_price_x96, 1, manager, manager, bytes(32)
+        else:
+            config = decode_lifecycle_v4_market_config(market.config) if market.config_version == 4 else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
+            fee, spacing, price, venue, factory, pool = config.lp_fee_pips, config.tick_spacing, config.sqrt_price_x96, 0, ZERO, ZERO
+            pool_id = keccak(abi_encode(["address", "address", "uint24", "int24", "address"],
+                [currency0, currency1, fee, spacing, hook]))
+        profile_id = bytes.fromhex(market.profile_id[2:]) if isinstance(market.profile_id, str) else market.profile_id
+        canonical_id = keccak(abi_encode(["uint256", "uint8", "address", "address", "address", "bytes32", "bytes32"],
+            [self.plan.chain_id, venue, manager, factory, pool, pool_id, profile_id]))
+        identity = (venue, canonical_id, manager, factory, pool, pool_id, profile_id,
+            currency0, currency1, fee, spacing, hook, price)
+        adapter = "0x" + f"{0xc2:040x}"
+        return adapter, (identity, manager, manager, adapter, adapter, (), len(config.positions))
+
     def command(self, transaction):
         calldata = bytes.fromhex(transaction["data"][2:])
         for name, kind in (("launchAtomic", "atomic"), ("beginLaunch", "begin"),
@@ -568,14 +612,14 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
             for index in range(first, first + count):
                 add("MarketPrepared", {"launchId": launch_id, "marketIndex": index,
                     "canonicalId": "0x" + f"{index + 1:064x}", "adapter": ZERO,
-                    "feeSource": ZERO, "positionCount": 1})
+                    "feeSource": ZERO, "positionCount": self.position_count(index)})
         if kind in {"activate", "atomic"}:
             for index, buy in enumerate(self.plan.buys):
                 add("InitialBuyExecuted", {"launchId": launch_id, "buyIndex": index,
                     "marketIndex": buy.market_index, "quoteAsset": self.plan.markets[buy.market_index].quote_asset,
                     "quoteSpent": buy.quote_amount_in, "tokenOut": buy.min_token_out, "recipient": buy.recipient})
             add("LaunchActivated", {"launchId": launch_id, "planHash": hash_launch_plan(self.plan),
-                "token": predicted, "marketCount": len(self.plan.markets), "positionCount": len(self.plan.markets)})
+                "token": predicted, "marketCount": len(self.plan.markets), "positionCount": self.position_count()})
         if kind == "cancel":
             add("LaunchCancelled", {"launchId": launch_id, "creator": self.plan.creator,
                 "inventoryBurned": self.plan.token.burn_on_cancel})
@@ -588,7 +632,7 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
             return "0x" + abi_encode([_tuple_type(LAUNCH_PROGRESS_COMPONENTS_V1)], [self.progress(1)]).hex()
         if kind in {"atomic", "activate"}:
             receipt = (bytes.fromhex(launch_id_of(self.plan)[2:]), bytes.fromhex(hash_launch_plan(self.plan)[2:]),
-                predicted, ZERO, ZERO, len(self.plan.markets), len(self.plan.markets),
+                predicted, ZERO, ZERO, len(self.plan.markets), self.position_count(),
                 tuple(buy.quote_amount_in for buy in self.plan.buys),
                 tuple(buy.min_token_out for buy in self.plan.buys))
             return "0x" + abi_encode([_tuple_type(LAUNCH_RECEIPT_COMPONENTS_V1)], [receipt]).hex()
@@ -630,6 +674,21 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
                 assert creation is False and calldata
                 assert transaction["from"].lower() == self.plan.creator.lower()
                 return {"result": "0x" + abi_encode(["uint64", "uint256", "uint256"], [self.poster_gas, 1, 0]).hex()}
+            calldata = bytes.fromhex(transaction["data"][2:])
+            if calldata[:4] == function_signature("directory")[0]:
+                assert target == self.plan.orchestrator.lower()
+                return {"result": "0x" + abi_encode(["address"], ["0x" + f"{0xc1:040x}"]).hex()}
+            for name, abi in (("market", LAUNCH_DIRECTORY_V1_ABI), ("readMarket", LAUNCH_MARKET_ADAPTER_V1_ABI)):
+                selector, types = function_signature(name, abi)
+                if calldata[:4] != selector:
+                    continue
+                launch_id, index = abi_decode(types, calldata[4:])
+                assert launch_id == bytes.fromhex(launch_id_of(self.plan)[2:])
+                adapter, prepared = self.prepared_market(index)
+                assert target == ("0x" + f"{0xc1:040x}" if name == "market" else adapter)
+                entry = next(item for item in abi if item.get("name") == name and item["type"] == "function")
+                values = (adapter, prepared) if name == "market" else ((prepared[0][-1], 0, 0, False, 0),)
+                return {"result": "0x" + abi_encode([canonical_abi_type(item) for item in entry["outputs"]], values).hex()}
         if method == "eth_simulateV1":
             payload, tag = params
             assert tag == "0x33"
@@ -870,6 +929,155 @@ def wire_planning(monkeypatch, *, scenario_options=None, request=None):
     monkeypatch.setattr(lifecycle, "_read_funding", lambda *_: ((), ()))
     monkeypatch.setattr(lifecycle, "_read_token_factory_binding", lambda *_: (ZERO, ZERO_HASH))
     return lifecycle, request, provider, client
+
+
+def topology_plan(version, token0, *, intervals=None):
+    request = plan()
+    market = request.markets[1 if version == 1 else 0]
+    spacing = 10 if version in {1, 6} else 60
+    boundary = 887272 // spacing * spacing
+    intervals = [(0, boundary)] if intervals is None else intervals
+    budget = market.token_budget
+    positions = []
+    for index, (lower, upper) in enumerate(intervals):
+        lower, upper = (lower, upper) if token0 else (-upper, -lower)
+        cap = budget - budget // len(intervals) * index if index == len(intervals) - 1 else budget // len(intervals)
+        if version == 1:
+            original = decode_lifecycle_abyss_market_config(market.config).positions[0]
+            positions.append(replace(original, tick_lower=lower, tick_upper=upper, token_amount_maximum=cap))
+        else:
+            original = decode_lifecycle_v4_market_config(market.config).positions[0]
+            positions.append(replace(original, tick_lower=lower, tick_upper=upper,
+                salt=index.to_bytes(32, "big"), max_token_amount=cap))
+    if version == 1:
+        config = replace(decode_lifecycle_abyss_market_config(market.config), fee=500,
+            opening_sqrt_price_x96=1 << 96, positions=tuple(positions))
+        encoded = encode_lifecycle_abyss_market_config(config)
+    else:
+        config = replace(decode_lifecycle_v4_market_config(market.config), tick_spacing=spacing,
+            sqrt_price_x96=1 << 96, positions=tuple(positions))
+        if version == 6:
+            values = {field.name: getattr(config, field.name) for field in fields(config) if field.name != "version"}
+            config = LifecyclePoolBoundV4MarketConfigV6(version=6, hook_salt=bytes(32),
+                minimum_hook_fee_pips=0, fee_sensitivity_pips_seconds_per_tick=0, **values)
+            encoded = encode_lifecycle_pool_bound_v4_market_config(config)
+        else:
+            encoded = encode_lifecycle_v4_market_config(config)
+    market = replace(market, config_version=version, config=encoded,
+        quote_asset="0x" + "ff" * 20 if token0 else market.quote_asset)
+    return replace(request, token=replace(request.token, supply=budget), markets=(market,), buys=())
+
+
+@pytest.mark.parametrize("version", [1, 4, 6])
+@pytest.mark.parametrize("token0", [True, False])
+def test_planner_admits_per_market_tail_using_config_spacing_and_predicted_token_order(monkeypatch, version, token0):
+    lifecycle, request, _, client = wire_planning(monkeypatch, request=topology_plan(version, token0))
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
+    assert planned.admitted
+    assert not planned.allow_topology_gaps and not planned.allow_missing_permanent_tail
+    assert planned.plan_hash == hash_launch_plan(request)
+    assert planned.transactions[0].data == build_lifecycle_calldata(request, "launchAtomic")
+
+
+@pytest.mark.parametrize("version", [1, 4, 6])
+@pytest.mark.parametrize("token0", [True, False])
+def test_planner_requires_explicit_missing_tail_waiver_and_preserves_it_on_replanning(monkeypatch, version, token0):
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=topology_plan(version, token0, intervals=[(0, 120)]))
+    committed = hash_launch_plan(request), encode_launch_plan(request)
+    for options in ({}, dict(allow_topology_gaps=True)):
+        with pytest.raises(ValueError) as failure:
+            lifecycle.plan_launch(client, request, account=request.creator, mode="atomic", **options)
+        assert failure.value.code == "MISSING_PERMANENT_TAIL"
+        assert provider.simulations == []
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
+        allow_missing_permanent_tail=True)
+    assert planned.admitted and planned.allow_missing_permanent_tail
+    assert not planned.allow_topology_gaps
+    assert lifecycle.simulate_launch_plan(client, planned).admitted
+    assert build_next_transaction(client, planned).data == build_lifecycle_calldata(request, "launchAtomic")
+    assert (hash_launch_plan(request), encode_launch_plan(request)) == committed
+
+
+@pytest.mark.parametrize("version", [1, 4, 6])
+@pytest.mark.parametrize("token0", [True, False])
+def test_planner_gap_waiver_does_not_waive_the_tail_requirement(monkeypatch, version, token0):
+    boundary = 887270 if version in {1, 6} else 887220
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=topology_plan(version, token0, intervals=[(0, 120), (180, boundary)]))
+    for options in ({}, dict(allow_missing_permanent_tail=True)):
+        with pytest.raises(ValueError) as failure:
+            lifecycle.plan_launch(client, request, account=request.creator, mode="atomic", **options)
+        assert failure.value.code == "TOPOLOGY_INTERIOR_GAP"
+        assert provider.simulations == []
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
+        allow_topology_gaps=True)
+    assert planned.admitted and planned.allow_topology_gaps
+    assert not planned.allow_missing_permanent_tail
+    assert lifecycle.simulate_launch_plan(client, planned).admitted
+    assert build_next_transaction(client, planned).data == build_lifecycle_calldata(request, "launchAtomic")
+
+
+@pytest.mark.parametrize("version", [1, 4, 6])
+@pytest.mark.parametrize("token0", [True, False])
+@pytest.mark.parametrize("lower,code", [(60, "TOPOLOGY_OPENING_GAP"), (1, "TOPOLOGY_OFF_GRID_TICK")])
+def test_planner_opt_out_flags_never_waive_opening_or_grid_errors(monkeypatch, version, token0, lower, code):
+    boundary = 887270 if version in {1, 6} else 887220
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=topology_plan(version, token0, intervals=[(lower, boundary)]))
+    with pytest.raises(ValueError) as failure:
+        lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
+            allow_topology_gaps=True, allow_missing_permanent_tail=True)
+    assert failure.value.code == code
+    assert provider.simulations == []
+
+
+@pytest.mark.parametrize("version", [1, 4])
+def test_async_preparation_threads_topology_options_without_weakening_hard_guards(monkeypatch, version):
+    import asyncio
+
+    lifecycle, request, _, client = wire_planning(monkeypatch,
+        request=topology_plan(version, False, intervals=[(0, 120), (180, 240)]))
+    async def prepare(**options):
+        return await lifecycle.prepare_and_plan_lifecycle_launch(client, request,
+            account=request.creator, mode="atomic", **options)
+    with pytest.raises(ValueError) as failure:
+        asyncio.run(prepare())
+    assert failure.value.code == "TOPOLOGY_INTERIOR_GAP"
+    with pytest.raises(ValueError) as failure:
+        asyncio.run(prepare(allow_topology_gaps=True))
+    assert failure.value.code == "MISSING_PERMANENT_TAIL"
+    planned = asyncio.run(prepare(allow_topology_gaps=True, allow_missing_permanent_tail=True))
+    assert planned.admitted and planned.allow_topology_gaps and planned.allow_missing_permanent_tail
+
+
+def test_topology_opt_outs_do_not_weaken_supply_or_position_budget_equality(monkeypatch):
+    lifecycle, request, provider, client = wire_planning(monkeypatch)
+    config = decode_lifecycle_v4_market_config(request.markets[0].config)
+    config = replace(config, positions=(replace(config.positions[0], max_token_amount=config.positions[0].max_token_amount - 1),))
+    for changed in (
+        replace(request, token=replace(request.token, supply=request.token.supply + 1)),
+        replace(request, markets=(replace(request.markets[0], config=encode_lifecycle_v4_market_config(config)), *request.markets[1:])),
+    ):
+        with pytest.raises(ValueError) as failure:
+            lifecycle.plan_launch(client, changed, account=request.creator, mode="atomic",
+                allow_topology_gaps=True, allow_missing_permanent_tail=True)
+        assert failure.value.code == "INVALID_TOKEN_BUDGET"
+    assert provider.simulations == []
+
+
+def test_other_market_tail_cannot_cover_a_missing_abyss_tail(monkeypatch):
+    request = plan()
+    config = decode_lifecycle_abyss_market_config(request.markets[1].config)
+    config = replace(config, positions=(replace(config.positions[0], tick_lower=-120),))
+    request = replace(request, markets=(request.markets[0],
+        replace(request.markets[1], config=encode_lifecycle_abyss_market_config(config))))
+    lifecycle, request, provider, client = wire_planning(monkeypatch, request=request)
+    with pytest.raises(ValueError) as failure:
+        lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
+    assert failure.value.code == "MISSING_PERMANENT_TAIL"
+    assert str(failure.value).startswith("Market 1:")
+    assert provider.simulations == []
 
 
 def test_build_next_preflight_is_read_only_exact_and_immediate_only(monkeypatch):
@@ -1188,3 +1396,30 @@ def test_zero_metering_cannot_create_a_reviewed_transaction_or_claim_execution_p
     assert not result.admitted
     assert result.execution_proof == "unavailable" and result.protocol_fit == "failed"
     assert len(fixture[1].simulations) == 1
+
+
+@pytest.mark.parametrize("scenario_options", [
+    {"pending_nonce": 1},
+    {"latest_phase": LifecyclePhase.ACTIVE, "confirmed_phase": LifecyclePhase.ACTIVE},
+    {"latest_phase": LifecyclePhase.CANCELLED, "confirmed_phase": LifecyclePhase.CANCELLED},
+])
+def test_topology_creation_policy_does_not_block_waiting_or_terminal_recovery(monkeypatch, scenario_options):
+    lifecycle, request, provider, client = wire_planning(monkeypatch,
+        request=topology_plan(4, False, intervals=[(0, 120)]), scenario_options=scenario_options)
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+    assert not planned.allow_topology_gaps and not planned.allow_missing_permanent_tail
+    assert planned.plan_hash == hash_launch_plan(request)
+    assert planned.admitted is (scenario_options.get("latest_phase") in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED})
+    assert provider.simulations == []
+
+
+@pytest.mark.parametrize("phase", [LifecyclePhase.PREPARING, LifecyclePhase.READY])
+def test_topology_creation_policy_preserves_started_simulation_and_build_next_recovery(monkeypatch, phase):
+    lifecycle, request, _, client = wire_planning(monkeypatch,
+        request=topology_plan(4, False, intervals=[(0, 120)]),
+        scenario_options={"latest_phase": phase, "confirmed_phase": phase})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+    assert planned.admitted and not planned.allow_topology_gaps and not planned.allow_missing_permanent_tail
+    assert lifecycle.simulate_launch_plan(client, request, mode="staged").admitted
+    transaction = build_next_transaction(client, request, mode="staged")
+    assert transaction.kind == ("prepare" if phase == LifecyclePhase.PREPARING else "activate")
