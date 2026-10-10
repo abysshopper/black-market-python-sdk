@@ -102,7 +102,10 @@ def load_example_image(path):
 
 def read_published_image(url, descriptor, *, timeout_seconds=15):
     """One bounded public GET, retaining identity or inferred transformation evidence."""
-    source = mainnet_url(url, api=True)
+    # The published image is a public CDN read (e.g. the R2 bucket host), not an API
+    # endpoint — do not apply the API origin/credential/query restrictions. HTTPS only,
+    # no credentials or fragment, mirroring the node's exampleImageUrl contract.
+    source = mainnet_url(url, api=False)
     timeout = min(15, timeout_seconds)
     if timeout <= 0:
         raise ExampleFailure("published image verification deadline expired", code="IMAGE_PUBLICATION_UNAVAILABLE")
@@ -112,8 +115,12 @@ def read_published_image(url, descriptor, *, timeout_seconds=15):
             return None
 
     opener = build_opener(ProxyHandler({}), HTTPHandler(), HTTPSHandler(), NoRedirectHandler())
+    # The public image CDN filters bare non-browser requests (403 without an Origin),
+    # matching the RPC transport; mirror the launch app's public origin.
     request = Request(source, method="GET", headers={"Accept": "image/*",
-                                                   "Accept-Encoding": "identity"})
+                                                   "Accept-Encoding": "identity",
+                                                   "Origin": "https://abyss.trading",
+                                                   "User-Agent": "Mozilla/5.0"})
     started = time.monotonic()
     try:
         with opener.open(request, timeout=timeout) as response:

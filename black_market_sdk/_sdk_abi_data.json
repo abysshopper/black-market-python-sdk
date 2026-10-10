@@ -13756,6 +13756,21 @@
           "type": "bool"
         }
       ]
+    },
+    {
+      "type": "function",
+      "name": "feeRecipient",
+      "stateMutability": "view",
+      "inputs": [
+        {
+          "type": "bytes32"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "address"
+        }
+      ]
     }
   ],
   "lifecycleV4PoolKeyComponents": [

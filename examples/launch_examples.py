@@ -466,9 +466,20 @@ def discover_oracle_config(client, profile, quote, block, cancellation):
                 f"registered WETH P1 oracle unavailable in {factory_address}", code="ORACLE_CONFIG_UNAVAILABLE")
     else:
         topic = hex_bytes(Web3.keccak(text="OracleConfigRegistered(bytes32,uint24,uint16)"))
-        logs = rpc(client, "eth_getLogs", [{"address": factory_address, "fromBlock": "0x0",
-                                          "toBlock": hex(block.number), "topics": [topic]}])
-        require(isinstance(logs, list) and len(logs) <= 1000,
+        # The RPC bounds eth_getLogs to 10,000,000 blocks per request; page the full
+        # canonical factory history in compliant windows rather than query from 0.
+        logs = []
+        window = 9_999_999
+        head = block.number
+        start = 0
+        while start <= head:
+            end = min(start + window, head)
+            page = rpc(client, "eth_getLogs", [{"address": factory_address, "fromBlock": hex(start),
+                                                "toBlock": hex(end), "topics": [topic]}])
+            require(isinstance(page, list), "oracle factory registration logs must be an array", code="ORACLE_CONFIG_UNAVAILABLE")
+            logs.extend(page)
+            start = end + 1
+        require(len(logs) <= 1000,
                 "oracle registration discovery exceeds the bounded example catalogue", code="ORACLE_CONFIG_UNAVAILABLE")
         candidates = {}
         for log in logs:
@@ -1162,7 +1173,8 @@ def verify_chain(client, plan, case, predicted, receipt, hashes, references, art
         else:
             locker = contract(client, market["custody"], ABYSS_POSITION_LOCKER_ABI)
             custody = {"locks": []}
-            require(bool(client.eth.get_code(identity["pool"])), "canonical Abyss pool has no runtime")
+            # identity addresses from _json_tuple are lowercase; web3 requires checksum.
+            require(bool(client.eth.get_code(Web3.to_checksum_address(identity["pool"]))), "canonical Abyss pool has no runtime")
         for position_index, (position, expected) in enumerate(zip(market["positions"], config.positions)):
             require(position["tickLower"] == expected.tick_lower and position["tickUpper"] == expected.tick_upper
                     and int(position["liquidity"]) == expected.liquidity == position["liveLiquidity"] and address_equal(position["liveOwner"], market["custody"]), "actual canonical position economics/liquidity/custody differ from plan")
@@ -1178,7 +1190,10 @@ def verify_chain(client, plan, case, predicted, receipt, hashes, references, art
         pricing = artifacts.economic_pricing["markets"][market["marketIndex"]]
         quote = pricing["quote"]
         usd = int(quote["priceUsdX18"])
-        require(address_equal(identity["quoteAsset"], committed_market.quote_asset),
+        # The canonical market identity carries currency0/currency1, not quoteAsset;
+        # the committed quote is whichever currency is not the launched token.
+        identity_quote = identity["currency1"] if address_equal(identity["currency0"], predicted) else identity["currency0"]
+        require(address_equal(identity_quote, committed_market.quote_asset),
                 "actual market quote differs from the per-market commitment")
         numerator, denominator = usd_price_ratio(root, token0, usd, pricing["quoteDecimals"])
         observed_supply = token.functions.totalSupply().call(block_identifier=market["blockNumber"])
@@ -1229,10 +1244,15 @@ def verify_publication(session, detail, plan, predicted, receipt, session_id, ex
     image_key = None
     if image is not None:
         image_key = metadata.get("imageKey")
+        # The public image URL lives on the indexed DTO (sessions carry no imageUrl);
+        # content type/length are under item.metadata, not the item top level.
+        item_image_url = item.get("imageUrl")
+        item_metadata = item.get("metadata", {})
         require(isinstance(image_key, str) and image_key.startswith(f"launches/{plan.chain_id}/{predicted.lower()}/")
-                and isinstance(session.get("imageUrl"), str) and session["imageUrl"].endswith("/" + image_key)
-                and item.get("imageUrl") == session["imageUrl"] and item.get("imageContentType") == image.content_type
-                and int(item.get("imageContentLength", -1)) == image.content_length and session.get("imageStatus") == "ready",
+                and isinstance(item_image_url, str) and item_image_url.endswith("/" + image_key)
+                and item_metadata.get("imageContentType") == image.content_type
+                and int(item_metadata.get("imageContentLength", -1)) == image.content_length
+                and session.get("imageStatus") == "ready",
                 "public image does not bind the original verified image", code="API_PUBLICATION_MISMATCH")
     validate_metadata_binding(metadata, expected_metadata, image_key=image_key)
     require(metadata.get("name") == plan.token.name and metadata.get("symbol") == plan.token.symbol
@@ -1396,6 +1416,18 @@ def resume_launch_example(recovery_dir, cancellation):
             "markets": [{"venue": m["venue"], "positions": len(m["positions"])} for m in review_markets]}
     require(len(case["markets"]) == len(plan.markets), "retained review markets differ from the committed plan", code="INVALID_RECOVERY")
     artifacts = Artifacts(recovery_dir, case["id"], resume=True)
+    # verify_chain reads activation logs from artifacts.receipts; a resume starts with
+    # an empty in-memory list, so seed it from the retained receipts.json evidence.
+    retained_receipts = recovery.get("receipts", [])
+    receipts_file = recovery_dir / "receipts.json"
+    if not artifacts.receipts and receipts_file.is_file():
+        artifacts.receipts = json.loads(receipts_file.read_text())
+    elif not artifacts.receipts and retained_receipts:
+        artifacts.receipts = retained_receipts
+    # verify_chain cross-checks the reviewed mint-dust burn against
+    # artifacts.economic_pricing["roundingBurn"]; seed it from the retained review.
+    if getattr(artifacts, "economic_pricing", None) is None and recovery.get("economicReview"):
+        artifacts.economic_pricing = recovery["economicReview"]
     configuration, private_key = example_configuration(artifacts)
     client = Web3(JournalHTTPProvider(configuration["rpcUrl"], artifacts))
     require(quantity(rpc(client, "eth_chainId", [])) == 4663, "RPC must serve chain4663", code="CHAIN_IDENTITY_MISMATCH")
