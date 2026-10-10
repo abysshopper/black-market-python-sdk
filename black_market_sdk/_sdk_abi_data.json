@@ -10536,6 +10536,17 @@
           "type": "address"
         }
       ]
+    },
+    {
+      "type": "function",
+      "name": "maxNFTSupply",
+      "stateMutability": "view",
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "uint256"
+        }
+      ]
     }
   ],
   "lifecycleErc404MirrorAbi": [
