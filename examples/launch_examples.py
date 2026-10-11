@@ -40,6 +40,7 @@ from black_market_sdk import (
     LIFECYCLE_ORACLE_FACTORY_ABI,
     ROBINHOOD_USDG,
     V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6,
+    KnownLifecycleProfile,
     LaunchApiClient,
     LaunchApiConfig,
     LaunchAttributionAuthorization,
@@ -75,6 +76,7 @@ from black_market_sdk import (
     encode_lifecycle_pool_bound_v4_market_config,
     get_launch_addresses,
     get_addresses,
+    get_known_lifecycle_profile,
     hash_launch_plan,
     get_sqrt_ratio_at_tick,
     launch_plan_from_dict,
@@ -434,6 +436,10 @@ def discover_profiles(client, configuration, artifacts, cancellation, *, block=N
           and profile.adapter.config_version == 6 and profile.envelope is not None
           and profile.envelope.config_version == 6 and profile.developer_terms is not None
           and profile.registration.config_schema.lower() == hex_bytes(V4_POOL_BOUND_LIFECYCLE_CONFIG_SCHEMA_V6)]
+    fixed = get_known_lifecycle_profile(chain_id=configuration["chainId"],
+        orchestrator=configuration["orchestrator"], key=KnownLifecycleProfile.V4_FIXED_FEE_POOL)
+    if fixed is not None:
+        v4 = [profile for profile in v4 if profile.id.lower() == fixed.profile.id.lower()]
     canonical_ids = {}
     for profile in profiles:
         if profile.venue_kind == "abyss":

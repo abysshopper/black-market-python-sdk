@@ -25,10 +25,12 @@ canonical proof. Caller-supplied tightening policy remains optional.
 
 `get_launch_addresses(4663)` returns the current mined `pool-launch-v1` infrastructure.
 The deployment's canonical manifest records successful receipts and runtime evidence
-at block **82,880,546**. Its live implementation registry contains two adapters and
-five admitted profiles: one pool-bound V4/config6/V2 offering and four canonical
-Abyss/config1 variants. Discover current profile IDs from the registry or select
-the matching frozen `KnownLifecycleProfile` metadata for offline construction.
+at block **82,880,546**. The later Dynamic Fee Hook admission receipt at block
+**85,525,302** adds a third adapter and sixth profile: two pool-bound V4/config6/V2
+offerings and four canonical Abyss/config1 variants. Discover current profile IDs
+from the registry or select matching frozen `KnownLifecycleProfile` metadata for
+offline construction. The unsigned template `admission.json` alone is not mined
+admission evidence.
 Neither frozen metadata nor an SDK key is a live admission certificate. Shared
 V4/config4 and pool-bound config5/V1 remain explicit codecs for matching admitted
 deployments, not mainnet defaults.
@@ -43,8 +45,10 @@ deployments, not mainnet defaults.
 | Token factory | `0xd3cE64E49224a9a96075633f63761FE6BE22FE30` |
 | Funding escrow | `0x7bc77946CeF52A178583FCe1EEB7751983cEC703` |
 | Launch lens | `0xAce93e3910561aC67c6179c3a27F133F5Ef78F25` |
-| Pool-bound market adapter | `0xb334b44509a5237a39cE364c159913F14b6D1186` |
-| Hook deployer | `0x1Df787Cc099B047A606059Ac80A8296779266f9e` |
+| Fixed-fee pool-bound market adapter | `0xb334b44509a5237a39cE364c159913F14b6D1186` |
+| Fixed-fee hook deployer | `0x1Df787Cc099B047A606059Ac80A8296779266f9e` |
+| Dynamic Fee Hook market adapter | `0xDa8581E1241722154B44404a032C086708080519` |
+| Dynamic Fee Hook deployer | `0x59F83bC43A075C40c68dea444dcd9c639BE7F1E7` |
 | Collector factory | `0x43b394fE6865EE6797c60FCCcd33D7D765214b52` |
 | Canonical Abyss market adapter | `0x3ef760fcbbD618Ab6cB7E308e7fB39C93b9deFD0` |
 
@@ -127,6 +131,22 @@ The exact config6 tuple is:
 seconds/tick, not an implied minimum or LP fee. `LifecyclePoolBoundV4MarketConfigV5`
 is the explicit version5/V1 type without those two V2 policy fields.
 `LifecyclePoolBoundV4MarketConfig` is their type union, not a constructor.
+
+**Dynamic Fee Hook** is `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`
+(`v4-dynamic-fee-pool`), with hook key `KnownLifecycleHook.DYNAMIC_FEE_POOL_V1`
+(`dynamic-fee-pool-v1`). Its frozen profile ID is
+`0x27f219872fe934a5464bc9b900028256122f215b40cbdb69ef5f88cd5f627ccb`.
+It uses the existing config6/V2 construction and salt-mining helpers, with
+`lp_fee_pips=0` and `developer_fee_bps=0`. Supply explicit minimum, maximum
+(`hook_fee_pips`) and sensitivity: upward quote-per-base tick velocity increases
+the hook fee within those bounds; quiet or falling prices use the minimum.
+Copy beneficiary, terms digest, treasury and protocol denominator from its own
+envelope, never the fixed profile. Its creation code hash is
+`0xd448a4117b78714cc4f96824356c6a90ec666449fde5c57e2b7bbe072f5e4a7a`.
+The frozen bytes concatenate each admitted storage-child runtime after stripping
+its leading STOP byte. The fixed hook still charges its fixed maximum and remains
+the launch examples' selected offering; config6 fields alone do not select dynamic
+behavior. Fresh planning/simulation remains execution authority for both.
 
 Each `LifecycleV4Position` has `tick_lower`, `tick_upper`, `liquidity`, `salt`, and
 `max_token_amount`. Position salts and the hook deployment salt are independent.

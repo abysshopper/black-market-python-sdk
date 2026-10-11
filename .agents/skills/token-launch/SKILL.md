@@ -70,8 +70,11 @@ See `references/audit-history.md`.
 - Match exact schema/version, runtime/constructor/dependency graph, capabilities,
   oracle, custody and author terms. Callback permission bits are insufficient.
 - `FixedFeePoolHookV1` uses a fixed maximum-pips schedule. Config6 minimum and
-  sensitivity fields do not make it a dynamic hook. A reference Surge/dynamic
-  artifact or working encoder is not live production admission.
+  sensitivity fields do not make it dynamic. The separately admitted zero-royalty
+  **Dynamic Fee Hook** uses `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`, zero LP
+  fee and zero developer bps with explicit config6 minimum/maximum/sensitivity.
+  Copy its own graph and terms; the fixed profile remains the examples' selection.
+  Frozen metadata still requires fresh live eligibility and execution proof.
 - Other compatible hooks may need different launch fields or swap-time data;
   topology/config6 alone does not justify reusing a fixed-hook form or empty data.
 - LP fees, hook trading fees, protocol share, executor bounty, author allocation

@@ -62,7 +62,11 @@ def runner_context(construct_case, tmp_path, monkeypatch):
     quote_contract = example.contract
 
     def call(value):
-        return lambda: SimpleNamespace(call=lambda: value)
+        def read(*, block_identifier=None):
+            if block_identifier is not None:
+                assert block_identifier == example.read_block(None).number
+            return value
+        return lambda: SimpleNamespace(call=read)
 
     def contracts(client, address, abi):
         if example.address_equal(address, deployment.orchestrator):

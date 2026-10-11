@@ -41,6 +41,11 @@ execution and saves `run.json`, finalized `plan.json`, `admission.json`,
 `economic-review.json`, `events.jsonl`, empty `receipts.json`, and `result.json`
 in `launch-results/<timestamp-case-random>/`.
 
+On the known chain/core, V4 cases explicitly retain the admitted
+`KnownLifecycleProfile.V4_FIXED_FEE_POOL` offering even when Dynamic Fee Hook is
+also admitted. Missing/disabled fixed profiles refuse rather than switch hooks;
+unknown deployments still require one unambiguous supported V4 offering.
+
 A successful dry-run exits 0 with `execution: "dry-run"`, chain status `planned`,
 and API status `not-run`. It does not sign attribution, send transactions,
 create an upload session, upload an image, or publish. Refused/failed planning
