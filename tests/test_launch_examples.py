@@ -142,18 +142,22 @@ def construct_case(tmp_path, monkeypatch):
     configuration = {"chainId": 4663, "orchestrator": deployment.orchestrator,
                      "creator": CREATOR, "quoteAsset": deployment.wrapped_native,
                      "apiUrl": API_ORIGIN}
-    profiles = {
-        venue: [get_known_lifecycle_profile(chain_id=4663, orchestrator=deployment.orchestrator, key=key).profile]
-        for venue, key in (("v4", KnownLifecycleProfile.V4_FIXED_FEE_POOL), ("abyss", KnownLifecycleProfile.ABYSS_3))
-    }
+    profiles = [SimpleNamespace(**vars(get_known_lifecycle_profile(chain_id=4663,
+        orchestrator=deployment.orchestrator, key=key).profile), admitted=True)
+        for key in (KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL,
+                    KnownLifecycleProfile.V4_FIXED_FEE_POOL, KnownLifecycleProfile.ABYSS_3)]
     monkeypatch.setattr(example, "read_block", lambda *_args: block)
     monkeypatch.setattr(example, "predict_launch_token", lambda *_args, **_kwargs: TOKEN)
-    monkeypatch.setattr(example, "discover_profiles", lambda *_args, **_kwargs: profiles)
+    monkeypatch.setattr(example, "read_lifecycle_profiles", lambda *_args, **_kwargs: profiles)
     monkeypatch.setattr(example, "discover_oracle_config", lambda _client, profile, quote, block, _cancel:
                         {"oracleConfigId": "0x" + "12" * 32, "factory": profile.registration.factory
                          if profile.venue_kind == "abyss" else profile.envelope.graph.oracle_factory})
     monkeypatch.setattr(example, "contract", lambda _client, address, _abi: SimpleNamespace(
-        functions=SimpleNamespace(decimals=lambda: SimpleNamespace(call=lambda **_: 6 if example.address_equal(address, example.ROBINHOOD_USDG) else 18))))
+        functions=SimpleNamespace(
+            decimals=lambda: SimpleNamespace(call=lambda **_: 6 if example.address_equal(address, example.ROBINHOOD_USDG) else 18),
+            registry=lambda: SimpleNamespace(call=lambda **_: deployment.registry),
+            profileCount=lambda: SimpleNamespace(call=lambda **_: len(profiles)),
+            profileId=lambda _variant: SimpleNamespace(call=lambda **_: profiles[-1].id))))
     monkeypatch.setattr(example, "read_funding_authority", lambda *_args: get_launch_addresses(4663).funding_escrow)
     monkeypatch.setattr(example, "read_kyber_build", lambda _url, **options: kyber_build_fixture(**options))
     monkeypatch.setattr(example, "rpc", lambda _client, method, _params: hex(10**18) if method == "eth_getBalance" else hex(4663))

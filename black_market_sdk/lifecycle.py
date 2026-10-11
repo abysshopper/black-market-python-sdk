@@ -24,6 +24,9 @@ from web3 import Web3
 from .addresses import ROBINHOOD_MAINNET_CHAIN_ID
 from .abyss import ABYSS_FEE_TIERS
 from .launch import assert_launch_topology_coverage, get_tick_at_sqrt_ratio
+from .hmm import (
+    HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail, is_hmm_profile,
+)
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -307,6 +310,7 @@ class LifecyclePoolBoundV4MarketConfigV6:
     developer_beneficiary: str
     developer_fee_bps: int
     positions: tuple[LifecycleV4Position, ...]
+    hmm_launch_config: HmmLaunchConfig | None = None
 
 
 LifecyclePoolBoundV4MarketConfig = LifecyclePoolBoundV4MarketConfigV5 | LifecyclePoolBoundV4MarketConfigV6
@@ -999,7 +1003,16 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
         validate_pool_bound_hook_fees(config)
     else:
         _v1_fee_shape(config)
-    return abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
+    prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
+    profile_id = config["profileId"] if isinstance(config, Mapping) else config.profile_id
+    hmm = config.get("hmmLaunchConfig") if isinstance(config, Mapping) else getattr(config, "hmm_launch_config", None)
+    if is_hmm_profile(profile_id):
+        if version != 6 or hmm is None:
+            raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6 and an explicit HMM launch config")
+        return prefix + encode_hmm_launch_tail(hmm)
+    if hmm is not None:
+        raise LifecyclePlanningError("INVALID_HMM_CONFIG", "Only HMM profiles accept an HMM launch tail")
+    return prefix
 
 
 def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_version: PoolBoundLifecycleConfigVersion | None = None) -> LifecyclePoolBoundV4MarketConfig:
@@ -1011,6 +1024,11 @@ def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_
     values = abi_decode([_tuple_type(components)], raw)[0]
     cls = LifecyclePoolBoundV4MarketConfigV5 if version == 5 else LifecyclePoolBoundV4MarketConfigV6
     config = cls(*values[:-1], tuple(LifecycleV4Position(*position) for position in values[-1]))
+    prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
+    if is_hmm_profile(config.profile_id):
+        if version != 6 or raw[:len(prefix)] != prefix:
+            raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require an exact canonical config6 prefix")
+        config = replace(config, hmm_launch_config=decode_hmm_launch_tail(raw[len(prefix):]))
     if encode_lifecycle_pool_bound_v4_market_config(config) != raw:
         raise LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound config is not canonical for its explicit schema")
     return config
@@ -1062,7 +1080,9 @@ def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: s
     config = decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
     if hex_bytes(config.profile_id) != hex_bytes(market.profile_id):
         raise ValueError("inner reviewed profileId differs from its outer market binding")
-    config_hash = keccak(encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=ZERO_HASH)))
+    normalized = replace(config, hook_salt=ZERO_HASH)
+    config_hash = keccak(abi_encode([_tuple_type(_bound_components(config.version))],
+                                  [_struct_tuple(_bound_components(config.version), normalized)]))
     return hex_bytes(keccak(abi_encode(
         ["bytes32", "uint256", "address", "address", "address", "bytes32", "bytes32", "address", "uint256", "uint32", "bytes32"],
         [V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN, _uint(plan.chain_id, 256, "chainId"),

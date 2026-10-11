@@ -12,6 +12,7 @@ from eth_abi.exceptions import DecodingError
 from eth_utils import keccak
 
 from black_market_sdk import (
+    KnownLifecycleProfile, get_known_lifecycle_deployment, get_known_lifecycle_profile,
     LifecyclePoolBoundV4MarketConfigV5, LifecyclePoolBoundV4MarketConfigV6,
     LifecycleV4MarketConfig, LifecycleV4Position,
     LaunchBlock, PoolBoundHookDeployment, prepare_and_plan_lifecycle_launch,
@@ -23,6 +24,7 @@ from black_market_sdk import (
     pool_bound_market_commitment, predict_pool_bound_hook_address, to_launch_plan_tuple,
 )
 from black_market_sdk.lifecycle import (
+    _known_bound_deployment, encode_pool_bound_hook_parameters,
     PoolBoundLifecycleDeployment, _profile_topology, _validate_launch_plan,
     plan_launch, simulate_launch_plan,
 )
@@ -289,17 +291,27 @@ def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_
             finalized.hook_salt if isinstance(finalized.hook_salt, str) else "0x" + finalized.hook_salt.hex())
 
 
-def test_v5_and_v6_have_independent_exact_wire_layouts_without_defaults():
+@pytest.mark.parametrize("profile_key", [KnownLifecycleProfile.V4_FIXED_FEE_POOL,
+                                        KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL])
+def test_v5_and_v6_have_independent_exact_wire_layouts_without_defaults(profile_key):
     historical = config()
     values = {field.name: getattr(historical, field.name) for field in fields(historical) if field.name != "version"}
     current = LifecyclePoolBoundV4MarketConfigV6(version=6, minimum_hook_fee_pips=1250,
         fee_sensitivity_pips_seconds_per_tick=7654321, **values)
     v5_type = "(uint16,uint24,int24,uint160,uint24,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"
     v6_type = "(uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,bytes32,bytes32,bytes32,bytes32,address,uint16,(int24,int24,uint128,bytes32,uint256)[])"
+    core = "0x91560876033d568d25CDe98C78c33ff8FC43962c"
+    preset = get_known_lifecycle_profile(chain_id=4663, orchestrator=core, key=profile_key)
+    envelope = preset.profile.envelope
+    current = replace(current, lp_fee_pips=0, profile_id=bytes.fromhex(preset.profile.id[2:]),
+        terms_digest=envelope.terms_digest, developer_beneficiary=envelope.beneficiary,
+        developer_fee_bps=0, treasury=envelope.protocol_treasury,
+        protocol_fee_denominator=envelope.protocol_fee_denominator)
     for selected, wire_type in [(historical, v5_type), (current, v6_type)]:
         positions = tuple((position.tick_lower, position.tick_upper, position.liquidity,
             position.salt, position.max_token_amount) for position in selected.positions)
-        wire_values = tuple(getattr(selected, field.name) for field in fields(selected) if field.name != "positions") + (positions,)
+        wire_values = tuple(getattr(selected, field.name) for field in fields(selected)
+                            if field.name not in ("positions", "hmm_launch_config")) + (positions,)
         expected = abi_encode([wire_type], [wire_values])
         assert encode_lifecycle_pool_bound_v4_market_config(selected) == expected
         assert decode_lifecycle_pool_bound_v4_market_config(expected, expected_version=selected.version) == selected
@@ -307,3 +319,21 @@ def test_v5_and_v6_have_independent_exact_wire_layouts_without_defaults():
             decode_lifecycle_pool_bound_v4_market_config(expected, expected_version=11 - selected.version)
     assert not hasattr(historical, "minimum_hook_fee_pips")
     assert not hasattr(historical, "fee_sensitivity_pips_seconds_per_tick")
+    plan = bound_plan()
+    market = replace(plan.markets[0], profile_id=current.profile_id,
+        adapter_id=preset.profile.registration.adapter_id, config_version=6,
+        config=encode_lifecycle_pool_bound_v4_market_config(current))
+    plan = replace(plan, chain_id=4663, orchestrator=core, markets=(market, *plan.markets[1:]))
+    deployment, parameters = _known_bound_deployment(plan, 0, TOKEN)
+    encoded = encode_pool_bound_hook_parameters(parameters, config_version=6)
+    expected_hash = keccak(preset.bound_hook.creation_code + encoded)
+    assert deployment.init_code_hash == "0x" + expected_hash.hex()
+    assert parameters.registrar.lower() == preset.profile.adapter.implementation.lower()
+    assert parameters.liquidity_locker.lower() == envelope.graph.locker.lower()
+    assert parameters.minimum_hook_fee_pips == current.minimum_hook_fee_pips
+    assert parameters.fee_sensitivity_pips_seconds_per_tick == current.fee_sensitivity_pips_seconds_per_tick
+    assert deployment.predicted_hook.lower() == predict_pool_bound_hook_address(
+        deployer=preset.bound_hook.deployer, init_code_hash=expected_hash, salt=current.hook_salt).lower()
+    listed = get_known_lifecycle_deployment(chain_id=4663, orchestrator=core).profiles
+    assert next(row for row in listed if row.profile.id == preset.profile.id) is preset
+    assert get_known_lifecycle_profile(chain_id=4663, orchestrator=core, profile_id=current.profile_id) is preset

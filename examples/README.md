@@ -5,6 +5,16 @@ The eleven `launch_erc20_*.py` / `launch_erc404_*.py` cases share
 and atomic/staged choices remain fixed. See the [case table](../README.md#examples)
 and [lifecycle guide](../docs/launch-guide.md#standalone-token-launch-examples).
 
+## HMM presets and launch tails
+
+`python examples/hmm_launch_config.py` prints calibrated WETH HMM defaults and
+the exact launch tail for HMM Fixed/HMM Dynamic. Add `--live` for read-only
+discovery that requires both registered profiles to be admitted; no key, signing,
+funding or metadata writes. See the [HMM configuration guide](../docs/launch-guide.md#hmm-launch-configuration)
+to bind `hmm_launch_config` to a reviewed config6 before encoding a market.
+The existing funded launch cases retain the fixed-fee offering; they never
+silently switch to HMM.
+
 ## Configure once
 
 Install the SDK (`python -m pip install -e .` from this checkout, or install
@@ -40,6 +50,11 @@ complete protected plan. It prints the same full economic review used for
 execution and saves `run.json`, finalized `plan.json`, `admission.json`,
 `economic-review.json`, `events.jsonl`, empty `receipts.json`, and `result.json`
 in `launch-results/<timestamp-case-random>/`.
+
+On the known chain/core, V4 cases explicitly retain the admitted
+`KnownLifecycleProfile.V4_FIXED_FEE_POOL` offering even when Dynamic Fee Hook is
+also admitted. Missing/disabled fixed profiles refuse rather than switch hooks;
+unknown deployments still require one unambiguous supported V4 offering.
 
 A successful dry-run exits 0 with `execution: "dry-run"`, chain status `planned`,
 and API status `not-run`. It does not sign attribution, send transactions,

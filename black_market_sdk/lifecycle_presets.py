@@ -1,4 +1,4 @@
-"""Frozen October 8 construction metadata, never a live admission certificate."""
+"""Frozen release and admitted-template construction metadata, never live eligibility."""
 from __future__ import annotations
 
 import json
@@ -20,10 +20,16 @@ class KnownLifecycleProfile(str, Enum):
     ABYSS_2 = "abyss-2"
     ABYSS_3 = "abyss-3"
     V4_FIXED_FEE_POOL = "v4-fixed-fee-pool"
+    V4_DYNAMIC_FEE_POOL = "v4-dynamic-fee-pool"
+    V4_HMM_FIXED_POOL = "v4-hmm-fixed-pool"
+    V4_HMM_DYNAMIC_POOL = "v4-hmm-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
     FIXED_FEE_POOL_V1 = "fixed-fee-pool-v1"
+    DYNAMIC_FEE_POOL_V1 = "dynamic-fee-pool-v1"
+    HMM_FIXED_POOL_V1 = "hmm-fixed-pool-v1"
+    HMM_DYNAMIC_POOL_V1 = "hmm-dynamic-pool-v1"
 
 
 
@@ -70,10 +76,12 @@ def _load_deployment() -> LifecycleDeploymentPreset:
     addresses = data["addresses"]
     adapters = {row["id"]: LifecycleAdapterRegistration(row["address"], row["codehash"],
         row["capabilities"], row["configVersion"], True) for row in data["adapters"]}
-    envelope = decode_launch_envelope(data["envelopeBytes"])
-    creation_code = bytes.fromhex(data["creationCode"].removeprefix("0x"))
     profiles = []
-    for row, key in zip(data["profiles"], KnownLifecycleProfile):
+    keys = [KnownLifecycleProfile(row["key"]) for row in data["profiles"]]
+    if len(keys) != len(set(keys)) or set(keys) != set(KnownLifecycleProfile):
+        raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "Frozen catalogue must contain every known profile exactly once")
+    for row in data["profiles"]:
+        key = KnownLifecycleProfile(row["key"])
         registration = LifecycleProfileRegistration(*(row[field] for field in (
             "adapterId", "configSchema", "dependencyDigest", "venue", "factory", "hook", "capabilities", "enabled",
         )))
@@ -82,6 +90,8 @@ def _load_deployment() -> LifecycleDeploymentPreset:
                                      topology["hookDeployer"], topology["hookCreationCodeHash"])
         adapter = adapters[row["adapterId"]]
         bound = topology.hook_topology == LifecycleHookTopology.POOL_BOUND_V4
+        envelope = decode_launch_envelope(row["envelopeBytes"]) if bound else None
+        creation_code = bytes.fromhex(row["creationCode"].removeprefix("0x")) if bound else None
         profile = LifecycleProfileMetadata(
             row["id"], registration, adapter, topology, "uniswap-v4" if bound else "abyss",
             envelope if bound else None,

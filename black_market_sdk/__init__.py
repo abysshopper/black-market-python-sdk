@@ -372,6 +372,11 @@ from .lifecycle import (
     to_launch_plan_tuple,
     valid_pool_bound_hook_address,
 )
+from .hmm import (
+    HmmStrategyConfig, HmmLaunchConfig, HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID,
+    HMM_LAUNCH_TAIL_LENGTH, encode_hmm_launch_tail, decode_hmm_launch_tail,
+    validate_hmm_launch_config, default_hmm_launch_config, is_hmm_profile,
+)
 from .lifecycle_rpc import LifecycleRpcClient, LifecycleDiagnosticEvent, LifecycleDiagnosticListener
 from .lifecycle_presets import (
     KnownLifecycleHook, KnownLifecycleProfile, LifecycleBoundHookPreset, LifecycleProfilePreset,
@@ -398,4 +403,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.9.0"
