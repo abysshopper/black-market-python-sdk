@@ -1,7 +1,9 @@
-"""Extract six construction profiles from mined release and template evidence.
+"""Extract construction profiles from mined release and template evidence.
 
 Usage: python tools/ci/import_lifecycle_release.py RELEASE_DIR TEMPLATE_DIR CHILDREN_DIR
-This is data generation only: it never compiles, contacts RPCs, signs or publishes.
+Append: python tools/ci/import_lifecycle_release.py --append-template KEY TEMPLATE_DIR RPC_URL
+Read-only RPC mode hash-checks every storage child against the admitted graph.
+This is data generation only: it never compiles, signs or publishes.
 The template admission.json is unsigned preparation; its mined receipt authenticates it.
 """
 from __future__ import annotations
@@ -21,7 +23,8 @@ def canonical_type(component: dict) -> str:
     return component["type"]
 
 
-def import_template(template_dir: Path, children_dir: Path, data: dict, abi_data: dict) -> None:
+def import_template(template_dir: Path, children_dir: Path | None, data: dict, abi_data: dict,
+                    *, key: str = "v4-dynamic-fee-pool", rpc_url: str | None = None) -> None:
     admission = json.loads((template_dir / "admission.json").read_text())
     broadcast = json.loads((template_dir / "forge-broadcast" / "AdmitPoolHookTemplateV1.s.sol" /
                             str(data["chainId"]) / "admit-latest.json").read_text())
@@ -68,25 +71,51 @@ def import_template(template_dir: Path, children_dir: Path, data: dict, abi_data
             raise ValueError("Prepared graph differs from the admitted envelope")
     chunks = []
     for index in (0, 1):
-        runtime = json.loads((children_dir / graph[f"codeChunk{index}"].lower() / "runtime.json").read_text())
-        code = bytes.fromhex(runtime["result"][2:])
+        address = graph[f"codeChunk{index}"]
+        if int(address, 16) == 0:
+            if index == 0 or int(graph[f"codeChunk{index}Hash"], 16) != 0:
+                raise ValueError("Invalid empty storage-child graph")
+            continue
+        if rpc_url is not None:
+            from web3 import Web3
+            code = bytes(Web3(Web3.HTTPProvider(rpc_url)).eth.get_code(address))
+        elif children_dir is not None:
+            runtime = json.loads((children_dir / address.lower() / "runtime.json").read_text())
+            code = bytes.fromhex(runtime["result"][2:])
+        else:
+            raise ValueError("Preserved children or an explicit read-only RPC URL are required")
         if not 1 < len(code) <= 24576 or code[0] != 0 or "0x" + keccak(code).hex() != graph[f"codeChunk{index}Hash"]:
-            raise ValueError("Preserved storage-child runtime differs from the admitted graph")
+            raise ValueError("Storage-child runtime differs from the admitted graph")
         chunks.append(code[1:])
     creation_code = b"".join(chunks)
-    if len(chunks[0]) != 24575 or len(creation_code) + 20 * 32 > 49152 or "0x" + keccak(creation_code).hex() != graph["hookCreationCodeHash"]:
+    if (len(chunks) == 2 and len(chunks[0]) != 24575) or len(creation_code) + 20 * 32 > 49152 or "0x" + keccak(creation_code).hex() != graph["hookCreationCodeHash"]:
         raise ValueError("Storage-child payloads differ from the exact typed deployer initcode")
     data["adapters"].append({"id": admission["adapterId"], "address": admission["adapter"],
                              "codehash": "0x" + code_hash.hex(), "capabilities": capabilities, "configVersion": version})
-    data["profiles"].append({**registration, "key": "v4-dynamic-fee-pool", "id": admission["profileId"],
+    data["profiles"].append({**registration, "key": key, "id": admission["profileId"],
         "envelopeBytes": admission["envelopeBytes"], "creationCode": "0x" + creation_code.hex(),
         "topology": {"hookTopology": envelope_values[4], "configVersion": version,
                      "hookDeployer": graph["hookDeployer"], "hookCreationCodeHash": graph["hookCreationCodeHash"]}})
-    data["provenance"]["dynamicFeeAdmission"] = {"transactionHash": receipt["transactionHash"],
+    provenance_key = "dynamicFeeAdmission" if key == "v4-dynamic-fee-pool" else key + "Admission"
+    data["provenance"][provenance_key] = {"transactionHash": receipt["transactionHash"],
         "blockNumber": int(receipt["blockNumber"], 16), "blockHash": receipt["blockHash"]}
 
 
 def main() -> None:
+    if sys.argv[1] == "--append-template":
+        sdk_dir = Path(__file__).resolve().parents[2] / "black_market_sdk"
+        destination = sdk_dir / "_lifecycle_release_20261008.json"
+        data = json.loads(destination.read_text())
+        key, template, rpc_url = sys.argv[2:5]
+        if key not in ("v4-hmm-fixed-pool", "v4-hmm-dynamic-pool"):
+            raise ValueError("Append mode requires a known HMM profile key")
+        if any(row["key"] == key for row in data["profiles"]):
+            raise ValueError("Profile key already exists")
+        abi_data = json.loads((sdk_dir / "_sdk_abi_data.json").read_text())
+        import_template(Path(template), None, data, abi_data, key=key, rpc_url=rpc_url)
+        destination.write_text(json.dumps(data, indent=2) + "\n")
+        print(f"Appended {key}, verified against mined receipt and storage-child hashes")
+        return
     release_dir = Path(sys.argv[1])
     read = lambda name: json.loads((release_dir / name).read_text())
     manifest, deployment, readback, release, admission = (

@@ -27,6 +27,7 @@ EXPECTED_MODULES = {
     "black_market_sdk/lifecycle_abis.py",
     "black_market_sdk/lifecycle_rpc.py",
     "black_market_sdk/lifecycle_presets.py",
+    "black_market_sdk/hmm.py",
     "black_market_sdk/_sdk_abi_data.json",
     "black_market_sdk/_lifecycle_release_20261008.json",
     "black_market_sdk/live.py",
@@ -68,7 +69,7 @@ def main() -> None:
     sdist = sdists[-1]
     with tarfile.open(sdist) as tf:
         sdist_names = tf.getnames()
-    for required in ("LICENSE", "README.md", "pyproject.toml", "docs/launch-guide.md", "assets/abyss-ziggurat-v3-pale-text-1500x500.png"):
+    for required in ("LICENSE", "README.md", "CHANGELOG.md", "pyproject.toml", "docs/launch-guide.md", "assets/abyss-ziggurat-v3-pale-text-1500x500.png"):
         if not any(n.endswith(f"/{required}") for n in sdist_names):
             fail(f"sdist {sdist.name} is missing {required}")
 

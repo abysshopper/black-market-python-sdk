@@ -4,6 +4,13 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+## 0.9.0 release
+
+Adds the admitted HMM Fixed and HMM Dynamic pool presets, exact 448-byte launch
+tails, factory-equivalent validation and budget/quote-calibrated defaults.
+See [HMM launch configuration](#hmm-launch-configuration). The Dynamic Fee Hook
+preset changes carried from the main checkout are also included unchanged.
+
 ## 0.8.0 release
 
 This release adds unstarted-launch topology validation, boundary tails enabled by
@@ -26,8 +33,9 @@ canonical proof. Caller-supplied tightening policy remains optional.
 `get_launch_addresses(4663)` returns the current mined `pool-launch-v1` infrastructure.
 The deployment's canonical manifest records successful receipts and runtime evidence
 at block **82,880,546**. The later Dynamic Fee Hook admission receipt at block
-**85,525,302** adds a third adapter and sixth profile: two pool-bound V4/config6/V2
-offerings and four canonical Abyss/config1 variants. Discover current profile IDs
+**85,525,302** adds a third adapter and sixth profile. The October 11 HMM Fixed
+and HMM Dynamic admissions add two more adapters/profiles: four pool-bound
+V4/config6/V2 offerings and four canonical Abyss/config1 variants. Discover current profile IDs
 from the registry or select matching frozen `KnownLifecycleProfile` metadata for
 offline construction. The unsigned template `admission.json` alone is not mined
 admission evidence.
@@ -147,6 +155,69 @@ The frozen bytes concatenate each admitted storage-child runtime after stripping
 its leading STOP byte. The fixed hook still charges its fixed maximum and remains
 the launch examples' selected offering; config6 fields alone do not select dynamic
 behavior. Fresh planning/simulation remains execution authority for both.
+
+### HMM launch configuration
+
+| Offering | Preset | Profile ID |
+| --- | --- | --- |
+| HMM Fixed | `KnownLifecycleProfile.V4_HMM_FIXED_POOL` | `0x7e51d9aa979940e7867c75a82e05e924aa067e9d436f7731c3e3299f9e55d53d` |
+| HMM Dynamic | `KnownLifecycleProfile.V4_HMM_DYNAMIC_POOL` | `0x109598e017b8f12648aff0f0dc04dbf8d4c0493f41a63068682d8f9d0a07a83d` |
+
+Both require zero LP fee and zero developer fee. Copy graph and terms from the
+selected preset's envelope, not another V4 offering. HMM Fixed charges the fixed
+`hook_fee_pips`; HMM Dynamic uses the same minimum/maximum/sensitivity semantics
+as Dynamic Fee Hook. Both admit up to 32 positions and QuoteOnly/InputToken modes.
+
+Supply `hmm_launch_config` on `LifecyclePoolBoundV4MarketConfigV6`. The existing
+`encode_lifecycle_pool_bound_v4_market_config` automatically emits
+`abi.encode(V4MarketConfigV6) ++ abi.encode(HMMLaunchConfigV1)` for either HMM
+profile. A plain config6, missing/extra tail, or tail on a non-HMM profile fails.
+Decoding and salt mining preserve the tail. The full plan hash commits the tail;
+the salt-independent hook constructor market commitment excludes it, matching
+the collector factory's canonical config6 hash.
+
+```python
+from dataclasses import replace
+from black_market_sdk import default_hmm_launch_config, encode_lifecycle_pool_bound_v4_market_config
+
+# reviewed_v6 already binds this HMM preset's ID, terms, economics and positions.
+hmm = default_hmm_launch_config(token_budget=market_budget, quote_asset=quote_asset)
+reviewed_v6 = replace(reviewed_v6, hmm_launch_config=hmm)
+wire_config = encode_lifecycle_pool_bound_v4_market_config(reviewed_v6)
+# Optional conservative decay: 72 hours; zero is the default (off).
+hmm = replace(hmm, strategy=replace(hmm.strategy, premium_decay_seconds=259_200))
+```
+
+`HmmLaunchConfig` contains `strategy_share_bps` and `HmmStrategyConfig`. Defaults
+are a 50% strategy share; bid/ask widths 5, gap 1, stale time 86,400 seconds,
+displacement 5 (widths/gap/displacement in tick spacings), premium 500 bps, four
+asks, and no premium decay. Raw-unit thresholds are `token_budget // 100_000`
+for minimum token harvest, 10% of budget for offered exposure and 100% for acquired
+inventory. WETH quote deploy/harvest thresholds are 0.0005/0.005 ether; USDG
+uses 1/10 units at its six decimals. The helper resolves symbols or canonical
+addresses from the SDK quote catalogue. Other assets require explicit
+`min_quote_deploy` and `min_quote_harvest`, not an assumed USD peg.
+`quote_decimals` is optional; small budgets and caps above uint128 fail rather
+than being silently clamped.
+
+`encode_hmm_launch_tail` and `validate_hmm_launch_config` enforce ABI widths and
+the factory's exact conditions: share ≤10,000, positive widths/stale time/
+displacement/harvest thresholds, nonnegative gap, premium ≤5,000, 1–8 asks,
+offered cap ≥ask count and ≥minimum token harvest, acquired cap ≥minimum token
+harvest, and both caps ≤uint128.max. Quote deployment may be zero; premium decay
+may be any uint32. `decode_hmm_launch_tail` requires exactly 448 canonical bytes.
+
+Each harvest diverts only the selected share of collected **quote fees** to a
+per-market manager. The remainder follows the creator's normal owner/holder
+reward split; token-side fees are untouched. The fee owner can change the share
+later using `HMMFeeCollectorV1.setStrategyShareBps`. The manager bids below price,
+resells bought tokens through asks at or above cost plus premium, and never
+touches the permanently locked launch positions.
+
+Run `python examples/hmm_launch_config.py` for an offline configuration, or add
+`--live` to certify both presets' current admission without a wallet. Construction
+metadata is not live eligibility; normal lifecycle proof is still required.
+
 
 Each `LifecycleV4Position` has `tick_lower`, `tick_upper`, `liquidity`, `salt`, and
 `max_token_amount`. Position salts and the hook deployment salt are independent.

@@ -21,11 +21,15 @@ class KnownLifecycleProfile(str, Enum):
     ABYSS_3 = "abyss-3"
     V4_FIXED_FEE_POOL = "v4-fixed-fee-pool"
     V4_DYNAMIC_FEE_POOL = "v4-dynamic-fee-pool"
+    V4_HMM_FIXED_POOL = "v4-hmm-fixed-pool"
+    V4_HMM_DYNAMIC_POOL = "v4-hmm-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
     FIXED_FEE_POOL_V1 = "fixed-fee-pool-v1"
     DYNAMIC_FEE_POOL_V1 = "dynamic-fee-pool-v1"
+    HMM_FIXED_POOL_V1 = "hmm-fixed-pool-v1"
+    HMM_DYNAMIC_POOL_V1 = "hmm-dynamic-pool-v1"
 
 
 

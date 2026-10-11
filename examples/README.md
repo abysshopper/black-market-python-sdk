@@ -5,6 +5,16 @@ The eleven `launch_erc20_*.py` / `launch_erc404_*.py` cases share
 and atomic/staged choices remain fixed. See the [case table](../README.md#examples)
 and [lifecycle guide](../docs/launch-guide.md#standalone-token-launch-examples).
 
+## HMM presets and launch tails
+
+`python examples/hmm_launch_config.py` prints calibrated WETH HMM defaults and
+the exact launch tail for HMM Fixed/HMM Dynamic. Add `--live` for read-only
+discovery that requires both registered profiles to be admitted; no key, signing,
+funding or metadata writes. See the [HMM configuration guide](../docs/launch-guide.md#hmm-launch-configuration)
+to bind `hmm_launch_config` to a reviewed config6 before encoding a market.
+The existing funded launch cases retain the fixed-fee offering; they never
+silently switch to HMM.
+
 ## Configure once
 
 Install the SDK (`python -m pip install -e .` from this checkout, or install
