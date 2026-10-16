@@ -941,10 +941,10 @@ def wire_planning(monkeypatch, *, scenario_options=None, request=None):
     return lifecycle, request, provider, client
 
 
-def topology_plan(version, token0, *, intervals=None):
+def topology_plan(version, token0, *, intervals=None, fee=500):
     request = plan()
     market = request.markets[1 if version == 1 else 0]
-    spacing = 10 if version in {1, 6} else 60
+    spacing = next(tier.tick_spacing for tier in ABYSS_FEE_TIERS if tier.fee_pips == fee) if version == 1 else 10 if version == 6 else 60
     boundary = 887272 // spacing * spacing
     intervals = [(0, boundary)] if intervals is None else intervals
     budget = market.token_budget
@@ -960,7 +960,7 @@ def topology_plan(version, token0, *, intervals=None):
             positions.append(replace(original, tick_lower=lower, tick_upper=upper,
                 salt=index.to_bytes(32, "big"), max_token_amount=cap))
     if version == 1:
-        config = replace(decode_lifecycle_abyss_market_config(market.config), fee=500,
+        config = replace(decode_lifecycle_abyss_market_config(market.config), fee=fee,
             opening_sqrt_price_x96=1 << 96, positions=tuple(positions))
         encoded = encode_lifecycle_abyss_market_config(config)
     else:
@@ -987,6 +987,28 @@ def test_planner_admits_per_market_tail_using_config_spacing_and_predicted_token
     assert not planned.allow_topology_gaps and not planned.allow_missing_permanent_tail
     assert planned.plan_hash == hash_launch_plan(request)
     assert planned.transactions[0].data == build_lifecycle_calldata(request, "launchAtomic")
+
+
+@pytest.mark.parametrize("token0", [True, False])
+def test_planner_admits_fee100_unit_tick_bands_and_protocol_boundary(monkeypatch, token0):
+    request = topology_plan(1, token0, fee=100, intervals=[(0, 121), (121, 887272)])
+    lifecycle, request, _, client = wire_planning(monkeypatch, request=request)
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
+    assert planned.admitted
+    config = decode_lifecycle_abyss_market_config(request.markets[0].config)
+    assert config.fee == 100
+    assert (config.positions[0].tick_upper if token0 else config.positions[0].tick_lower) == (121 if token0 else -121)
+    assert build_next_transaction(client, planned).data == build_lifecycle_calldata(request, "launchAtomic")
+
+
+@pytest.mark.parametrize("token0", [True, False])
+def test_planner_fee100_still_requires_full_spacing_one_tail(monkeypatch, token0):
+    request = topology_plan(1, token0, fee=100, intervals=[(0, 887270)])
+    lifecycle, request, provider, client = wire_planning(monkeypatch, request=request)
+    with pytest.raises(ValueError) as failure:
+        lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
+    assert failure.value.code == "MISSING_PERMANENT_TAIL"
+    assert provider.simulations == []
 
 
 @pytest.mark.parametrize("version", [1, 4, 6])

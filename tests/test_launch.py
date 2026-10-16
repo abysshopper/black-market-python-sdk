@@ -3,9 +3,37 @@
 import pytest
 
 from black_market_sdk import (
-    assert_launch_topology_coverage, derive_launch_position_ranges,
+    assert_launch_topology_coverage, derive_launch_pool_recipe, derive_launch_position_ranges,
     get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio,
 )
+
+
+@pytest.mark.parametrize("fee,spacing", [
+    (100, 1), (500, 10), (3_000, 60), (10_000, 200),
+    (20_000, 400), (50_000, 1_000), (100_000, 2_000), (150_000, 3_000),
+])
+@pytest.mark.parametrize("token0", [True, False])
+def test_abyss_recipe_infers_canonical_spacing_and_one_sided_geometry(fee, spacing, token0):
+    options = dict(paired_token_decimals=6, paired_token_usd_price_x18=10**18,
+        target_market_cap_usd_x18=5_000 * 10**18, launched_token_is_quote=token0,
+        fee=fee, supply=10**24, token_budget=5 * 10**23)
+    recipe = derive_launch_pool_recipe(**options)
+    assert recipe == derive_launch_pool_recipe(**options, tick_spacing=spacing)
+    assert recipe.tick_lower % spacing == recipe.tick_upper % spacing == 0
+    assert (recipe.tick_upper if token0 else recipe.tick_lower) == (
+        887272 // spacing * spacing * (1 if token0 else -1))
+    assert recipe.launch_sqrt_price_x96 == get_sqrt_ratio_at_tick(
+        recipe.tick_lower if token0 else recipe.tick_upper)
+    assert recipe.liquidity > 0
+    assert recipe.launched_token_amount_maximum == options["token_budget"]
+    assert recipe.paired_token_amount_maximum == 0
+
+
+def test_abyss_recipe_rejects_unknown_fee_without_explicit_spacing():
+    with pytest.raises(ValueError, match="fee is not an Abyss fee tier"):
+        derive_launch_pool_recipe(paired_token_decimals=18,
+            paired_token_usd_price_x18=10**18, target_market_cap_usd_x18=5_000 * 10**18,
+            launched_token_is_quote=True, fee=101)
 
 
 def test_tick_math_bounds():

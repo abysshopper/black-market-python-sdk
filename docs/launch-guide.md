@@ -4,6 +4,15 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+## 0.9.1 release
+
+Abyss recipes and lifecycle planning now support the canonical **0.01%** tier
+(`fee=100`, tick spacing **1**). Omit `tick_spacing` in
+`derive_launch_pool_recipe(..., fee=100)` to infer spacing 1 from `ABYSS_FEE_TIERS`.
+Use that same spacing when deriving multiple position ranges; permanent tails
+reach tick `887272` or `-887272` according to launch-token orientation.
+All existing tiers and example defaults (fee3000/spacing60) are unchanged.
+
 ## 0.9.0 release
 
 Adds the admitted HMM Fixed and HMM Dynamic pool presets, exact 448-byte launch
