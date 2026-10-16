@@ -54,6 +54,7 @@ class AbyssFeeTier:
 
 
 ABYSS_FEE_TIERS: tuple[AbyssFeeTier, ...] = (
+    AbyssFeeTier(fee_pips=100, tick_spacing=1, label="0.01%"),
     AbyssFeeTier(fee_pips=500, tick_spacing=10, label="0.05%"),
     AbyssFeeTier(fee_pips=3_000, tick_spacing=60, label="0.30%"),
     AbyssFeeTier(fee_pips=10_000, tick_spacing=200, label="1%"),

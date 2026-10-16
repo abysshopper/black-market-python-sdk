@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Add the canonical Abyss 0.01% fee tier (`fee_pips=100`, `tick_spacing=1`) to the public catalog used by launch recipes and lifecycle geometry validation.
+- Preserve all existing fee tiers and example defaults. Cover both token orientations, unit-tick bands, permanent boundary tails, and existing-tier recipe geometry.
+
 ## 0.9.0
 
 - Include the previously uncommitted Robinhood Dynamic Fee Hook preset, release evidence, documentation, examples and regression tests unchanged in their own commit.
@@ -11,4 +16,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.9.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.9.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
