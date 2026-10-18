@@ -25,7 +25,8 @@ from .addresses import ROBINHOOD_MAINNET_CHAIN_ID
 from .abyss import ABYSS_FEE_TIERS
 from .launch import assert_launch_topology_coverage, get_tick_at_sqrt_ratio
 from .hmm import (
-    HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail, is_hmm_profile,
+    HMM_FIXED_PROFILE_ID, HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail,
+    is_hmm_profile, validate_hmm_launch_config,
 )
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
@@ -40,6 +41,7 @@ from .lifecycle_abis import (
     POOL_MARKET_ADAPTER_V1_ABI, PROFILE_TOPOLOGY_COMPONENTS_V1,
     PROFILE_REGISTRATION_COMPONENTS_V1, POOL_FEE_COLLECTOR_FACTORY_V1_ABI,
     POOL_FEE_COLLECTOR_FACTORY_CONFIG_V6_ABI,
+    HMM_FIXED_HOOK_V2_ABI, HMM_DYNAMIC_HOOK_V2_ABI, HMM_FEE_COLLECTOR_FACTORY_V2_ABI,
     V4_MARKET_CONFIG_COMPONENTS_V4, V4_MARKET_CONFIG_COMPONENTS_V5, V4_MARKET_CONFIG_COMPONENTS_V6,
     LAUNCH_BOUNDS_COMPONENTS_V2, LAUNCH_GRAPH_COMPONENTS_V2,
     LAUNCH_ENVELOPE_COMPONENTS_V2, DEVELOPER_TERMS_COMPONENTS_V3,
@@ -1009,6 +1011,10 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
     if is_hmm_profile(profile_id):
         if version != 6 or hmm is None:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6 and an explicit HMM launch config")
+        lp_fee = config["lpFeePips"] if isinstance(config, Mapping) else config.lp_fee_pips
+        developer_fee = config["developerFeeBps"] if isinstance(config, Mapping) else config.developer_fee_bps
+        if lp_fee != 0 or developer_fee != 0:
+            raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM V2 requires zero LP and developer fees")
         return prefix + encode_hmm_launch_tail(hmm)
     if hmm is not None:
         raise LifecyclePlanningError("INVALID_HMM_CONFIG", "Only HMM profiles accept an HMM launch tail")
@@ -1070,7 +1076,7 @@ def build_pool_bound_hook_parameters(
 
 
 def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: str, market_index: int) -> str:
-    """Commit every market economic field, normalizing only the mined hook salt."""
+    """Commit the canonical market prefix, normalizing salt and excluding any HMM tail."""
     _uint(market_index, 32, "marketIndex")
     if market_index >= len(plan.markets):
         raise ValueError("market_index is outside the economic plan")
@@ -1392,6 +1398,11 @@ def validate_v4_lifecycle_market(*, market: LifecycleMarketConfig, config: Lifec
         validate_pool_bound_hook_fees(config)
     elif config.version == 5:
         _v1_fee_shape(config)
+    if is_hmm_profile(config.profile_id):
+        hmm = getattr(config, "hmm_launch_config", None)
+        if config.version != 6 or hmm is None or config.lp_fee_pips != 0 or config.developer_fee_bps != 0:
+            raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM V2 requires config6, an explicit launch config and zero LP/developer fees")
+        validate_hmm_launch_config(hmm)
     envelope, terms, ceiling = profile.envelope, profile.developer_terms, profile.protocol_maximum_developer_fee_bps
     expected_schema = V4_LIFECYCLE_CONFIG_SCHEMA if config.version == 4 else pool_bound_v4_lifecycle_config_schema(config.version)
     if envelope is None or terms is None or ceiling is None or not terms.enabled or profile.topology.hook_topology != (1 if config.version == 4 else 2) or market.config_version != config.version or profile.topology.config_version != config.version or profile.adapter.config_version != config.version or envelope.topology != profile.topology.hook_topology or envelope.config_version != config.version or envelope.economic_version != 3 or profile.registration.config_schema.lower() != hex_bytes(expected_schema) or hex_bytes(market.adapter_id) != profile.registration.adapter_id.lower() or hex_bytes(market.profile_id) != profile.id.lower() or hex_bytes(config.profile_id) != profile.id.lower() or terms.adapter.lower() != profile.adapter.implementation.lower() or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or hex_bytes(config.terms_digest) != hex_bytes(terms.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() != terms.beneficiary.lower() or int(config.developer_beneficiary, 16) == 0 or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()):
@@ -1462,7 +1473,7 @@ def _pool_bound_deployment(client: Web3, plan: LaunchPlanV1, index: int, token: 
     encoded_parameters = encode_pool_bound_hook_parameters(parameters, config_version=market.config_version)
     parameter_components = _bound_parameter_components(market.config_version)
     deployer_abi = _bound_deployer_abi(market.config_version)
-    factory_abi = POOL_FEE_COLLECTOR_FACTORY_CONFIG_V6_ABI if market.config_version == 6 else POOL_FEE_COLLECTOR_FACTORY_V1_ABI
+    factory_abi = HMM_FEE_COLLECTOR_FACTORY_V2_ABI if is_hmm_profile(market.profile_id) else POOL_FEE_COLLECTOR_FACTORY_CONFIG_V6_ABI if market.config_version == 6 else POOL_FEE_COLLECTOR_FACTORY_V1_ABI
     actual_parameters, actual_salt = _call(client, collector_factory, factory_abi, "poolBoundHookParameters", [implementation, token, _market_tuple(plan, index)], block)
     if actual_salt != salt or abi_encode([_tuple_type(parameter_components)], [actual_parameters]) != encoded_parameters:
         raise ValueError("pool-bound constructor tuple differs from the exact salt-normalized market economics")
@@ -1473,25 +1484,27 @@ def _pool_bound_deployment(client: Web3, plan: LaunchPlanV1, index: int, token: 
     if _call(client, deployer, deployer_abi, "initCodeHash", [parameter_tuple], block) != init_code_hash or _call(client, deployer, deployer_abi, "predict", [parameter_tuple, salt], block).lower() != prediction.lower():
         raise ValueError("typed deployer initcode/prediction differs from exact local derivation")
     hook_code = bytes.fromhex(hex_bytes(pinned_rpc(client, "eth_getCode", [prediction, block.tag], block))[2:])
+    hook_abi = (HMM_FIXED_HOOK_V2_ABI if hex_bytes(market.profile_id) == HMM_FIXED_PROFILE_ID
+                else HMM_DYNAMIC_HOOK_V2_ABI) if is_hmm_profile(market.profile_id) else FIXED_FEE_POOL_HOOK_V1_ABI
     if hook_code:
         recorded_hash = _call(client, deployer, POOL_HOOK_DEPLOYER_V1_ABI, "deployedCodeHash", [prediction], block)
         if len(hook_code) > 24_576 or recorded_hash == bytes(32) or recorded_hash != keccak(hook_code):
             raise ValueError("existing pool-bound hook lacks exact typed-deployer runtime provenance")
         for name, expected in (("deploymentConfigHash", keccak(encoded_parameters)), ("marketCommitment", bytes.fromhex(hex_bytes(parameters.market_commitment)[2:]))):
-            if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, name, [], block) != expected:
+            if _call(client, prediction, hook_abi, name, [], block) != expected:
                 raise ValueError("existing pool-bound hook differs from its exact immutable economic commitment")
         for name, expected in (("poolManager", parameters.pool_manager), ("registrar", parameters.registrar), ("oracleFactory", parameters.oracle_factory), ("core", parameters.core), ("liquidityLocker", parameters.liquidity_locker), ("token", parameters.token)):
-            if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, name, [], block).lower() != expected.lower():
+            if _call(client, prediction, hook_abi, name, [], block).lower() != expected.lower():
                 raise ValueError("existing pool-bound hook differs from its exact immutable dependency graph")
         currency0, currency1 = sorted((token, market.quote_asset), key=lambda address: int(address, 16))
         pool_id = keccak(abi_encode(["address", "address", "uint24", "int24", "address"], [currency0, currency1, config.lp_fee_pips, config.tick_spacing, prediction]))
-        if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "boundPoolId", [], block) != pool_id or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "openingSqrtPriceX96", [], block) != config.sqrt_price_x96 or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "expectedPositionCount", [], block) != len(config.positions):
+        if _call(client, prediction, hook_abi, "boundPoolId", [], block) != pool_id or _call(client, prediction, hook_abi, "openingSqrtPriceX96", [], block) != config.sqrt_price_x96 or _call(client, prediction, hook_abi, "expectedPositionCount", [], block) != len(config.positions):
             raise ValueError("existing pool-bound hook differs from its exact key, opening price or position count")
-        if _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "REQUIRED_HOOK_FLAGS", [], block) != V4_LIFECYCLE_HOOK_PERMISSIONS or _call(client, prediction, FIXED_FEE_POOL_HOOK_V1_ABI, "ALL_HOOK_MASK", [], block) != V4_LIFECYCLE_HOOK_PERMISSION_MASK:
+        if _call(client, prediction, hook_abi, "REQUIRED_HOOK_FLAGS", [], block) != V4_LIFECYCLE_HOOK_PERMISSIONS or _call(client, prediction, hook_abi, "ALL_HOOK_MASK", [], block) != V4_LIFECYCLE_HOOK_PERMISSION_MASK:
             raise ValueError("existing pool-bound hook differs from its exact reviewed callback declarations")
         if config.version == 6:
             for name, expected in (("minimumHookFeePips", config.minimum_hook_fee_pips), ("feeSensitivityPipsSecondsPerTick", config.fee_sensitivity_pips_seconds_per_tick)):
-                if _call(client, prediction, FIXED_FEE_POOL_HOOK_CONFIG_V6_ABI, name, [], block) != expected:
+                if _call(client, prediction, hook_abi if is_hmm_profile(market.profile_id) else FIXED_FEE_POOL_HOOK_CONFIG_V6_ABI, name, [], block) != expected:
                     raise LifecyclePlanningError("HOOK_DEPLOYMENT_CHANGED", "Existing config6 hook fee policy differs from its exact constructor")
     return PoolBoundHookDeployment(to_checksum_address(deployer), hex_bytes(init_code_hash), hex_bytes(salt), prediction), parameters
 

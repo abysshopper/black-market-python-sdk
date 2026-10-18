@@ -39,6 +39,8 @@ ABYSS_POSITION_CONFIG_COMPONENTS_V1 = _SDK_ABI_DATA["abyssLifecyclePositionCompo
 ABYSS_MARKET_CONFIG_COMPONENTS_V1 = _SDK_ABI_DATA["abyssLifecycleMarketComponents"]
 V4_POOL_KEY_COMPONENTS = _SDK_ABI_DATA["lifecycleV4PoolKeyComponents"]
 V4_HOOK_POOL_CONFIG_COMPONENTS = _SDK_ABI_DATA["lifecycleV4HookPoolConfigComponents"]
+HMM_STRATEGY_COMPONENTS = _SDK_ABI_DATA["hmmStrategyComponents"]
+HMM_LAUNCH_COMPONENTS = _SDK_ABI_DATA["hmmLaunchComponents"]
 
 LAUNCH_LIFECYCLE_V1_ABI = _SDK_ABI_DATA["launchLifecycleAbi"]
 LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI = _SDK_ABI_DATA["lifecycleRegistryAbi"]
@@ -68,6 +70,11 @@ MULTI_ASSET_REWARDS_V1_ABI = _SDK_ABI_DATA["lifecycleRewardsAbi"]
 LIFECYCLE_DIVIDEND_V1_ABI = _SDK_ABI_DATA["lifecycleDividendAbi"]
 LAUNCH_FUNDING_ESCROW_V1_ABI = _SDK_ABI_DATA["lifecycleFundingEscrowAbi"]
 LIFECYCLE_ORACLE_FACTORY_ABI = _SDK_ABI_DATA["lifecycleOracleFactoryAbi"]
+HMM_FIXED_HOOK_V2_ABI = _SDK_ABI_DATA["hmmFixedHookV2Abi"]
+HMM_DYNAMIC_HOOK_V2_ABI = _SDK_ABI_DATA["hmmDynamicHookV2Abi"]
+HMM_LIQUIDITY_MANAGER_V2_ABI = _SDK_ABI_DATA["hmmLiquidityManagerV2Abi"]
+HMM_FEE_COLLECTOR_V2_ABI = _SDK_ABI_DATA["hmmFeeCollectorV2Abi"]
+HMM_FEE_COLLECTOR_FACTORY_V2_ABI = _SDK_ABI_DATA["hmmFeeCollectorFactoryV2Abi"]
 
 
 def _argument(name, abi_type, *, components=None):

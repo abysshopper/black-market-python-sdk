@@ -7,8 +7,11 @@ and [lifecycle guide](../docs/launch-guide.md#standalone-token-launch-examples).
 
 ## HMM presets and launch tails
 
-`python examples/hmm_launch_config.py` prints calibrated WETH HMM defaults and
-the exact launch tail for HMM Fixed/HMM Dynamic. Add `--live` for read-only
+`python examples/hmm_launch_config.py --max-bid-quote 10000000000000000 --reference-deviation 0`
+prints WETH HMM V2 settings and the exact 512-byte launch tail for HMM Fixed/HMM Dynamic.
+The values above are explicit illustration inputs (a 0.01 WETH bid cap and zero
+reference deviation), not SDK risk defaults. Choose both for the intended market.
+Add `--live` for read-only
 discovery that requires both registered profiles to be admitted; no key, signing,
 funding or metadata writes. See the [HMM configuration guide](../docs/launch-guide.md#hmm-launch-configuration)
 to bind `hmm_launch_config` to a reviewed config6 before encoding a market.

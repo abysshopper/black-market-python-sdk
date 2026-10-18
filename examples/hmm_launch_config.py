@@ -1,4 +1,4 @@
-"""Construct calibrated HMM tails; optionally certify both profiles live (no wallet)."""
+"""Construct HMM V2 tails with explicit risk controls; optionally certify live (no wallet)."""
 from __future__ import annotations
 
 import argparse
@@ -20,9 +20,14 @@ from black_market_sdk import (
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="Read-only Robinhood admission discovery")
+    parser.add_argument("--max-bid-quote", required=True, type=int,
+                        help="Reviewed bid-principal cap in raw WETH units (positive uint128)")
+    parser.add_argument("--reference-deviation", required=True, type=int,
+                        help="Reviewed nonnegative deviation from the oracle reference, in tick spacings")
     args = parser.parse_args()
     core = get_launch_addresses(4663).orchestrator
-    config = default_hmm_launch_config(token_budget=1_000_000 * 10**18, quote_asset="WETH")
+    config = default_hmm_launch_config(token_budget=1_000_000 * 10**18, quote_asset="WETH",
+        max_bid_quote=args.max_bid_quote, reference_deviation=args.reference_deviation)
     presets = [get_known_lifecycle_profile(chain_id=4663, orchestrator=core, key=key)
                for key in (KnownLifecycleProfile.V4_HMM_FIXED_POOL, KnownLifecycleProfile.V4_HMM_DYNAMIC_POOL)]
     result = {"hmmLaunchConfig": asdict(config), "tail": "0x" + encode_hmm_launch_tail(config).hex(),
