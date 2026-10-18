@@ -319,7 +319,38 @@ def async_read_invocation(stage: str):
     return decorate
 
 
+# Mirrors viem's default HTTP transport (3 retries, exponential backoff from 150ms) so a
+# throttled public RPC is retried instead of surfacing as a failed execution proof.
+_TRANSIENT_RETRY_DELAYS = (0.15, 0.3, 0.6)
+_TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
+_TRANSIENT_RPC_CODES = {429, -32005}
+
+
+def _transient(native: Mapping[str, Any], error: Exception | None) -> bool:
+    if error is not None and type(error).__name__ in {"ConnectionError", "Timeout", "ReadTimeout", "ConnectTimeout", "ChunkedEncodingError", "TimeoutError"}:
+        return True
+    if getattr(getattr(error, "response", None), "status_code", None) in _TRANSIENT_HTTP_STATUSES:
+        return True
+    for key in ("code", "status", "statusCode", "status_code"):
+        value = native.get(key)
+        if isinstance(value, int) and (value in _TRANSIENT_RPC_CODES or (key != "code" and value in _TRANSIENT_HTTP_STATUSES)):
+            return True
+    return "too many requests" in str(native.get("message", "")).lower()
+
+
 def _request(client: Any, method: str, params: Sequence[Any]) -> Any:
+    for delay in (*_TRANSIENT_RETRY_DELAYS, None):
+        try:
+            return _request_once(client, method, params)
+        except LaunchRpcError as error:
+            cause = error.__cause__ if isinstance(error.__cause__, Exception) else None
+            if delay is None or not _transient(error._native, cause):
+                raise
+        time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _request_once(client: Any, method: str, params: Sequence[Any]) -> Any:
     try:
         if hasattr(client, "request"):
             return client.request({"method": method, "params": list(params)})

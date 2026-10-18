@@ -348,3 +348,32 @@ def test_returned_execution_failure_never_falls_back_to_fork(validation):
     assert outcome.calls[0].failure_category == "opaque"
     assert fork.client.provider.calls == []
     assert "private-provider-text" not in repr(outcome)
+
+
+class ScriptedProvider:
+    def __init__(self, responses):
+        self.responses, self.calls = list(responses), 0
+
+    def make_request(self, method, params):
+        self.calls += 1
+        return self.responses.pop(0)
+
+
+def test_throttled_rpc_is_retried_until_it_answers(monkeypatch):
+    monkeypatch.setattr("black_market_sdk.lifecycle_rpc.time.sleep", lambda _seconds: None)
+    throttled = {"jsonrpc": "2.0", "id": 1, "error": {"code": 429, "message": "Too Many Requests"}}
+    provider = ScriptedProvider([throttled, throttled, {"jsonrpc": "2.0", "id": 1, "result": "0x1"}])
+    assert rpc(SimpleNamespace(provider=provider), "eth_blockNumber", []) == "0x1"
+    assert provider.calls == 3
+
+
+def test_execution_errors_and_exhausted_throttling_are_not_retried_forever(monkeypatch):
+    monkeypatch.setattr("black_market_sdk.lifecycle_rpc.time.sleep", lambda _seconds: None)
+    reverted = ScriptedProvider([{"jsonrpc": "2.0", "id": 1, "error": {"code": 3, "message": "execution reverted"}}])
+    with pytest.raises(LaunchRpcError):
+        rpc(SimpleNamespace(provider=reverted), "eth_call", [])
+    assert reverted.calls == 1
+    throttled = ScriptedProvider([{"jsonrpc": "2.0", "id": 1, "error": {"code": 429, "message": "Too Many Requests"}}] * 4)
+    with pytest.raises(LaunchRpcError):
+        rpc(SimpleNamespace(provider=throttled), "eth_blockNumber", [])
+    assert throttled.calls == 4

@@ -7,6 +7,7 @@
 - Default Robinhood's aggregate simulation budget to 50M. Prove a fitting prefix and expose `simulation.deferred_transaction_ids`; deferred commands have no signing gas, price or admission until fresh build-next proof. Buy calibration refuses when activation outputs are deferred.
 - Remove `prepare_batch_size` from every planner and `PlannedLaunch`; migrate examples to exact transaction spans. Pure offline `build_launch_transactions(..., preparation_batches=...)` remains supported.
 - Collapse nested chain/header guards into owner-level checks and replay only the immediate reviewed gas/price envelope, without remeasurement, repricing or suffix replay. Retain native Nitro capability, identity, receipts, nonce, postcondition and submission checks.
+- Retry throttled or transiently failed RPC requests (HTTP 408/429/5xx, JSON-RPC 429/-32005, connection timeouts) up to three times with 150/300/600 ms backoff, matching viem's default transport, so a rate-limited public RPC no longer surfaces as a failed execution proof.
 - Update launch documentation and focused regression coverage for sizing, packing, prefix proof and immediate-envelope execution.
 
 ## 0.10.0
