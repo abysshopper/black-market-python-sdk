@@ -104,7 +104,6 @@ def main(argv=None):
     parser.add_argument("--account-gas-cap", type=int, help="Optional known direct-EOA transaction envelope cap")
     parser.add_argument("--calldata-cap", type=int, help="Optional known calldata byte cap")
     parser.add_argument("--headroom-bps", type=int, default=1500)
-    parser.add_argument("--prepare-batch-size", type=int)
     parser.add_argument("--confirmations", type=int, default=1)
     receipts_group = parser.add_mutually_exclusive_group()
     receipts_group.add_argument("--receipts", type=Path, help="Typed receipt-reference JSON; retains original blocks and replacements")
@@ -144,7 +143,7 @@ def main(argv=None):
         )
 
     options = {"account": args.account, "mode": args.mode, "limits": limits,
-        "prepare_batch_size": args.prepare_batch_size, "confirmations": args.confirmations,
+        "confirmations": args.confirmations,
         "receipts": references, "fork": fork}
     planned = None
     if args.finalize_bound:
@@ -163,7 +162,6 @@ def main(argv=None):
         if planned is None:
             planned = plan_launch(client, plan, **options)
         next_transaction = build_next_transaction(client, planned, account=args.account, receipts=options["receipts"],
-                                                  prepare_batch_size=planned.prepare_batch_size,
                                                   fork=fork, submission_client=submission_client) if planned.admitted else None
         output.update({"admitted": planned.admitted, "confidence": planned.confidence,
             "predictedToken": planned.predicted_token, "progress": planned.progress,

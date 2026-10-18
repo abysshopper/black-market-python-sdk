@@ -948,7 +948,7 @@ def admit_plan(client, plan, case, artifacts, cancellation):
         artifacts.event("hook-salt-mining", observation=observation)
     launch = asyncio.run(prepare_and_plan_lifecycle_launch(
         client, plan, account=plan.creator, mode=case["mode"], limits=limits,
-        prepare_batch_size=1, confirmations=CONFIRMATIONS, on_progress=progress, buy_slippage_bps=BUY_SLIPPAGE_BPS,
+        confirmations=CONFIRMATIONS, on_progress=progress, buy_slippage_bps=BUY_SLIPPAGE_BPS,
     ))
     cancellation.check()
     artifacts.save("plan.json", launch_plan_to_dict(launch.plan))
@@ -1021,7 +1021,7 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
         if held is None:
             # Establish one explicit next-command review after the preceding receipt.
             held = build_next_transaction(client, launch, account=plan.creator, receipts=references,
-                                          confirmations=CONFIRMATIONS, prepare_batch_size=launch.prepare_batch_size)
+                                          confirmations=CONFIRMATIONS)
             if held is None:
                 break
         reviewed_envelope = held.as_transaction()
@@ -1040,7 +1040,7 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
         # only constrain the fresh proof when the held envelope is complete.
         complete_held = held if getattr(held, "gas_limit", None) is not None and getattr(held, "gas_price", None) is not None else None
         step = build_next_transaction(client, launch, account=plan.creator, receipts=references,
-                                      confirmations=CONFIRMATIONS, prepare_batch_size=launch.prepare_batch_size,
+                                      confirmations=CONFIRMATIONS,
                                       reviewed_transaction=complete_held, submission_client=client)
         require(step is not None and step.kind == held.kind and step.step_id == held.step_id
                 and (complete_held is None or step.as_transaction() == reviewed_envelope),
@@ -1459,7 +1459,7 @@ def resume_launch_example(recovery_dir, cancellation):
     # the committed nonce/salt identity rather than mining anything new.
     launch = plan_launch(
         client, plan, account=plan.creator, mode=recovery["mode"], limits=limit_resolver(),
-        prepare_batch_size=1, confirmations=CONFIRMATIONS, receipts=tuple(references),
+        confirmations=CONFIRMATIONS, receipts=tuple(references),
     )
     require(launch.plan.nonce == plan.nonce and launch.launch_id is not None,
             "resumed plan identity changed", code="PLAN_CHANGED")

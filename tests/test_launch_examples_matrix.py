@@ -331,7 +331,7 @@ def test_executor_reorg_barrier_never_replays_orphaned_work(tmp_path, monkeypatc
     envelope = {"chainId": 4663, "from": CREATOR, "to": plan.orchestrator, "data": "0x01", "value": 0, "gas": 100000, "gasPrice": 1, "nonce": 0}
     held = SimpleNamespace(kind="atomic", step_id="atomic", as_transaction=lambda: envelope,
                            admission=SimpleNamespace(admitted=True, limits=None))
-    launch = SimpleNamespace(transactions=(held,), receipt_references=(original,), approvals=(), prepare_batch_size=1, mode="atomic")
+    launch = SimpleNamespace(transactions=(held,), receipt_references=(original,), approvals=(), mode="atomic")
     reads, sent = [], []
     done = [False]
     def progress(_client, _plan, **options):
@@ -454,7 +454,7 @@ def test_receipt_reference_json_rejects_nonexact_block_values(number):
         submit.parse_receipt_references([{"transaction_hash": TX_HASH, "observed_block_number": number}])
 
 
-def test_submit_restores_wrapper_receipts_and_planned_prepare_batch_size(construct_case, tmp_path, monkeypatch, capsys):
+def test_submit_restores_wrapper_receipts(construct_case, tmp_path, monkeypatch, capsys):
     _, plan, _, artifacts = construct_case("launch_erc20_v4.py")
     reference = lifecycle.LifecycleReceiptReference(TX_HASH, observed_block_number=16, observed_block_hash=BLOCK_HASH)
     payload = {"plan": lifecycle.launch_plan_to_dict(plan), "receipts": submit.receipt_reference_json((reference,))}
@@ -466,7 +466,7 @@ def test_submit_restores_wrapper_receipts_and_planned_prepare_batch_size(constru
     status = lifecycle.LifecycleReceiptStatus(TX_HASH, TX_HASH, "confirmed", False, 16, BLOCK_HASH, 1)
     progress = ProgressOutput((status,))
     planned = SimpleNamespace(admitted=True, confidence="stateful", predicted_token=TOKEN, progress=progress,
-                              approvals=(), profiles=(), hook_deployments=(), simulation={}, prepare_batch_size=2)
+                              approvals=(), profiles=(), hook_deployments=(), simulation={})
     observed = []
     def plan_launch(_client, _plan, **options):
         assert options["receipts"] == (reference,)
@@ -479,7 +479,7 @@ def test_submit_restores_wrapper_receipts_and_planned_prepare_batch_size(constru
     monkeypatch.setattr(submit, "build_next_transaction", next_transaction)
     assert submit.main([str(path), "--rpc-url", "https://rpc.example", "--account", plan.creator, "--mode", "staged"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert observed[0]["prepare_batch_size"] == 2 and output["receipts"] == payload["receipts"]
+    assert observed[0]["receipts"] == (reference,) and output["receipts"] == payload["receipts"]
     assert output["nextTransaction"] is None
     artifacts.finish()
 

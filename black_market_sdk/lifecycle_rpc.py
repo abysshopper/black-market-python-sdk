@@ -774,9 +774,6 @@ def _simulate_rpc(
     }
     if len(transactions) > 256:
         return LaunchRpcSimulation("provisional", None, block, (), "eth_simulateV1 supports at most 256 fresh blocks")
-    if limits.rpc_total_simulation_gas_limit is not None:
-        if sum(quantity(transaction["gas"]) for transaction in transactions) > limits.rpc_total_simulation_gas_limit:
-            return LaunchRpcSimulation("provisional", None, block, (), "the RPC aggregate simulation gas cap is insufficient")
     if limits.rpc_max_request_bytes is not None:
         envelope = {"jsonrpc": "2.0", "id": 1, "method": "eth_simulateV1", "params": [payload, block.tag]}
         if len(json.dumps(envelope, separators=(",", ":")).encode()) > limits.rpc_max_request_bytes:
@@ -922,11 +919,14 @@ def simulate_transactions(
     postconditions: Sequence[Sequence[Mapping[str, str]]] | None = None,
     postcondition_validator: Callable[[int, LaunchSimulationCall], None] | None = None,
     force_owned_fork: bool = False,
+    source_chain: int | None = None,
 ) -> LaunchRpcSimulation:
     """Execute exact ordered transactions without persisting source state."""
     from .lifecycle import LifecyclePlanningError
-    assert_canonical(client, block)
-    source_chain = quantity(rpc(client, "eth_chainId", []))
+    owns_source = source_chain is None
+    if owns_source:
+        assert_canonical(client, block)
+        source_chain = quantity(rpc(client, "eth_chainId", []))
     try:
         for transaction in transactions:
             if "chainId" in transaction and quantity(transaction["chainId"]) != source_chain:
@@ -962,8 +962,9 @@ def simulate_transactions(
             return _simulate_fork(client, fork, transactions, block, validation, limits, postconditions, postcondition_validator)
         return result
     finally:
-        assert_canonical(client, block)
-        assert_chain(client, source_chain)
+        if owns_source:
+            assert_canonical(client, block)
+            assert_chain(client, source_chain)
 
 
 __all__ = [

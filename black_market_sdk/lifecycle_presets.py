@@ -31,6 +31,19 @@ class KnownLifecycleHook(str, Enum):
     HMM_FIXED_POOL_V2 = "hmm-fixed-pool-v2"
     HMM_DYNAMIC_POOL_V2 = "hmm-dynamic-pool-v2"
 
+# HMMLiquidityHookV2.sol:98-119 requires ~3.06M gas available before manager
+# calls (opening and buys), invisible in gasUsed/maxUsedGas. Robinhood fork
+# measurements: activation used/minimum 5.85/9.60M, 11.13/15.40M, 16.54/21.11M;
+# one-pool atomic 27.36/31.32M; prepare per HMM market 13.8-14.34M.
+HMM_V2_FORWARDING_RESERVE = 4_250_000
+HMM_V2_ADDITIONAL_MARKET_RESERVE = 500_000
+HMM_V2_PREPARE_GAS_ESTIMATE = 14_500_000
+OTHER_PREPARE_GAS_ESTIMATE = 16_000_000
+ACTIVATE_MARKET_GAS_ESTIMATE = 6_000_000
+BEGIN_GAS_ESTIMATE = 9_500_000
+ROBINHOOD_RPC_SIMULATION_GAS_LIMIT = 50_000_000
+NEAR_GAS_CEILING_BPS = 9_500
+
 
 
 

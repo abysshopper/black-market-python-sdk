@@ -4,6 +4,24 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+## 0.11.0 release
+
+Planning now adds the HMM V2 gas-forwarding reserve, greedily packs preparation,
+and proves the longest prefix fitting the RPC simulation budget. On Robinhood
+the default aggregate budget is 50,000,000 gas; callers may override
+`LaunchExecutionLimits.rpc_total_simulation_gas_limit`.
+`LaunchSimulation.deferred_transaction_ids` names every unproved suffix command.
+Those commands have no gas, gas price or admission until freshly proved by
+`build_next_transaction` from canonical progress. A successful prefix is admitted;
+this does **not** claim eventual activation or deferred buy outputs were proved.
+
+The planner option and `PlannedLaunch` field `prepare_batch_size` are removed.
+Inspect each prepare transaction's `first_market` and `market_count` instead.
+Pure offline `build_launch_transactions(..., preparation_batches=...)` still
+accepts exact explicit batches. A reviewed build-next envelope now receives one
+exact immediate replay without fresh measurement, price/poster recommendations,
+or full-suffix replay.
+
 ## 0.10.0 release
 
 This is a breaking HMM V2-only cutover. The generic `HmmStrategyConfig`,
@@ -411,7 +429,7 @@ Profile/dependency domains are `black-market.launch-profile.v2` and
 
 | API | Purpose |
 | --- | --- |
-| `prepare_and_plan_lifecycle_launch(client,plan,account=...,mode=...)` | Salt mining, optional buy protection, and final complete admission |
+| `prepare_and_plan_lifecycle_launch(client,plan,account=...,mode=...)` | Salt mining, optional buy protection, and final available-prefix admission |
 | `plan_launch(client,plan,account=...,mode=...)` | Admission of already finalized economics in the explicit mode |
 | `simulate_launch_plan(client,launch,account=...)` | Reexecute against current canonical progress and caps |
 | `build_next_transaction(client,launch,account=...)` | Revalidate and emit only the next proven unsigned step |
@@ -423,6 +441,26 @@ Staged mode partitions preparation only. Minting all positions, permanent custod
 sealing, ordered opening buys, refunds, and public activation form one indivisible
 activation transaction. An overlimit activation is refused, not split or silently
 changed. Execution grouping never changes committed economics.
+
+The planner greedily packs contiguous markets using 14,500,000 gas per shipped
+HMM V2 market and 16,000,000 otherwise. At a 32M compute cap, 1/2/3/5 HMM markets
+pack as `[1]`, `[2]`, `[2, 1]`, `[2, 2, 1]`. If a multi-market prepare fails
+measurement after consuming at least 95% of its envelope, the planner halves that
+batch and re-plans. This includes CREATE's `DeploymentFailed`; a lower-gas semantic
+failure is not retried or hidden. Activation remains indivisible.
+
+The aggregate budget selects a prefix using begin 9.5M, the preparation costs
+above, activation 6M per market plus the HMM reserve, and small approval estimates.
+Measurement failures after cumulative request gas usage reaches 95% of that budget
+truncate before the failed command; genuine failures inside the prefix still fail.
+Only that prefix is measured and exactly replayed. Admitted plans expose the rest
+as `simulation.deferred_transaction_ids` (empty for complete coverage).
+Deferred transactions have no `gas_limit`, `gas_price`, estimate or admission.
+Rebuild the immediate next transaction after every canonical receipt to obtain its
+fresh exact envelope; never sign a deferred command directly. Prefix admission is
+not a guarantee the remaining launch will succeed. `buy_slippage_bps` refuses if
+activation is deferred: use a native provider with a larger aggregate budget or
+omit calibration and supply already-committed buy minima.
 
 Quote/fee assets and exact direct ERC20/native-wrap funding are permissionless;
 admission checks actual code, transfers, balances, budgets, and wrapped-native
@@ -446,7 +484,7 @@ outcomes:
 
 | Field | Values | Scope |
 | --- | --- | --- |
-| `execution_proof` | `proved`, `failed`, `unavailable` | Complete sequential measurement followed by exact gas-envelope replay and all launch postconditions |
+| `execution_proof` | `proved`, `failed`, `unavailable` | Selected prefix measurement plus exact gas-envelope replay and postconditions; held envelopes use direct exact replay |
 | `protocol_fit` | `proved`, `failed`, `unknown` | Pinned protocol ceilings and known tightening policy; an economic revert does not prove gas fit |
 | `transport_preflight` | `not-requested`, `passed`, `failed` | Optional immediate-next-transaction estimate on the supplied submission RPC |
 
@@ -472,6 +510,16 @@ steps. Each budget receives integer-ceiling headroom separately. The validated
 native replay charges actual poster gas and proves ArbOS compute enforcement;
 the SDK never subtracts an approximate poster quote to assert exact compute use.
 The total gas envelope and receipt gas may exceed the compute ceiling.
+
+For measured gross requirement `G = maxUsedGas` (falling back to `gasUsed`), the
+compute target is `max(G + R, ceil(G * (10000 + headroom_bps) / 10000))`.
+For atomic/activation transactions containing shipped HMM V2 fixed/dynamic
+markets, `R = 4_250_000 + 500_000 * (hmm_market_count - 1)` exactly once per
+transaction; all other commands use zero reserve. The hook requires gas available
+before manager calls that never appears in gas-used measurements. Optional reserve
+and percentage targets are clamped to the actual compute and total-envelope caps,
+then the chosen gas is exactly replayed. Padding alone cannot refuse a fitting
+measurement. Poster gas stays a separate envelope component, not a second fee.
 `poster_gas` / `poster_fee` are budget observations, not extra charges:
 `data_fee_included_in_gas=True`, `data_fee=0`, and `total_fee` is already
 `gas_limit * gas_price`. A generic Anvil fork cannot prove native ArbOS metering
@@ -494,10 +542,16 @@ admission has `transport_preflight="passed"`. Planning does not estimate future
 dependent steps against nonexistent current state. Wallet/account/chain guards
 are still required immediately around the eventual signature request.
 
-Source chain identity is checked again at native-probe, sequential-simulation and
-admission completion, in addition to canonical block identity. Transport drift to
-a different-chain fork sharing the same block hash raises `LaunchStateChanged`
-with `code="CHAIN_MISMATCH"`. Headroom is an integer from 0 through 10000 bps;
+With an explicitly supplied generic-EVM `fork`, a held immediate envelope is
+replayed directly in that owned disposable fork, with no estimation pass. The
+backend is selected before replay and never changes after a replay failure.
+Nitro held envelopes always require the native backend.
+
+The planning owner checks source chain and canonical block identity once after
+proof; standalone public readers retain their own end guards, and submission
+preflight is followed by a source check. Transport drift to a different-chain fork
+sharing the same block hash raises `LaunchStateChanged` with `code="CHAIN_MISMATCH"`.
+Headroom is an integer from 0 through 10000 bps;
 header and transaction/simulation/execution/compute gas ceilings are positive
 uint64 values. Chain/version/provenance and fee quantities retain their own widths;
 calldata/request byte caps must be positive safe integers.

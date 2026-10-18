@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0
+
+- Size atomic/activation envelopes with the shipped HMM V2 forwarding reserve, once per transaction; clamp optional reserve/headroom targets to legal compute and total gas caps, then prove the exact envelope.
+- Greedily pack contiguous preparation markets from conservative profile costs (14.5M HMM V2, 16M otherwise); split only underestimated packed preparations that fail measurement near the gas ceiling.
+- Default Robinhood's aggregate simulation budget to 50M. Prove a fitting prefix and expose `simulation.deferred_transaction_ids`; deferred commands have no signing gas, price or admission until fresh build-next proof. Buy calibration refuses when activation outputs are deferred.
+- Remove `prepare_batch_size` from every planner and `PlannedLaunch`; migrate examples to exact transaction spans. Pure offline `build_launch_transactions(..., preparation_batches=...)` remains supported.
+- Collapse nested chain/header guards into owner-level checks and replay only the immediate reviewed gas/price envelope, without remeasurement, repricing or suffix replay. Retain native Nitro capability, identity, receipts, nonce, postcondition and submission checks.
+- Update launch documentation and focused regression coverage for sizing, packing, prefix proof and immediate-envelope execution.
+
 ## 0.10.0
 
 - Breaking HMM V2-only cutover: retain the generic HMM model/helper names and `v4-hmm-fixed-pool` / `v4-hmm-dynamic-pool` keys, retarget them to the October 18 admitted V2 profiles, and replace versioned HMM hook enum values with V2. HMM V1 aliases, identities and 448-byte tails are not supported; this SDK change does not deregister on-chain profiles.
@@ -24,4 +33,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.10.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.11.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

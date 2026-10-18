@@ -18,7 +18,11 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-Version **0.10.0** is a breaking HMM V2-only cutover: generic HMM helpers and
+Version **0.11.0** adds HMM-aware gas sizing, automatic preparation packing, and
+bounded simulation-prefix admission with explicit deferred steps. See
+[simulation and recovery](docs/launch-guide.md#simulation-unsigned-commands-and-recovery).
+
+Version **0.10.0** introduced a breaking HMM V2-only cutover: generic HMM helpers and
 profile keys now target the newly admitted V2 graph and 512-byte launch tails.
 `default_hmm_launch_config` requires explicit `max_bid_quote` and
 `reference_deviation`; other defaults are unchanged. HMM V1 identities, hook
@@ -36,8 +40,9 @@ On Robinhood mainnet (**chain 4663**), it:
    (three), priced from the same whole-supply USD valuation (default $5,000).
 3. Funds one opening buy per market with 0.00001 ETH each by default. ETH wraps
    into WETH; USDG uses an admitted Kyber conversion. ETH for gas is additional.
-4. Prepares and proves the complete staged plan, prints the economic review,
-   and saves artifacts. The default dry-run never signs or submits anything.
+4. Prepares and proves the available staged prefix, prints the economic review,
+   and saves artifacts. Buy calibration requires activation outputs to fit the
+   selected RPC's simulation budget. The default dry-run never signs or submits.
 5. With authorization, stages metadata, begins and prepares the markets, then
    activates all seven positions and three buys together. It verifies chain
    results and API publication; optional images are verified before submission.
