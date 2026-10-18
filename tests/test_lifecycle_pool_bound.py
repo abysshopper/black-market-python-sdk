@@ -254,7 +254,8 @@ def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_
         provider.plan = current
         return (), (PoolBoundLifecycleDeployment(actual.deployer, actual.init_code_hash,
             actual.salt, actual.predicted_hook, 0),), ()
-    monkeypatch.setattr(lifecycle, "read_pool_bound_hook_deployment", deployment)
+    monkeypatch.setattr(lifecycle, "_read_pool_bound_deployment",
+        lambda client, current, index, block: (deployment(client, current, market_index=index, block=block), None))
     monkeypatch.setattr(lifecycle, "_read_plan_metadata", metadata)
     def advance(_):
         state["changed"] = True

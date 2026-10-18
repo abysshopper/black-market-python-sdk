@@ -299,8 +299,9 @@ class CanonicalRpcScenario:
                 progress_entry = next(item for item in LAUNCH_LIFECYCLE_V1_ABI if item.get("name") == "readLaunchProgress")
                 result = "0x" + abi_encode([canonical_abi_type(progress_entry["outputs"][0])], [self.progress(phase)]).hex()
             else:
-                selector, _ = function_signature("predictToken")
-                assert data[:4] == selector
+                from black_market_sdk.lifecycle import _LIFECYCLE_TOKEN_PREDICTION_ABI
+                selectors = (function_signature("predictToken")[0], function_signature("predictToken", _LIFECYCLE_TOKEN_PREDICTION_ABI)[0])
+                assert data[:4] in selectors
                 result = "0x" + abi_encode(["address"], [vector().get("predictedToken", "0x1000000000000000000000000000000000000001")]).hex()
         elif method == "eth_getBalance":
             result = hex(10**24)
@@ -731,7 +732,7 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
                 gas_used = compute + (self.actual_poster_gas if self.plan.chain_id == 4663 and payload["validation"] else 0)
                 requested = int(transaction["gas"], 16)
                 logs = self.logs(transaction)
-                success = gas_used <= requested
+                success = gas_used <= requested and not (payload["validation"] and self.plan.chain_id == 4663 and compute > min(self.tx_cap, self.block_cap))
                 error = None if success else {"code": -32000, "message": "out of gas"}
                 if payload["validation"] and self.replay_failure == "revert":
                     success, error, logs = False, {"message": "economic revert"}, []
@@ -748,6 +749,8 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
 
 def admission_fixture(*, nitro=False, policy=None, kind="cancel", **scenario_options):
     request = replace(plan(), chain_id=4663) if nitro else plan()
+    if nitro and policy is None:
+        policy = LaunchExecutionLimits(rpc_total_simulation_gas_limit=200_000_000)
     provider = AdmissionRpcScenario(request, **scenario_options)
     client = SimpleNamespace(provider=provider)
     block = LaunchBlock(51, BLOCK_HASH, request.deadline - 100, (1 << 50) if nitro else 30_000_000, 1)
@@ -762,8 +765,13 @@ def admission_fixture(*, nitro=False, policy=None, kind="cancel", **scenario_opt
 def simulate_fixture(fixture, *, data_fee_estimator=None, fork=None):
     request, provider, client, block, limits, transaction = fixture
     predicted = vector().get("predictedToken", "0x1000000000000000000000000000000000000001")
-    return _simulate_sequence(client, request, (transaction,), block=block, predicted=predicted,
-                              limits=limits, fork=fork, data_fee_estimator=data_fee_estimator)
+    from black_market_sdk.lifecycle_rpc import assert_canonical, assert_chain
+    try:
+        return _simulate_sequence(client, request, (transaction,), block=block, predicted=predicted,
+                                  limits=limits, fork=fork, data_fee_estimator=data_fee_estimator)
+    finally:
+        assert_canonical(client, block)
+        assert_chain(client, request.chain_id)
 
 
 @pytest.mark.parametrize("kind", ["cancel", "atomic"])
@@ -792,12 +800,12 @@ def test_permissive_measurement_alone_never_proves_complete_exact_replay(failure
 
 
 @pytest.mark.parametrize("cap_name", ["chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit"])
-def test_known_envelope_policy_only_tightens_replay(cap_name):
+def test_known_envelope_policy_clamps_optional_headroom(cap_name):
     fixture = admission_fixture(policy=LaunchExecutionLimits(**{cap_name: 110_000}))
     result = simulate_fixture(fixture)
-    assert not result.admitted and result.protocol_fit == "failed"
-    assert result.execution_proof == "unavailable"
-    assert len(fixture[1].simulations) == 1
+    assert result.admitted and result.protocol_fit == result.execution_proof == "proved"
+    assert result.transactions[0].gas_limit == 110_000
+    assert [payload["validation"] for payload in fixture[1].simulations] == [False, True]
 
 
 @pytest.mark.parametrize("balance,admitted", [(115_009, True), (115_008, False)])
@@ -850,7 +858,8 @@ def test_nitro_known_total_envelope_cap_is_not_a_compute_cutoff():
     policy = LaunchExecutionLimits(account_transaction_gas_limit=34_000_000)
     fixture = admission_fixture(nitro=True, policy=policy, compute_gas=20_000_000, poster_gas=10_000_000)
     result = simulate_fixture(fixture)
-    assert not result.admitted and result.protocol_fit == "failed"
+    assert result.admitted and result.protocol_fit == "proved"
+    assert result.transactions[0].gas_limit == 34_000_000
     assert fixture[4].execution_gas_ceiling == 32_000_000
     assert fixture[4].transaction_gas_ceiling == 34_000_000
 
@@ -1195,9 +1204,11 @@ def test_staged_nitro_planner_returns_measured_wire_gas_envelopes(monkeypatch, p
     committed = hash_launch_plan(request), encode_launch_plan(request)
     if prepare:
         planned = asyncio.run(lifecycle.prepare_and_plan_lifecycle_launch(
-            client, request, account=request.creator, mode="staged"))
+            client, request, account=request.creator, mode="staged",
+            limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=200_000_000)))
     else:
-        planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
+        planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
+            limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=200_000_000))
     gas_limits = [transaction.gas_limit for transaction in planned.transactions]
     assert planned.admitted
     assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
@@ -1224,7 +1235,8 @@ def test_reviewed_nitro_envelope_can_consume_original_margin_at_fresh_block(monk
         scenario_options={"compute_gas": 8_026_829, "poster_gas": 1_373})
     provider.gas_price, provider.base_fee_per_gas = 40_124_000, 20_062_000
     committed = hash_launch_plan(request), encode_launch_plan(request)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode=mode)
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode=mode,
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=200_000_000))
     held = planned.transactions[0]
     assert planned.admitted and held.gas_limit == 9_232_433 and held.gas_price == 40_124_000
     provider.block_number += 1
@@ -1256,7 +1268,8 @@ def test_reviewed_nitro_envelope_can_consume_original_margin_at_fresh_block(monk
     assert current.admission.execution_proof == current.admission.protocol_fit == "proved"
     assert current.admission.transport_preflight == "passed"
     assert current.maximum_execution_fee == held.gas_limit * held.gas_price
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [True]
+    assert len(provider.simulations[0]["blockStateCalls"]) == 1
     for payload in provider.simulations:
         assert all(int(block["calls"][0]["gasPrice"], 16) == held.gas_price
             and "baseFeePerGas" not in block["blockOverrides"]
@@ -1292,8 +1305,7 @@ def test_reviewed_nitro_envelope_still_refuses_real_capacity_fee_and_proof_failu
     elif violation == "base-fee":
         provider.base_fee_per_gas = provider.child_base_fee = held.gas_price + 1
     elif violation == "balance":
-        provider.balance = sum(transaction.value + transaction.maximum_execution_fee
-            for transaction in planned.transactions) - 1
+        provider.balance = held.value + held.maximum_execution_fee - 1
     elif violation in {"revert", "incomplete"}:
         provider.replay_failure = violation
     provider.simulations.clear()
@@ -1309,12 +1321,12 @@ def test_reviewed_nitro_envelope_still_refuses_real_capacity_fee_and_proof_failu
     else:
         assert error.code == "PLAN_NOT_ADMITTED" and not error.simulation.admitted
         assert submission.requests == []
-    if violation in {"compute-cap", "envelope-cap"}:
+    if violation == "envelope-cap":
         assert error.simulation.protocol_fit == "failed"
-        assert error.simulation.capacity_constraint == ("compute" if violation == "compute-cap" else "gas-envelope")
-        assert [payload["validation"] for payload in provider.simulations] == [False]
+        assert error.simulation.capacity_constraint == "gas-envelope"
+        assert provider.simulations == []
     else:
-        assert [payload["validation"] for payload in provider.simulations] == [False, True]
+        assert [payload["validation"] for payload in provider.simulations] == [True]
         replay = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
         assert int(replay["gas"], 16) == held.gas_limit
         assert int(replay["gasPrice"], 16) == held.gas_price
@@ -1327,7 +1339,7 @@ def test_reviewed_nitro_envelope_still_refuses_real_capacity_fee_and_proof_failu
 
 
 @pytest.mark.parametrize("reviewed", [False, True])
-def test_future_envelope_enlargement_preserves_reviewed_immediate_gas_and_price(monkeypatch, reviewed):
+def test_reviewed_next_does_not_remeasure_or_replay_future_envelopes(monkeypatch, reviewed):
     lifecycle, request, provider, client = wire_planning(monkeypatch,
         request=replace(plan(), chain_id=4663), scenario_options={"poster_gas": 20_000})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
@@ -1335,21 +1347,18 @@ def test_future_envelope_enlargement_preserves_reviewed_immediate_gas_and_price(
     provider.replay_compute_gas_by_kind["prepare"] = 160_000
     provider.gas_price = 3
     provider.simulations.clear()
+    provider.poster_requests.clear()
     current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None)
     assert current.admission.admitted
     assert current.gas_limit == (held.gas_limit if reviewed else 32_023_000)
     assert current.gas_price == (held.gas_price if reviewed else provider.gas_price)
     assert current.maximum_execution_fee == current.gas_limit * current.gas_price
-    assert [payload["validation"] for payload in provider.simulations] == [False, True, True]
-    for payload in provider.simulations[1:]:
-        blocks = payload["blockStateCalls"]
-        assert len(blocks) == 3
-        if reviewed:
-            assert int(blocks[0]["calls"][0]["gas"], 16) == held.gas_limit
-        assert all(int(block["calls"][0]["gasPrice"], 16) == current.gas_price for block in blocks)
-    enlarged = provider.simulations[-1]["blockStateCalls"]
-    assert int(enlarged[1]["calls"][0]["gas"], 16) == 32_023_000
-    assert int(enlarged[2]["calls"][0]["gas"], 16) == 32_023_000
+    assert [payload["validation"] for payload in provider.simulations] == ([True] if reviewed else [False, True, True])
+    if reviewed:
+        assert len(provider.simulations[0]["blockStateCalls"]) == 1
+        assert provider.poster_requests == []
+    else:
+        assert int(provider.simulations[-1]["blockStateCalls"][1]["calls"][0]["gas"], 16) == 32_023_000
 
 
 @pytest.mark.parametrize("mode", ["atomic", "staged"])
@@ -1386,10 +1395,10 @@ def test_staged_mode_only_partitions_empty_preparation_not_activation(monkeypatc
     assert planned.plan_hash == hash_launch_plan(request)
 
 
-def test_atomic_mode_never_silently_falls_back_to_staged(monkeypatch):
+def test_atomic_mode_clamps_padding_without_falling_back_to_staged(monkeypatch):
     lifecycle, request, _, client = wire_planning(monkeypatch, scenario_options={"compute_gas": 27_000_000})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
-    assert not planned.admitted and planned.mode == "atomic"
+    assert planned.admitted and planned.mode == "atomic"
     assert [transaction.kind for transaction in planned.transactions] == ["atomic"]
 
 
@@ -1412,10 +1421,11 @@ def test_wide_internal_buffering_does_not_narrow_policy_provenance_or_fee_widths
             LaunchExecutionLimits(chain_id=value)
 
 
-def test_reorg_during_simulation_cannot_leave_execution_admission():
-    fixture = admission_fixture(reorganize_during_read=True)
+def test_reorg_during_simulation_cannot_leave_execution_admission(monkeypatch):
+    lifecycle, request, _, client = wire_planning(monkeypatch,
+        scenario_options={"reorganize_during_read": True})
     with pytest.raises(LaunchStateChanged):
-        simulate_fixture(fixture)
+        lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
 
 
 def test_gross_requirement_not_refund_reduced_gas_usage_sets_reviewed_envelope(monkeypatch):
@@ -1469,11 +1479,12 @@ def test_known_calldata_and_rpc_payload_constraints_are_enforced(policy):
     assert not result.admitted
 
 
-def test_complete_final_activation_cannot_be_partitioned_after_headroom_refusal(monkeypatch):
+def test_fitting_final_activation_clamps_padding_and_remains_indivisible(monkeypatch):
     lifecycle, request, _, client = wire_planning(monkeypatch, scenario_options={"compute_gas_by_kind": {"activate": 27_000_000}})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert not planned.admitted and planned.mode == "staged"
-    assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
+    assert planned.admitted and planned.mode == "staged"
+    assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "prepare", "activate"]
+    assert planned.transactions[-1].gas_limit == 30_000_000
     assert planned.transactions[-1].data == build_lifecycle_calldata(request, "activateLaunch")
     assert planned.plan_hash == hash_launch_plan(request)
 

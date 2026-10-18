@@ -606,7 +606,7 @@ def test_unified_admission_retains_actual_final_planned_launch(construct_case, m
     planned = lifecycle.PlannedLaunch(
         plan=final, plan_hash=fields["plan_hash"], launch_id=fields["launch_id"], predicted_token=predicted,
         chain_id=final.chain_id, account=final.creator, mode=case["mode"], transactions=(), approvals=(),
-        progress=progress, simulation=simulation, limits=LaunchExecutionLimits(), prepare_batch_size=1,
+        progress=progress, simulation=simulation, limits=LaunchExecutionLimits(),
         irreversible_costs=(), token_factory=deployment.token_factory, token_factory_code_hash="0x" + "56" * 32,
     )
     calls = []
@@ -766,7 +766,7 @@ def test_executor_refuses_changed_held_envelope_before_signing(tmp_path, monkeyp
         return SimpleNamespace(kind=held.kind, step_id=held.step_id, as_transaction=lambda: changed)
     monkeypatch.setattr(example, "build_next_transaction", prove)
     monkeypatch.setattr(example, "read_launch_progress", lambda *_args, **_kwargs: clean_progress(phase=lifecycle.LifecyclePhase.NONE))
-    launch = SimpleNamespace(transactions=(held,), receipt_references=(), approvals=(), prepare_batch_size=1, mode="atomic")
+    launch = SimpleNamespace(transactions=(held,), receipt_references=(), approvals=(), mode="atomic")
     api = SimpleNamespace(get_launch_upload_session=lambda *_: metadata_session())
     wallet = SimpleNamespace(send_transaction=no_call, client=client, account=SimpleNamespace(address=CREATOR))
     with pytest.raises(ExampleFailure) as failure:

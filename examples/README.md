@@ -18,6 +18,16 @@ to bind `hmm_launch_config` to a reviewed config6 before encoding a market.
 The existing funded launch cases retain the fixed-fee offering; they never
 silently switch to HMM.
 
+Lifecycle planners automatically pack preparation markets; examples no longer
+force one market per transaction or propagate a uniform batch size. Recovery
+uses each transaction's exact `first_market` / `market_count` span.
+On chain4663, the default simulation budget proves a fitting prefix and reports
+`simulation.deferred_transaction_ids`; only freshly proved steps have signing
+gas/price/admission. These examples request actual-output buy calibration, so
+activation must fit that budget: otherwise planning refuses rather than inventing
+opening outputs. A higher-budget native RPC also requires the corresponding
+`LaunchExecutionLimits.rpc_total_simulation_gas_limit` override in the runner.
+
 ## Configure once
 
 Install the SDK (`python -m pip install -e .` from this checkout, or install
