@@ -28,8 +28,8 @@ class KnownLifecycleProfile(str, Enum):
 class KnownLifecycleHook(str, Enum):
     FIXED_FEE_POOL_V1 = "fixed-fee-pool-v1"
     DYNAMIC_FEE_POOL_V1 = "dynamic-fee-pool-v1"
-    HMM_FIXED_POOL_V1 = "hmm-fixed-pool-v1"
-    HMM_DYNAMIC_POOL_V1 = "hmm-dynamic-pool-v1"
+    HMM_FIXED_POOL_V2 = "hmm-fixed-pool-v2"
+    HMM_DYNAMIC_POOL_V2 = "hmm-dynamic-pool-v2"
 
 
 

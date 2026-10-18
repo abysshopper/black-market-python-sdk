@@ -183,6 +183,13 @@ from .lifecycle_abis import (
     FIXED_FEE_POOL_HOOK_CONFIG_V6_ABI,
     POOL_HOOK_DEPLOYER_CONFIG_V6_ABI,
     POOL_FEE_COLLECTOR_FACTORY_CONFIG_V6_ABI,
+    HMM_STRATEGY_COMPONENTS,
+    HMM_LAUNCH_COMPONENTS,
+    HMM_FIXED_HOOK_V2_ABI,
+    HMM_DYNAMIC_HOOK_V2_ABI,
+    HMM_LIQUIDITY_MANAGER_V2_ABI,
+    HMM_FEE_COLLECTOR_V2_ABI,
+    HMM_FEE_COLLECTOR_FACTORY_V2_ABI,
     SHARED_HOOK_DEPLOYER_V1_ABI,
     LIFECYCLE_ORACLE_FACTORY_ABI,
     LIFECYCLE_V4_HOOK_ABI,
@@ -374,7 +381,7 @@ from .lifecycle import (
 )
 from .hmm import (
     HmmStrategyConfig, HmmLaunchConfig, HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID,
-    HMM_LAUNCH_TAIL_LENGTH, encode_hmm_launch_tail, decode_hmm_launch_tail,
+    HMM_LAUNCH_TAIL_LENGTH, HMM_LAUNCH_ABI_TYPE, encode_hmm_launch_tail, decode_hmm_launch_tail,
     validate_hmm_launch_config, default_hmm_launch_config, is_hmm_profile,
 )
 from .lifecycle_rpc import LifecycleRpcClient, LifecycleDiagnosticEvent, LifecycleDiagnosticListener
@@ -403,4 +410,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"

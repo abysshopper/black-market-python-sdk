@@ -1,4 +1,4 @@
-"""Exact HMM launch-tail ABI, Solidity factory guards, and calibrated defaults."""
+"""Exact HMM V2 launch-tail ABI, Solidity factory guards, and calibrated defaults."""
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
@@ -7,10 +7,10 @@ from eth_abi import decode as abi_decode, encode as abi_encode
 
 from .auction import AUCTION_QUOTE_OPTIONS
 
-HMM_FIXED_PROFILE_ID = "0x7e51d9aa979940e7867c75a82e05e924aa067e9d436f7731c3e3299f9e55d53d"
-HMM_DYNAMIC_PROFILE_ID = "0x109598e017b8f12648aff0f0dc04dbf8d4c0493f41a63068682d8f9d0a07a83d"
-HMM_LAUNCH_TAIL_LENGTH = 448
-HMM_LAUNCH_ABI_TYPE = "(uint16,(int24,int24,int24,uint32,int24,uint256,uint256,uint256,uint16,uint8,uint256,uint256,uint32))"
+HMM_FIXED_PROFILE_ID = "0x45e957bcc7068350a65f5b4de5453b674d54d0f5eb2a88fc839da13197e80e98"
+HMM_DYNAMIC_PROFILE_ID = "0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6"
+HMM_LAUNCH_TAIL_LENGTH = 512
+HMM_LAUNCH_ABI_TYPE = "(uint16,(int24,int24,int24,uint32,int24,uint256,uint256,uint256,uint16,uint8,uint256,uint256,uint32,uint256,int24))"
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,8 @@ class HmmStrategyConfig:
     max_ask_token_exposure: int
     max_acquired_inventory: int
     premium_decay_seconds: int
+    max_bid_quote: int
+    reference_deviation: int
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ def _integer(value: int, minimum: int, maximum: int, name: str) -> None:
 
 
 def validate_hmm_launch_config(config: HmmLaunchConfig) -> None:
-    """Mirror HMMFeeCollectorFactoryV1._decodeHMM, including ABI field widths."""
+    """Mirror HMMFeeCollectorFactoryV2._decodeHMM, including ABI field widths."""
     _integer(config.strategy_share_bps, 0, 10_000, "strategy_share_bps")
     strategy = config.strategy
     for name in ("bid_width", "ask_width", "stale_displacement"):
@@ -64,10 +66,12 @@ def validate_hmm_launch_config(config: HmmLaunchConfig) -> None:
              (1 << 128) - 1, "max_ask_token_exposure")
     _integer(strategy.max_acquired_inventory, strategy.min_token_harvest,
              (1 << 128) - 1, "max_acquired_inventory")
+    _integer(strategy.max_bid_quote, 1, (1 << 128) - 1, "max_bid_quote")
+    _integer(strategy.reference_deviation, 0, (1 << 23) - 1, "reference_deviation")
 
 
 def encode_hmm_launch_tail(config: HmmLaunchConfig) -> bytes:
-    """Return abi.encode(HMMLaunchConfigV1), exactly fourteen ABI words."""
+    """Return abi.encode(HMMLaunchConfigV2), exactly sixteen ABI words."""
     validate_hmm_launch_config(config)
     strategy = tuple(getattr(config.strategy, field.name) for field in fields(HmmStrategyConfig))
     return abi_encode([HMM_LAUNCH_ABI_TYPE], [(config.strategy_share_bps, strategy)])
@@ -75,7 +79,7 @@ def encode_hmm_launch_tail(config: HmmLaunchConfig) -> bytes:
 
 def decode_hmm_launch_tail(data: bytes) -> HmmLaunchConfig:
     if len(data) != HMM_LAUNCH_TAIL_LENGTH:
-        raise ValueError("HMM launch tail must be exactly 448 bytes")
+        raise ValueError("HMM launch tail must be exactly 512 bytes")
     share, strategy = abi_decode([HMM_LAUNCH_ABI_TYPE], data)[0]
     config = HmmLaunchConfig(share, HmmStrategyConfig(*strategy))
     if encode_hmm_launch_tail(config) != data:
@@ -83,11 +87,13 @@ def decode_hmm_launch_tail(data: bytes) -> HmmLaunchConfig:
     return config
 
 
-def default_hmm_launch_config(*, token_budget: int, quote_asset: str, quote_decimals: int | None = None,
+def default_hmm_launch_config(*, token_budget: int, quote_asset: str, max_bid_quote: int,
+                              reference_deviation: int, quote_decimals: int | None = None,
                               min_quote_deploy: int | None = None,
                               min_quote_harvest: int | None = None) -> HmmLaunchConfig:
     """Calibrate raw amounts to the market budget; unknown quotes need explicit thresholds.
 
+    Bid quote exposure and reference deviation require explicit caller policy.
     Defaults do not clamp small budgets or uint128 caps: invalid calibrations fail.
     WETH thresholds are 0.0005/0.005 ether; USD-pegged quotes use 1/10 units.
     """
@@ -110,7 +116,7 @@ def default_hmm_launch_config(*, token_budget: int, quote_asset: str, quote_deci
         min_quote_harvest = harvest if min_quote_harvest is None else min_quote_harvest
     config = HmmLaunchConfig(5_000, HmmStrategyConfig(
         5, 5, 1, 86_400, 5, min_quote_deploy, min_quote_harvest, token_budget // 100_000,
-        500, 4, token_budget // 10, token_budget, 0,
+        500, 4, token_budget // 10, token_budget, 0, max_bid_quote, reference_deviation,
     ))
     validate_hmm_launch_config(config)
     return config

@@ -18,6 +18,13 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+Version **0.10.0** is a breaking HMM V2-only cutover: generic HMM helpers and
+profile keys now target the newly admitted V2 graph and 512-byte launch tails.
+`default_hmm_launch_config` requires explicit `max_bid_quote` and
+`reference_deviation`; other defaults are unchanged. HMM V1 identities, hook
+enum values and 448-byte tails are no longer supported. See the
+[HMM configuration and owner-controls guide](docs/launch-guide.md#hmm-launch-configuration).
+
 ## Examples
 
 The most complete case is [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py).

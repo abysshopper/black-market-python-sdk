@@ -1,7 +1,7 @@
 """Extract construction profiles from mined release and template evidence.
 
 Usage: python tools/ci/import_lifecycle_release.py RELEASE_DIR TEMPLATE_DIR CHILDREN_DIR
-Append: python tools/ci/import_lifecycle_release.py --append-template KEY TEMPLATE_DIR RPC_URL
+Replace HMM: python tools/ci/import_lifecycle_release.py --replace-hmm-v2 RELEASE_JSON LIVE_JSON
 Read-only RPC mode hash-checks every storage child against the admitted graph.
 This is data generation only: it never compiles, signs or publishes.
 The template admission.json is unsigned preparation; its mined receipt authenticates it.
@@ -33,6 +33,16 @@ def import_template(template_dir: Path, children_dir: Path | None, data: dict, a
     receipt, = broadcast["receipts"]
     if int(receipt["status"], 16) != 1 or not any(transaction["hash"] == receipt["transactionHash"] for transaction in broadcast["transactions"]):
         raise ValueError("Template admission requires a successful matching mined receipt")
+    import_admission(admission, receipt, data, abi_data, key=key, children_dir=children_dir, rpc_url=rpc_url)
+
+
+def import_admission(admission: dict, receipt: dict, data: dict, abi_data: dict, *,
+                     key: str, children_dir: Path | None = None, rpc_url: str | None = None,
+                     creation_code: bytes | None = None) -> None:
+    if (admission["chainId"] != data["chainId"]
+            or admission["registry"].lower() != data["addresses"]["registry"].lower()
+            or int(receipt["status"], 16) != 1):
+        raise ValueError("Admission requires a successful mined receipt on the selected release graph")
     logs = [log for log in receipt["logs"] if log["address"].lower() == admission["registry"].lower() and not log["removed"]]
     def event(signature: str, identity: str) -> dict:
         matches = [log for log in logs if log["topics"][:2] == ["0x" + keccak(text=signature).hex(), identity]]
@@ -76,7 +86,9 @@ def import_template(template_dir: Path, children_dir: Path | None, data: dict, a
             if index == 0 or int(graph[f"codeChunk{index}Hash"], 16) != 0:
                 raise ValueError("Invalid empty storage-child graph")
             continue
-        if rpc_url is not None:
+        if creation_code is not None:
+            code = b"\x00" + creation_code[index * 24575:(index + 1) * 24575]
+        elif rpc_url is not None:
             from web3 import Web3
             code = bytes(Web3(Web3.HTTPProvider(rpc_url)).eth.get_code(address))
         elif children_dir is not None:
@@ -102,19 +114,51 @@ def import_template(template_dir: Path, children_dir: Path | None, data: dict, a
 
 
 def main() -> None:
-    if sys.argv[1] == "--append-template":
+    if sys.argv[1] == "--replace-hmm-v2":
         sdk_dir = Path(__file__).resolve().parents[2] / "black_market_sdk"
         destination = sdk_dir / "_lifecycle_release_20261008.json"
         data = json.loads(destination.read_text())
-        key, template, rpc_url = sys.argv[2:5]
-        if key not in ("v4-hmm-fixed-pool", "v4-hmm-dynamic-pool"):
-            raise ValueError("Append mode requires a known HMM profile key")
-        if any(row["key"] == key for row in data["profiles"]):
-            raise ValueError("Profile key already exists")
-        abi_data = json.loads((sdk_dir / "_sdk_abi_data.json").read_text())
-        import_template(Path(template), None, data, abi_data, key=key, rpc_url=rpc_url)
+        release = json.loads(Path(sys.argv[2]).read_text())
+        live = json.loads(Path(sys.argv[3]).read_text())
+        if (release["chainId"] != data["chainId"] or live["chainId"] != data["chainId"]
+                or release["registry"].lower() != data["addresses"]["registry"].lower()
+                or release["orchestrator"].lower() != data["addresses"]["orchestrator"].lower()
+                or release["tailBytes"] != 512):
+            raise ValueError("HMM V2 evidence differs from the selected lifecycle release")
+        keys = {"hmm-fixed-v2": "v4-hmm-fixed-pool", "hmm-dynamic-v2": "v4-hmm-dynamic-pool"}
+        if set(row["slug"] for row in release["profiles"]) != set(keys) or len(release["profiles"]) != 2:
+            raise ValueError("HMM V2 replacement requires both exact offerings")
+        old_adapters = {row["adapterId"] for row in data["profiles"] if row["key"] in keys.values()}
+        data["profiles"] = [row for row in data["profiles"] if row["key"] not in keys.values()]
+        data["adapters"] = [row for row in data["adapters"] if row["id"] not in old_adapters]
+        abi_path = sdk_dir / "_sdk_abi_data.json"
+        abi_data = {name: abi for name, abi in json.loads(abi_path.read_text()).items() if not name.startswith("hmm")}
+        for row in release["profiles"]:
+            recorded, = [item for item in live["profiles"] if item["profileId"] == row["profileId"]]
+            if (recorded["registrationBytes"] != row["registrationBytes"]
+                    or recorded["envelopeBytes"] != row["envelopeBytes"]
+                    or recorded["admissionReceipt"]["transactionHash"] != row["admissionTransaction"]):
+                raise ValueError("HMM V2 frozen inputs differ from pinned live admission evidence")
+            import_admission(row, recorded["admissionReceipt"], data, abi_data,
+                key=keys[row["slug"]], creation_code=bytes.fromhex(row["creationCode"][2:]))
+            abi_name = "hmmFixedHookV2Abi" if row["slug"] == "hmm-fixed-v2" else "hmmDynamicHookV2Abi"
+            abi_data[abi_name] = row["abi"]
+        for name, abi in release["abis"].items():
+            names = {"HMMLiquidityManagerV2": "hmmLiquidityManagerV2Abi",
+                     "HMMFeeCollectorV2": "hmmFeeCollectorV2Abi",
+                     "HMMFeeCollectorFactoryV2": "hmmFeeCollectorFactoryV2Abi"}
+            abi_data[names[name]] = abi
+        setter, = [entry for entry in abi_data["hmmLiquidityManagerV2Abi"] if entry.get("name") == "setStrategyConfig"]
+        strategy = [{"name": field["name"], "type": field["type"]} for field in setter["inputs"][0]["components"]]
+        abi_data["hmmStrategyComponents"] = strategy
+        abi_data["hmmLaunchComponents"] = [
+            {"name": "strategyShareBps", "type": "uint16"},
+            {"name": "strategy", "type": "tuple", "components": strategy},
+        ]
+        data["provenance"]["hmmV2Snapshot"] = {"blockNumber": live["blockNumber"], "blockHash": live["blockHash"]}
         destination.write_text(json.dumps(data, indent=2) + "\n")
-        print(f"Appended {key}, verified against mined receipt and storage-child hashes")
+        abi_path.write_text(json.dumps(abi_data, indent=2) + "\n")
+        print("Replaced both HMM construction presets and ABIs from mined V2 admission evidence")
         return
     release_dir = Path(sys.argv[1])
     read = lambda name: json.loads((release_dir / name).read_text())

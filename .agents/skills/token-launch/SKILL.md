@@ -75,13 +75,16 @@ See `references/audit-history.md`.
   fee and zero developer bps with explicit config6 minimum/maximum/sensitivity.
   Copy its own graph and terms; the fixed profile remains the examples' selection.
   Frozen metadata still requires fresh live eligibility and execution proof.
-- **HMM Fixed** / **HMM Dynamic** use `KnownLifecycleProfile.V4_HMM_FIXED_POOL`
-  / `V4_HMM_DYNAMIC_POOL`, zero LP/developer fees and their own frozen graph.
-  Config6 must include `hmm_launch_config`; use `default_hmm_launch_config`
-  with the raw market budget and actual quote, then review share/thresholds.
-  Encoding appends the exact 448-byte tail and salt mining preserves it.
-  The manager reinvests only its share of quote fees and never touches locked
-  launch positions; token-side fees retain normal owner/reward routing.
+- **HMM V2 Fixed** / **HMM V2 Dynamic** use `KnownLifecycleProfile.V4_HMM_FIXED_POOL`
+  / `V4_HMM_DYNAMIC_POOL`, zero LP/developer fees and their own admitted V2 graph.
+  Config6 must include `hmm_launch_config`; `default_hmm_launch_config` requires
+  the raw market budget, actual quote, explicit `max_bid_quote` and
+  `reference_deviation`. Other defaults are unchanged. The exact 512-byte tail
+  survives decoding, salt mining and plan serialization; 448-byte tails fail.
+  The hook reserves the configured share of both currencies' fees per swap after
+  treasury for its manager. All fifteen strategy settings and placement pause are
+  mutable by the current fee owner. The strategy does not burn tokens or touch
+  permanently locked launch positions.
 - Other compatible hooks may need different launch fields or swap-time data;
   topology/config6 alone does not justify reusing a fixed-hook form or empty data.
 - LP fees, hook trading fees, protocol share, executor bounty, author allocation
