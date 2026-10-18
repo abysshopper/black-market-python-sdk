@@ -203,13 +203,25 @@ def test_explicit_aggregate_override_can_prove_whole_sequence(monkeypatch):
     assert all(transaction.admission.admitted for transaction in planned.transactions)
 
 
-def test_no_empty_prefix_is_admitted_when_immediate_estimate_exceeds_aggregate_cap(monkeypatch):
-    request = hmm_plan(1)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
+@pytest.mark.parametrize("count,compute_cap,rpc_cap,constraint,reason", [
+    (2, 32_000_000, 50_000_000, "compute",
+     "Atomic launch needs about 55.3M gas, above the 32.0M per-transaction limit; use staged"),
+    (1, 64_000_000, 30_000_000, "simulation-gas",
+     "RPC aggregate simulation gas cap cannot fit the immediate transaction estimate"),
+])
+def test_no_prefix_refusal_prioritizes_compute_limit_over_rpc_budget(monkeypatch, count, compute_cap, rpc_cap, constraint, reason):
+    request = hmm_plan(count)
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"tx_cap": compute_cap, "block_cap": compute_cap})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
-        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=30_000_000))
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=rpc_cap))
     assert not planned.admitted and planned.simulation.execution_proof == "unavailable"
     assert planned.simulation.deferred_transaction_ids == ("atomic",)
+    assert planned.simulation.failure_category == "capacity"
+    assert planned.simulation.capacity_constraint == constraint
+    assert planned.simulation.reasons[0] == reason
+    if constraint == "compute":
+        assert planned.simulation.reasons == (reason,)
     assert provider.simulations == []
 
 

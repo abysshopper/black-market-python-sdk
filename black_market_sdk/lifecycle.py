@@ -2784,6 +2784,16 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         deferred = tuple(transactions[count:])
         transactions = transactions[:count]
         if not transactions:
+            immediate = deferred[0]
+            estimate = _transaction_gas_estimate(plan, immediate)
+            if estimate > compute_cap:
+                needed = (estimate + 50_000) // 100_000
+                ceiling = (compute_cap + 50_000) // 100_000
+                label = "Atomic launch" if immediate.kind == "atomic" else "Immediate transaction"
+                suggestion = "; use staged" if immediate.kind == "atomic" else ""
+                reason = f"{label} needs about {needed // 10}.{needed % 10}M gas, above the {ceiling // 10}.{ceiling % 10}M per-transaction limit{suggestion}"
+                return _launch_simulation(plan, limits, empty, (), (reason,),
+                    unknown=unknown, failure_category="capacity", capacity_constraint="compute", deferred=deferred)
             return _launch_simulation(plan, limits, empty, (),
                 ("RPC aggregate simulation gas cap cannot fit the immediate transaction estimate",),
                 unknown=unknown, failure_category="capacity", capacity_constraint="simulation-gas", deferred=deferred)
@@ -3179,7 +3189,8 @@ def _plan_launch(
             (failed.first_market + half, failed.market_count - half)]
     if not simulation.admitted and simulation.failed_transaction_id == "activate":
         simulation = replace(simulation, reasons=(*simulation.reasons, "Final mint/lock/all-buys/public-opening is indivisible and will not be partitioned"))
-    elif mode == "atomic" and not diagnostic and not simulation.admitted:
+    elif mode == "atomic" and not diagnostic and not simulation.admitted and not (
+        simulation.confidence == "provisional" and simulation.capacity_constraint == "compute"):
         simulation = replace(simulation, reasons=(*simulation.reasons, "Choose staged explicitly only if empty preparations can be partitioned and complete activation fits"))
     return finish(simulation, transactions, approvals, profiles, hooks, prerequisites)
 
