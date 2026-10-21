@@ -366,6 +366,11 @@ def estimate_launch_initial_buy(
     _integer(liquidity, 1, (1 << 128) - 1, "liquidity")
     _integer(paired_token_amount_in, 0, _MAX_UINT256, "paired_token_amount_in")
     _integer(fee, 0, 999_999, "fee")
+    if sqrt_price_limit_x96 is not None:
+        _integer(sqrt_price_limit_x96, 0, (1 << 160) - 1, "sqrt_price_limit_x96")
+        if (sqrt_price_limit_x96 < launch_sqrt_price_x96 if launched_token_is_quote
+                else sqrt_price_limit_x96 > launch_sqrt_price_x96):
+            raise ValueError("sqrt_price_limit_x96 is on the wrong side of the launch price for this buy")
     amount = paired_token_amount_in * (1_000_000 - fee) // 1_000_000
     if amount == 0:
         return LaunchInitialBuyEstimate(0, paired_token_amount_in, launch_sqrt_price_x96)
