@@ -103,6 +103,8 @@ def default_hmm_launch_config(*, token_budget: int, quote_asset: str, max_bid_qu
     decimals = quote_decimals if quote_decimals is not None else quote.decimals if quote else None
     if decimals is not None:
         _integer(decimals, 0, 255, "quote_decimals")
+    if quote is not None and decimals != quote.decimals:
+        raise ValueError("quote_decimals must match the supported quote asset")
     if min_quote_deploy is None or min_quote_harvest is None:
         if quote is None or decimals is None or not (quote.id == "WETH" or quote.usd_peg):
             raise ValueError("Quote has no HMM calibration; supply min_quote_deploy and min_quote_harvest")
