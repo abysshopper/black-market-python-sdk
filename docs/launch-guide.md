@@ -4,6 +4,122 @@ The SDK separates read-only discovery, explicit economic plans, unsigned transac
 building, wallet submission, and metadata publication. An address configuration is
 not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
 
+## 0.12.0 release
+
+UFG treasury launches are additive and opt-in. They use the same economic plan,
+token prediction, pool-bound hook mining, canonical progress and execution proof,
+but the UFG proxy is the creator and the originating principal pays and executes.
+Core/non-UFG calldata, configuration layouts and defaults are unchanged.
+
+## UFG treasury launches
+
+The shipped Robinhood chain4663 graph pins:
+
+| Contract | Public constant / address |
+| --- | --- |
+| Launch proxy | `UFG_LAUNCH_PROXY_ADDRESS`: `0xf6673d859DE03eB74A0b01696Edb97f941dFD0CA` |
+| Treasury factory | `UFG_TREASURY_FACTORY_ADDRESS`: `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
+| Upstream UFG factory | `UFG_UPSTREAM_FACTORY_ADDRESS`: `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
+
+`KnownLifecycleProfile.V4_UFG_FIXED_POOL` (`v4-ufg-fixed-pool`) and
+`V4_UFG_DYNAMIC_POOL` (`v4-ufg-dynamic-pool`) freeze their distinct admitted
+adapters, envelopes, registration, topology, constructor graph and creation code.
+`UFG_FIXED_PROFILE_ID`, `UFG_DYNAMIC_PROFILE_ID`, `UFG_FIXED_ADAPTER_ID`,
+`UFG_DYNAMIC_ADAPTER_ID` and `is_ufg_profile` identify them.
+`tests/fixtures/ufg-registry-readback.json` records all four registry call results
+and creation-code children at block **94,551,140**, hash
+`0x0778956b5a7bad65f8182b969ac4efc6a7182a0a922fbcb94dc87bfea26e9cc4`.
+`python tools/ci/import_ufg_release.py /path/to/ufg-registry-readback.json`
+verifies the raw ABI bytes/chunk hashes and regenerates the packaged UFG release.
+Both hook creation-code payloads match the existing fixed/zero-royalty dynamic
+presets byte-for-byte; the UFG adapters, deployers and collectors remain distinct.
+Frozen construction evidence never grants current eligibility.
+
+### Identity, configuration and funding
+
+- `plan.creator = UFG_LAUNCH_PROXY_ADDRESS`; the core `plan.orchestrator` remains
+  `get_launch_addresses(4663).orchestrator`. All proxy commands must be sent by
+  the same nonzero principal.
+- Set `plan.nonce = ufg_launch_nonce(principal, nonce)` with `0 <= nonce < 2**96`.
+  The plan/launch ID still commits the core, proxy creator and namespaced nonce.
+  Never use the principal as creator or approve the core funding escrow.
+- Use ERC20, reward mode NONE, executor fee zero, at least one market and external
+  inventory/buy recipients (not the proxy).
+- `UfgLaunchConfig(treasury_share_bps=10000, exit_fee_bps=100,
+  reserve_assets=(quote,))` commits a 100% treasury share, an exit fee of 0..2000
+  basis points, and 1..7 nonzero strictly ascending unique reserves. Exclude the
+  predicted launch token. Reserve and market quote sets must match exactly.
+- `build_ufg_fee_asset_policies(token, reserves)` returns sorted policies: burn
+  100% of launch-token fees; send 100% of reserve fees to the fee owner; no rewards.
+  The fee owner is handed permanently to the UFG funding adapter, not the principal.
+- Native Abyss markets use canonical config1 QUOTE (2) or QUOTE_ORACLE (3), their
+  matching canonical profile ID and **no tail**. V4 uses only the UFG profiles,
+  config6, `fee_mode=1` (QuoteOnly), `lp_fee_pips=0`, zero-royalty profile terms and
+  the exact same `ufg_launch_config` in every market.
+
+`encode_ufg_launch_config` encodes a **single dynamic tuple**
+`(uint16,uint16,address[])`, including its leading `0x20` offset.
+`decode_ufg_launch_config` rejects noncanonical encodings; `hash_ufg_launch_config`
+is the keccak256 of those exact bytes. The pool-bound V6 codec automatically
+appends/splits the typed `ufg_launch_config` tail only for UFG profiles and preserves
+it through salt mining and plan serialization. Hook constructors commit only the
+canonical salt-normalized prefix; the complete plan commits both prefix and tail.
+`validate_ufg_launch_plan(plan, config, predicted_token)` mirrors every UFG-specific
+offline rule and raises `LifecyclePlanningError` with code `INVALID_UFG_PLAN`.
+The existing plan bounds and live registry/constructor/oracle checks still apply.
+
+`build_ufg_approvals(plan)` aggregates each ERC20 pull by asset and builds exact
+`approve(proxy, amount)` commands. ERC20 funding pulls `asset/amount`; conversion
+funding pulls `input_asset/input_amount`; native inputs require `msg.value` rather
+than an approval. Existing allowance-reset behavior is retained by live planning.
+The proxy returns unspent funding to the principal. `build_ufg_launch_transactions`
+compiles unsigned atomic or staged commands to the **proxy**, forwarding native
+value only on `launchAtomic`/`beginLaunch`. Staged commands are `beginLaunch`,
+ordered contiguous `prepareMarkets` batches, then `activateLaunch`;
+`build_ufg_cancel_transaction(plan)` compiles principal-authorized cancellation.
+
+### Preparation, proof and recovery
+
+Pass the immutable config as `ufg=config` to `plan_launch` or
+`prepare_and_plan_lifecycle_launch`, with `account=principal` and explicit mode.
+The latter mines exact UFG bound-hook salts with the existing machinery before
+final proof. `PlannedLaunch.ufg` retains the config; `simulate_launch_plan` and
+`build_next_transaction` inherit it and reject replacement. Raw plans must supply
+`ufg=config` again. Balances, approvals, execution nonces, simulation senders and
+receipt senders refer to the **principal**; canonical launch state still names the
+proxy creator. Remaining transactions and cancellation continue through the proxy.
+On live RPCs, existing stateful native-Nitro simulation/poster/affordability and
+fresh build-next admission requirements are not relaxed.
+
+`read_ufg_treasury(client, token)` calls `treasuryFactory.treasuryOf(token)` at a
+pinned block, returning a checksum treasury address or `None` for zero.
+`UFG_LAUNCH_PROXY_V1_ABI`, `UFG_TREASURY_FACTORY_V1_ABI`,
+`UFG_BLACK_MARKET_FACTORY_ABI`, `UFG_BLACK_MARKET_TREASURY_ABI` and
+`UFG_LAUNCH_CONFIG_COMPONENTS` expose exact proxy/upstream interfaces, including
+`collect`, `redeem` and `redeemSkipping`. Compare the proxy's `launchConfigHash`
+for `launch_id_of(plan)` with `hash_ufg_launch_config(config)` after execution.
+These helpers never sign, broadcast, or publish metadata.
+
+### Disposable fork example
+
+```sh
+anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ --chain-id 4663 \
+  --port 8562 --gas-limit 100000000
+# In another terminal, using this checkout and its environment:
+PYTHONPATH=. python examples/launch_ufg_treasury.py
+```
+
+The example refuses non-loopback/non-Anvil endpoints and uses only the first
+unlocked Anvil default account. It plans with public token prediction, recipe,
+hook metadata/mining, config, policy and transaction APIs; performs real local
+ERC20 proxy approvals for the fixed case and NativeWrap funding for the dynamic
+case; `eth_call`s every proxy command from the principal before execution; and
+prints canonical Active state, treasury addresses and matching config hashes.
+No real key or metadata API is used. Stop Anvil when finished.
+A generic Anvil fork cannot certify Robinhood's ArbOS compute/poster precompiles;
+this fork exercise proves EVM behavior, not production native-Nitro admission.
+It does not fabricate those proofs or weaken the live planner.
+
 ## 0.11.0 release
 
 Planning now adds the HMM V2 gas-forwarding reserve, greedily packs preparation,
@@ -74,8 +190,9 @@ canonical proof. Caller-supplied tightening policy remains optional.
 The deployment's canonical manifest records successful receipts and runtime evidence
 at block **82,880,546**. The later Dynamic Fee Hook admission receipt at block
 **85,525,302** adds a third adapter and sixth profile. The October 18 HMM V2 Fixed
-and HMM V2 Dynamic admissions replace the SDK's earlier HMM offerings: four
-supported pool-bound V4/config6 offerings and four canonical Abyss/config1 variants.
+and HMM V2 Dynamic admissions replace the SDK's earlier HMM offerings. The two
+UFG profiles bring the catalogue to six pool-bound V4/config6 offerings alongside
+four canonical Abyss/config1 variants.
 Discover current profile IDs
 from the registry or select matching frozen `KnownLifecycleProfile` metadata for
 offline construction. The unsigned template `admission.json` alone is not mined

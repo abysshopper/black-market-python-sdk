@@ -384,6 +384,19 @@ from .hmm import (
     HMM_LAUNCH_TAIL_LENGTH, HMM_LAUNCH_ABI_TYPE, encode_hmm_launch_tail, decode_hmm_launch_tail,
     validate_hmm_launch_config, default_hmm_launch_config, is_hmm_profile,
 )
+from .ufg import (
+    UFG_LAUNCH_PROXY_ADDRESS, UFG_TREASURY_FACTORY_ADDRESS, UFG_UPSTREAM_FACTORY_ADDRESS,
+    UFG_FIXED_PROFILE_ID, UFG_DYNAMIC_PROFILE_ID, UFG_FIXED_ADAPTER_ID, UFG_DYNAMIC_ADAPTER_ID,
+    UFG_LAUNCH_CONFIG_ABI_TYPE, UfgLaunchConfig, is_ufg_profile,
+    encode_ufg_launch_config, decode_ufg_launch_config, hash_ufg_launch_config,
+    validate_ufg_launch_config, ufg_launch_nonce, build_ufg_fee_asset_policies,
+    validate_ufg_launch_plan, build_ufg_launch_transactions, build_ufg_cancel_transaction,
+    build_ufg_approvals, read_ufg_treasury,
+)
+from .ufg_abis import (
+    UFG_LAUNCH_CONFIG_COMPONENTS, UFG_LAUNCH_PROXY_V1_ABI, UFG_TREASURY_FACTORY_V1_ABI,
+    UFG_BLACK_MARKET_FACTORY_ABI, UFG_BLACK_MARKET_TREASURY_ABI,
+)
 from .lifecycle_rpc import LifecycleRpcClient, LifecycleDiagnosticEvent, LifecycleDiagnosticListener
 from .lifecycle_presets import (
     KnownLifecycleHook, KnownLifecycleProfile, LifecycleBoundHookPreset, LifecycleProfilePreset,
@@ -410,4 +423,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"

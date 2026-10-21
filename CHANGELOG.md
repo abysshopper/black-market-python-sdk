@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+- Add opt-in UFG treasury launches through the canonical principal-funded proxy, without changing the existing core launch path.
+- Export the immutable UFG launch config, canonical dynamic-tuple codec/hash, namespaced nonce, exact fee-policy builder and offline proxy-rule validator.
+- Add fixed/dynamic UFG profile presets and hash-checked constructor code from committed registry readback at block 94,551,140; include the reproducible evidence importer.
+- Extend only UFG config6 markets with a typed treasury tail, preserved through salt mining and portable plans while excluded from the hook constructor market commitment.
+- Add unsigned proxy launch/cancellation and aggregated ERC20 proxy-approval builders. Extend preparation/planning/simulation/build-next with `ufg=config`, principal balances/nonces/receipts, and inherited treasury configuration.
+- Export full proxy, treasury factory and upstream factory/treasury ABIs plus pinned treasury lookup. Document funding, lifecycle rules and the Anvil/native-Nitro proof boundary.
+- Add independent `cast abi-encode` fixtures, acceptance/rejection coverage and a fork-only public SDK example covering native Abyss plus fixed V4 atomically and native Abyss plus dynamic V4 in stages.
+
 ## 0.11.0
 
 - Size atomic/activation envelopes with the shipped HMM V2 forwarding reserve, once per transaction; clamp optional reserve/headroom targets to legal compute and total gas caps, then prove the exact envelope.
@@ -35,4 +45,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.11.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.12.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
