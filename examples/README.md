@@ -5,6 +5,29 @@ The eleven `launch_erc20_*.py` / `launch_erc404_*.py` cases share
 and atomic/staged choices remain fixed. See the [case table](../README.md#examples)
 and [lifecycle guide](../docs/launch-guide.md#standalone-token-launch-examples).
 
+## UFG treasury launches (fork only)
+
+`launch_ufg_treasury.py` is a separate no-argument, no-key public SDK example.
+It refuses remote/non-Anvil RPCs and executes only on a disposable local
+Robinhood fork (default `http://127.0.0.1:8562`, optionally `UFG_FORK_RPC_URL`).
+It launches native Abyss QUOTE plus UFG fixed V4 atomically using real local
+ERC20 proxy approvals, then native Abyss QUOTE plus UFG dynamic V4 in stages with
+NativeWrap. Every command is `eth_call`-checked from the principal before sending;
+output includes Active state, treasury addresses and matching config hashes.
+The pricing input is explicitly a fork arithmetic fixture, not a live quote.
+
+```sh
+anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ --chain-id 4663 \
+  --port 8562 --gas-limit 100000000
+# Another terminal, from this checkout:
+PYTHONPATH=. python examples/launch_ufg_treasury.py
+```
+
+Stop Anvil afterward. No real keys, mainnet writes or metadata API are used.
+Anvil EVM execution does not certify native-Nitro compute/poster admission; the
+production `ufg=config` planner retains those exact existing proof requirements.
+See [UFG lifecycle details](../docs/launch-guide.md#ufg-treasury-launches).
+
 ## HMM presets and launch tails
 
 `python examples/hmm_launch_config.py --max-bid-quote 10000000000000000 --reference-deviation 0`

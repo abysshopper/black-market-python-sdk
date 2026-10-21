@@ -28,6 +28,12 @@ from .hmm import (
     HMM_FIXED_PROFILE_ID, HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail,
     is_hmm_profile, validate_hmm_launch_config,
 )
+from .ufg import (
+    UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, is_ufg_profile, encode_ufg_launch_config,
+    decode_ufg_launch_config, hash_ufg_launch_config, validate_ufg_launch_config,
+    validate_ufg_launch_plan, _ufg_principal, _validate_ufg_identity,
+    build_ufg_launch_transactions, build_ufg_cancel_transaction,
+)
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -313,6 +319,7 @@ class LifecyclePoolBoundV4MarketConfigV6:
     developer_fee_bps: int
     positions: tuple[LifecycleV4Position, ...]
     hmm_launch_config: HmmLaunchConfig | None = None
+    ufg_launch_config: UfgLaunchConfig | None = None
 
 
 LifecyclePoolBoundV4MarketConfig = LifecyclePoolBoundV4MarketConfigV5 | LifecyclePoolBoundV4MarketConfigV6
@@ -1008,6 +1015,17 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
     prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
     profile_id = config["profileId"] if isinstance(config, Mapping) else config.profile_id
     hmm = config.get("hmmLaunchConfig") if isinstance(config, Mapping) else getattr(config, "hmm_launch_config", None)
+    ufg = config.get("ufgLaunchConfig") if isinstance(config, Mapping) else getattr(config, "ufg_launch_config", None)
+    if is_ufg_profile(profile_id):
+        if version != 6 or ufg is None or hmm is not None:
+            raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG profiles require config6 and only an explicit UFG launch tail")
+        lp_fee = config["lpFeePips"] if isinstance(config, Mapping) else config.lp_fee_pips
+        fee_mode = config["feeMode"] if isinstance(config, Mapping) else config.fee_mode
+        if lp_fee != 0 or fee_mode != 1:
+            raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG profiles require QuoteOnly fees and zero LP fees")
+        return prefix + encode_ufg_launch_config(ufg)
+    if ufg is not None:
+        raise LifecyclePlanningError("INVALID_UFG_PLAN", "Only UFG profiles accept a UFG launch tail")
     if is_hmm_profile(profile_id):
         if version != 6 or hmm is None:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require config6 and an explicit HMM launch config")
@@ -1035,6 +1053,10 @@ def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_
         if version != 6 or raw[:len(prefix)] != prefix:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require an exact canonical config6 prefix")
         config = replace(config, hmm_launch_config=decode_hmm_launch_tail(raw[len(prefix):]))
+    elif is_ufg_profile(config.profile_id):
+        if version != 6 or raw[:len(prefix)] != prefix:
+            raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG profiles require an exact canonical config6 prefix")
+        config = replace(config, ufg_launch_config=decode_ufg_launch_config(raw[len(prefix):]))
     if encode_lifecycle_pool_bound_v4_market_config(config) != raw:
         raise LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound config is not canonical for its explicit schema")
     return config
@@ -1076,7 +1098,7 @@ def build_pool_bound_hook_parameters(
 
 
 def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: str, market_index: int) -> str:
-    """Commit the canonical market prefix, normalizing salt and excluding any HMM tail."""
+    """Commit the canonical market prefix, normalizing salt and excluding launch tails."""
     _uint(market_index, 32, "marketIndex")
     if market_index >= len(plan.markets):
         raise ValueError("market_index is outside the economic plan")
@@ -1403,6 +1425,11 @@ def validate_v4_lifecycle_market(*, market: LifecycleMarketConfig, config: Lifec
         if config.version != 6 or hmm is None or config.lp_fee_pips != 0 or config.developer_fee_bps != 0:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM V2 requires config6, an explicit launch config and zero LP/developer fees")
         validate_hmm_launch_config(hmm)
+    if is_ufg_profile(config.profile_id):
+        ufg = getattr(config, "ufg_launch_config", None)
+        if config.version != 6 or ufg is None or config.lp_fee_pips != 0 or config.fee_mode != 1:
+            raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG requires config6, an explicit treasury config, QuoteOnly and zero LP fees")
+        validate_ufg_launch_config(ufg)
     envelope, terms, ceiling = profile.envelope, profile.developer_terms, profile.protocol_maximum_developer_fee_bps
     expected_schema = V4_LIFECYCLE_CONFIG_SCHEMA if config.version == 4 else pool_bound_v4_lifecycle_config_schema(config.version)
     if envelope is None or terms is None or ceiling is None or not terms.enabled or profile.topology.hook_topology != (1 if config.version == 4 else 2) or market.config_version != config.version or profile.topology.config_version != config.version or profile.adapter.config_version != config.version or envelope.topology != profile.topology.hook_topology or envelope.config_version != config.version or envelope.economic_version != 3 or profile.registration.config_schema.lower() != hex_bytes(expected_schema) or hex_bytes(market.adapter_id) != profile.registration.adapter_id.lower() or hex_bytes(market.profile_id) != profile.id.lower() or hex_bytes(config.profile_id) != profile.id.lower() or terms.adapter.lower() != profile.adapter.implementation.lower() or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or hex_bytes(config.terms_digest) != hex_bytes(terms.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() != terms.beneficiary.lower() or int(config.developer_beneficiary, 16) == 0 or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()):
@@ -1657,9 +1684,11 @@ async def prepare_and_plan_lifecycle_launch(
     receipts: Sequence[LifecycleReceiptReference] = (), fork: ControlledLaunchFork | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
     allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
+    ufg: UfgLaunchConfig | None = None,
 ) -> PlannedLaunch:
     """Mine exact bound salts, protect actual buys, then prove only the final plan."""
-    commitment = _validate_planning_intent(plan, account, mode, cancel_event)
+    commitment = _validate_planning_intent(plan, account, mode, cancel_event, ufg)
+    ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
     if buy_slippage_bps is not None and (isinstance(buy_slippage_bps, bool) or not isinstance(buy_slippage_bps, int) or not 0 <= buy_slippage_bps < 10000):
         raise LifecyclePlanningError("INVALID_BUY_SLIPPAGE", "Buy slippage must be an integer between zero and 9999 basis points")
     mining = any(is_pool_bound_v4_config_version(market.config_version) for market in plan.markets)
@@ -1668,7 +1697,7 @@ async def prepare_and_plan_lifecycle_launch(
                    confirmations=confirmations, receipts=receipts, fork=fork,
                    cancel_event=cancel_event, data_fee_estimator=data_fee_estimator,
                    allow_topology_gaps=allow_topology_gaps,
-                   allow_missing_permanent_tail=allow_missing_permanent_tail)
+                   allow_missing_permanent_tail=allow_missing_permanent_tail, ufg=ufg)
     if not mining and not protection:
         return await asyncio.to_thread(_plan_launch, client, plan, **options)
     draft = launch_plan_from_dict(launch_plan_to_dict(plan))
@@ -1676,6 +1705,8 @@ async def prepare_and_plan_lifecycle_launch(
         _check_mining_cancelled(cancel_event)
         if hash_launch_plan(plan) != commitment:
             raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during asynchronous preparation")
+        if (None if ufg is None else hash_ufg_launch_config(ufg)) != ufg_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed during asynchronous preparation")
     await asyncio.to_thread(_check_client_identity, client, draft, account)
     initial = await asyncio.to_thread(read_block, client)
     markets = list(draft.markets)
@@ -1960,25 +1991,31 @@ def _progress_values(client: Web3, plan: LaunchPlanV1, block: LaunchBlock) -> tu
     return tuple(values)
 
 
+def _execution_account(plan: LaunchPlanV1) -> str:
+    return _ufg_principal(plan) if plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower() else plan.creator
+
+
 def _check_client_identity(client: Web3, plan: LaunchPlanV1, account: str | None = None) -> None:
     if read_chain_id(client) != plan.chain_id:
         raise LifecyclePlanningError("CHAIN_MISMATCH", "RPC chain ID differs from the economic plan domain")
-    if account is not None and _address(account, "account", nonzero=True).lower() != plan.creator.lower():
+    if account is not None and _address(account, "account", nonzero=True).lower() != _execution_account(plan).lower():
         raise LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account")
 
 
 
 
 def _transaction_matches_receipt(client: Web3, plan: LaunchPlanV1, transaction: Mapping[str, Any], block: LaunchBlock) -> bool:
-    if str(transaction.get("from", "")).lower() != plan.creator.lower():
+    if str(transaction.get("from", "")).lower() != _execution_account(plan).lower():
         raise LifecyclePlanningError("RECEIPT_ACCOUNT", "Receipt transaction belongs to a different account")
     if transaction.get("chainId") is not None and quantity(transaction["chainId"]) != plan.chain_id:
         raise LifecyclePlanningError("RECEIPT_CHAIN", "Receipt transaction belongs to a different chain")
     target = str(transaction.get("to") or ZERO_ADDRESS).lower()
     calldata = bytes.fromhex(hex_bytes(transaction.get("input", transaction.get("data", "0x")))[2:])
-    if target == plan.orchestrator.lower():
+    proxy = plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower()
+    if target == (UFG_LAUNCH_PROXY_ADDRESS if proxy else plan.orchestrator).lower():
+        from .ufg_abis import UFG_LAUNCH_PROXY_V1_ABI
         for command in ("launchAtomic", "beginLaunch", "prepareMarkets", "activateLaunch", "cancelLaunch"):
-            entry = _entry(LAUNCH_LIFECYCLE_V1_ABI, command)
+            entry = _entry(UFG_LAUNCH_PROXY_V1_ABI if proxy else LAUNCH_LIFECYCLE_V1_ABI, command)
             types = [canonical_abi_type(item) for item in entry["inputs"]]
             if calldata[:4] != keccak(text=command + "(" + ",".join(types) + ")")[:4]:
                 continue
@@ -1994,7 +2031,7 @@ def _transaction_matches_receipt(client: Web3, plan: LaunchPlanV1, transaction: 
         spender, _ = abi_decode(["address", "uint256"], calldata[4:])
     except Exception:
         return False
-    escrow = _call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "fundingEscrow", [], block)
+    escrow = UFG_LAUNCH_PROXY_ADDRESS if proxy else _call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "fundingEscrow", [], block)
     return spender.lower() == escrow.lower()
 
 
@@ -2068,9 +2105,10 @@ def _read_launch_progress_at_block(
         if observation[5] != 0 and mode is not None and observation[4] != (0 if _mode(mode) == "atomic" else 1):
             raise LifecyclePlanningError("MODE_MISMATCH", "Execution mode differs from the recorded launch")
     token = read_lifecycle_token_at_block(client, plan, head)
-    confirmed_nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, confirmed.tag]))
-    head_nonce = confirmed_nonce if confirmed.number == head.number else quantity(rpc(client, "eth_getTransactionCount", [plan.creator, head.tag]))
-    pending_nonce = quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"]))
+    account = _execution_account(plan)
+    confirmed_nonce = quantity(rpc(client, "eth_getTransactionCount", [account, confirmed.tag]))
+    head_nonce = confirmed_nonce if confirmed.number == head.number else quantity(rpc(client, "eth_getTransactionCount", [account, head.tag]))
+    pending_nonce = quantity(rpc(client, "eth_getTransactionCount", [account, "pending"]))
     safe = values == current and confirmed_nonce == head_nonce == pending_nonce
     statuses = tuple(_receipt_status(client, plan, reference, head, confirmations) for reference in receipts)
     markets = []
@@ -2328,6 +2366,8 @@ class PlannedLaunch:
     receipt_references: tuple[LifecycleReceiptReference, ...] = ()
     allow_topology_gaps: bool = False
     allow_missing_permanent_tail: bool = False
+    ufg: UfgLaunchConfig | None = None
+    ufg_config_hash: str | None = None
 
     @property
     def admitted(self) -> bool:
@@ -2489,13 +2529,14 @@ def _read_funding(client: Web3, plan: LaunchPlanV1, block: LaunchBlock) -> tuple
     if not plan.funding:
         return (), ()
     preset = get_known_lifecycle_deployment(chain_id=plan.chain_id, orchestrator=plan.orchestrator)
-    spender = preset.funding_escrow if preset is not None else _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "fundingEscrow", [], block), "funding escrow", nonzero=True)
+    spender = UFG_LAUNCH_PROXY_ADDRESS if plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower() else preset.funding_escrow if preset is not None else _address(_call(client, plan.orchestrator, LAUNCH_LIFECYCLE_V1_ABI, "fundingEscrow", [], block), "funding escrow", nonzero=True)
+    account = _execution_account(plan)
     prerequisites = []
     totals: dict[str, tuple[str, int, int, int]] = {}
     for funding in plan.funding:
         native = int(funding.kind) == 1 or (int(funding.kind) == 2 and int(funding.input_asset, 16) == 0)
-        balance = quantity(pinned_rpc(client, "eth_getBalance", [plan.creator, block.tag], block)) if native else _call(client, funding.input_asset, _ERC20_READ_ABI, "balanceOf", [plan.creator], block)
-        allowance = None if native else _call(client, funding.input_asset, _ERC20_READ_ABI, "allowance", [plan.creator, spender], block)
+        balance = quantity(pinned_rpc(client, "eth_getBalance", [account, block.tag], block)) if native else _call(client, funding.input_asset, _ERC20_READ_ABI, "balanceOf", [account], block)
+        allowance = None if native else _call(client, funding.input_asset, _ERC20_READ_ABI, "allowance", [account, spender], block)
         prerequisites.append(LifecycleFundingPrerequisite(funding, balance, funding.input_amount, spender,
             funding.input_amount if native else 0, "native-wrap" if int(funding.kind) == 1 else "allowlisted-swap" if int(funding.kind) == 2 else "none", allowance))
         if allowance is not None:
@@ -2511,13 +2552,15 @@ def _market_tuple(plan: LaunchPlanV1, index: int) -> tuple[Any, ...]:
     return to_launch_plan_tuple(plan)[7][index]
 
 
-def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, approvals: Sequence[LifecycleApproval], groups: Sequence[tuple[int, int]], *, nonce: int, gas_cap: int, gas_price: int, cancel: bool = False) -> tuple[LifecycleTransaction, ...]:
+def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, approvals: Sequence[LifecycleApproval], groups: Sequence[tuple[int, int]], *, nonce: int, gas_cap: int, gas_price: int, cancel: bool = False, ufg: UfgLaunchConfig | None = None) -> tuple[LifecycleTransaction, ...]:
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         return ()
     result: list[LifecycleTransaction] = []
     if cancel:
-        result.append(LifecycleTransaction("cancel", "cancel", plan.chain_id, plan.creator, plan.orchestrator,
-            build_lifecycle_calldata(plan, "cancelLaunch"), 0, None, (), (LifecycleLaunchPostcondition("Cancelled", progress.prepared_markets),)))
+        transaction = build_ufg_cancel_transaction(plan) if ufg is not None else LifecycleTransaction(
+            "cancel", "cancel", plan.chain_id, plan.creator, plan.orchestrator,
+            build_lifecycle_calldata(plan, "cancelLaunch"), 0, None, (), ())
+        result.append(replace(transaction, postconditions=(LifecycleLaunchPostcondition("Cancelled", progress.prepared_markets),)))
     else:
         if progress.phase == LifecyclePhase.NONE:
             for approval in approvals:
@@ -2525,11 +2568,13 @@ def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, 
                     continue
                 for kind, amount in (("approve-reset", 0), ("approve", approval.required_amount)) if approval.allowance else (("approve", approval.required_amount),):
                     condition = LifecycleAllowancePostcondition(approval.asset, approval.spender, amount, 0 if kind == "approve-reset" else None)
-                    result.append(LifecycleTransaction(f"{kind}:{approval.asset}", kind, plan.chain_id, plan.creator,
+                    result.append(LifecycleTransaction(f"{kind}:{approval.asset}", kind, plan.chain_id, _execution_account(plan),
                         approval.asset, _encode_function(_ERC20_READ_ABI, "approve", [approval.spender, amount]),
                         0, None, (), (condition,)))
         batches = ([progress.prepared_markets] if progress.prepared_markets else []) + [count for _, count in groups]
-        commands = build_launch_transactions(plan, mode=mode, preparation_batches=batches if mode == "staged" else None)
+        commands = (build_launch_transactions(plan, mode=mode, preparation_batches=batches if mode == "staged" else None)
+            if ufg is None else build_ufg_launch_transactions(plan, config=ufg, mode=mode,
+                preparation_batches=batches if mode == "staged" else None))
         result.extend(transaction for transaction in commands
                       if (transaction.kind not in {"begin", "atomic"} or progress.phase == LifecyclePhase.NONE)
                       and (transaction.kind != "prepare" or transaction.first_market >= progress.prepared_markets))
@@ -2542,7 +2587,7 @@ def _condition_requests(plan: LaunchPlanV1, transaction: LifecycleTransaction) -
     requests = []
     for condition in transaction.postconditions:
         if condition.kind == "allowance":
-            requests.append({"to": condition.asset, "data": _encode_function(_ERC20_READ_ABI, "allowance", [plan.creator, condition.spender])})
+            requests.append({"to": condition.asset, "data": _encode_function(_ERC20_READ_ABI, "allowance", [_execution_account(plan), condition.spender])})
         else:
             requests.append({"to": plan.orchestrator, "data": _encode_function(LAUNCH_LIFECYCLE_V1_ABI, "readLaunchProgress", [bytes.fromhex(launch_id_of(plan)[2:])])})
     return tuple(requests)
@@ -2649,7 +2694,7 @@ def _launch_simulation(
 ) -> LaunchSimulation:
     admission = LifecycleAdmission(
         admitted, evidence.confidence, limits, evidence.block.number, evidence.block.block_hash,
-        _address(plan.creator, "creator"), plan.chain_id, execution_proof, protocol_fit,
+        _address(_execution_account(plan), "account"), plan.chain_id, execution_proof, protocol_fit,
         reason="; ".join(reasons) if reasons else None,
     )
     bound = tuple(replace(transaction, admission=admission) for transaction in transactions)
@@ -2673,7 +2718,7 @@ def _verify_nitro_backend(client: Web3, plan: LaunchPlanV1, block: LaunchBlock, 
     )
     gas = min(limits.compute_cap(block), 100_000)
     calls = [
-        {"from": plan.creator, "to": target, "data": _encode_function(abi, name, []),
+        {"from": _execution_account(plan), "to": target, "data": _encode_function(abi, name, []),
          "value": "0x0", "gas": hex(gas), "gasPrice": hex(gas_price)}
         for target, abi, name, _, _ in specifications
     ]
@@ -2683,7 +2728,7 @@ def _verify_nitro_backend(client: Web3, plan: LaunchPlanV1, block: LaunchBlock, 
     payload = {
         "blockStateCalls": [{
             "blockOverrides": {"number": hex(block.number + 1), "time": hex(block.timestamp + 1), "gasLimit": hex(block.gas_limit)},
-            "stateOverrides": {plan.creator: {"balance": hex((1 << 256) - 1)}},
+            "stateOverrides": {_execution_account(plan): {"balance": hex((1 << 256) - 1)}},
             "calls": calls,
         }],
         "validation": True, "traceTransfers": False, "returnFullTransactions": False,
@@ -2754,7 +2799,7 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     if limits.protocol == "evm" and data_fee_estimator is None:
         unknown = (*unknown, "data_fee")
     empty = LaunchRpcSimulation("provisional", None, block, ())
-    if hex_bytes(pinned_rpc(client, "eth_getCode", [plan.creator, block.tag], block)) != "0x":
+    if hex_bytes(pinned_rpc(client, "eth_getCode", [_execution_account(plan), block.tag], block)) != "0x":
         return _launch_simulation(plan, limits, empty, (),
             ("Direct EOA simulation cannot prove smart-account execution",), unknown=unknown)
     if not transactions:
@@ -2763,7 +2808,7 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     compute_cap, envelope_cap = limits.compute_cap(block), limits.gas_cap(block)
     cap = limits.calldata_cap()
     for transaction in transactions:
-        if transaction.from_address.lower() != plan.creator.lower() or transaction.chain_id != plan.chain_id:
+        if transaction.from_address.lower() != _execution_account(plan).lower() or transaction.chain_id != plan.chain_id:
             raise LifecyclePlanningError("ACCOUNT_MISMATCH", "Simulation transaction differs from its committed chain/account")
         if cap is not None and transaction.calldata_bytes > cap:
             return _launch_simulation(plan, limits, empty, transactions,
@@ -2943,7 +2988,7 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         return finish(proof, estimated, (call.error or "Exact execution failed",),
             execution_proof="failed", failure_category=call.failure_category or "opaque",
             capacity_constraint="compute" if call.failure_category == "capacity" else None, failed_transaction_id=transactions[index].step_id)
-    balance = quantity(pinned_rpc(client, "eth_getBalance", [plan.creator, block.tag], block))
+    balance = quantity(pinned_rpc(client, "eth_getBalance", [_execution_account(plan), block.tag], block))
     if required > balance:
         return finish(proof, estimated, ("Creator native balance cannot fund remaining value and fee envelopes",),
             execution_proof="proved", protocol_fit="proved", failure_category="affordability")
@@ -2991,10 +3036,15 @@ def _groups(plan: LaunchPlanV1, first: int, compute_cap: int) -> list[tuple[int,
     return groups
 
 
-def _validate_planning_intent(plan: LaunchPlanV1, account: str, mode: str, cancel_event: asyncio.Event | None) -> str:
+def _validate_planning_intent(plan: LaunchPlanV1, account: str, mode: str, cancel_event: asyncio.Event | None, ufg: UfgLaunchConfig | None = None) -> str:
     _check_mining_cancelled(cancel_event)
     _mode(mode)
-    if _address(account, "account").lower() != plan.creator.lower():
+    if ufg is not None:
+        _validate_ufg_identity(plan)
+        validate_ufg_launch_config(ufg)
+    elif plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower():
+        raise LifecyclePlanningError("INVALID_UFG_PLAN", "Proxy launches require an explicit ufg config")
+    if _address(account, "account").lower() != _execution_account(plan).lower():
         raise LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account")
     if isinstance(plan.chain_id, bool) or not 0 < plan.chain_id <= (1 << 53) - 1:
         raise LifecyclePlanningError("CHAIN_MISMATCH", "Chain ID must be a positive exact portable integer")
@@ -3061,12 +3111,24 @@ def plan_launch(
     fork: ControlledLaunchFork | None = None, cancel_event: asyncio.Event | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
     allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
+    ufg: UfgLaunchConfig | None = None,
 ) -> PlannedLaunch:
     """Prove only the explicitly selected mode from fresh canonical state."""
     return _plan_launch(client, plan, account=account, mode=mode, limits=limits,
         confirmations=confirmations, receipts=receipts,
         fork=fork, cancel_event=cancel_event, data_fee_estimator=data_fee_estimator,
-        allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail)
+        allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail, ufg=ufg)
+
+
+def _assert_ufg_binding(client: Web3, plan: LaunchPlanV1, config: UfgLaunchConfig | None, progress: LaunchProgress, block: LaunchBlock) -> None:
+    if config is None or progress.phase == LifecyclePhase.NONE:
+        return
+    from .ufg_abis import UFG_LAUNCH_PROXY_V1_ABI
+    identity = bytes.fromhex(launch_id_of(plan)[2:])
+    bound_hash = _call(client, UFG_LAUNCH_PROXY_ADDRESS, UFG_LAUNCH_PROXY_V1_ABI, "launchConfigHash", [identity], block)
+    principal = _call(client, UFG_LAUNCH_PROXY_ADDRESS, UFG_LAUNCH_PROXY_V1_ABI, "principalOf", [identity], block)
+    if hex_bytes(bound_hash) != hash_ufg_launch_config(config) or principal.lower() != _execution_account(plan).lower():
+        raise LifecyclePlanningError("INVALID_UFG_PLAN", "Proxy treasury config/principal binding differs from the supplied recovery commitment")
 
 
 def _plan_launch(
@@ -3078,8 +3140,10 @@ def _plan_launch(
     block: LaunchBlock | None = None, owned_progress: LaunchProgress | None = None,
     diagnostic: bool = False, reviewed: _ReviewedTransaction | None = None, source_owned: bool = False,
     allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
+    ufg: UfgLaunchConfig | None = None,
 ) -> PlannedLaunch:
-    commitment = _validate_planning_intent(plan, account, mode, cancel_event)
+    commitment = _validate_planning_intent(plan, account, mode, cancel_event, ufg)
+    ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
     if not isinstance(allow_topology_gaps, bool) or not isinstance(allow_missing_permanent_tail, bool):
         raise ValueError("Topology gap options must be booleans")
     policy_fields = tuple(vars(limits).items()) if isinstance(limits, LaunchExecutionLimits) else None
@@ -3094,8 +3158,11 @@ def _plan_launch(
         resolved_limits = _resolve_limits(client, limits, block, _address(account, "account"), plan.chain_id, plan.orchestrator, policy_guards=policy_guards)
         token_factory, token_factory_code_hash = _read_token_factory_binding(client, plan.orchestrator, block, plan.chain_id)
         predicted = read_lifecycle_token_at_block(client, plan, block)
+        if ufg is not None:
+            validate_ufg_launch_plan(plan, ufg, predicted)
         progress = owned_progress or _read_launch_progress_at_block(client, plan, confirmations=confirmations,
             receipts=receipts, block=block, mode=mode, cancel_event=cancel_event)
+        _assert_ufg_binding(client, plan, ufg, progress, block)
     if owned_progress is not None and (progress.plan_hash != commitment or progress.launch_id != launch_id_of(plan) or progress.head_block != block or progress.confirmation_depth != confirmations or progress.token.lower() != predicted.lower()):
         raise LifecyclePlanningError("INVALID_READ_CONTEXT", "Owned canonical progress differs from the active planning snapshot")
     def assert_current() -> None:
@@ -3104,6 +3171,8 @@ def _plan_launch(
         _check_mining_cancelled(cancel_event)
         if hash_launch_plan(plan) != commitment:
             raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during planning")
+        if (None if ufg is None else hash_ufg_launch_config(ufg)) != ufg_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed during planning")
         if policy_fields is not None and tuple(vars(limits).items()) != policy_fields:
             raise LifecyclePlanningError("LIMIT_CONTEXT_MISMATCH", "Supplied policy changed during planning")
     def finish(simulation: LaunchSimulation, transactions: Sequence[LifecycleTransaction] = (), approvals: Sequence[LifecycleApproval] = (), profiles: Sequence[Any] = (), hooks: Sequence[PoolBoundLifecycleDeployment] = (), prerequisites: Sequence[LifecycleFundingPrerequisite] = ()) -> PlannedLaunch:
@@ -3129,7 +3198,8 @@ def _plan_launch(
             total_calldata_bytes=sum(transaction.calldata_bytes for transaction in transactions),
             limits_source=limits, confirmations=confirmations, receipt_references=tuple(receipts),
             token_factory=token_factory, token_factory_code_hash=token_factory_code_hash,
-            allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail)
+            allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail,
+            ufg=ufg, ufg_config_hash=ufg_hash)
     empty = LaunchRpcSimulation("stateful", None, block, ())
     if not progress.confirmation_safe or any(receipt.status in {"pending", "unconfirmed"} for receipt in progress.receipts):
         hooks = []
@@ -3163,7 +3233,7 @@ def _plan_launch(
             raise LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation differs from canonical unfinished markets") from None
     while True:
         transactions = _make_transactions(plan, mode, progress, approvals, groups,
-            nonce=progress.head_account_nonce, gas_cap=cap, gas_price=gas_price)
+            nonce=progress.head_account_nonce, gas_cap=cap, gas_price=gas_price, ufg=ufg)
         if reasons:
             refusal = _launch_simulation(plan, resolved_limits, empty, (), reasons, failure_category="semantic")
             return finish(refusal, transactions, approvals, profiles, hooks, prerequisites)
@@ -3195,14 +3265,20 @@ def _plan_launch(
     return finish(simulation, transactions, approvals, profiles, hooks, prerequisites)
 
 def _assert_planned_identity(launch: PlannedLaunch) -> None:
-    if hash_launch_plan(launch.plan) != hex_bytes(launch.plan_hash) or launch_id_of(launch.plan) != hex_bytes(launch.launch_id) or launch.chain_id != launch.plan.chain_id or launch.account.lower() != launch.plan.creator.lower():
+    if hash_launch_plan(launch.plan) != hex_bytes(launch.plan_hash) or launch_id_of(launch.plan) != hex_bytes(launch.launch_id) or launch.chain_id != launch.plan.chain_id or launch.account.lower() != _execution_account(launch.plan).lower():
         raise LifecyclePlanningError("PLAN_MUTATED", "Reviewed economic plan or identity changed")
+    if (None if launch.ufg is None else hash_ufg_launch_config(launch.ufg)) != launch.ufg_config_hash:
+        raise LifecyclePlanningError("PLAN_MUTATED", "Reviewed UFG treasury config changed")
+    if launch.ufg is not None:
+        validate_ufg_launch_plan(launch.plan, launch.ufg, launch.predicted_token)
 
 
 def _assert_hook_deployments(reviewed: PlannedLaunch, current: PlannedLaunch) -> None:
     _assert_planned_identity(reviewed)
     if current.plan_hash != reviewed.plan_hash or current.launch_id != reviewed.launch_id:
         raise LifecyclePlanningError("PLAN_MUTATED", "Stored economic commitment changed before execution")
+    if current.ufg_config_hash != reviewed.ufg_config_hash:
+        raise LifecyclePlanningError("PLAN_MUTATED", "Reviewed UFG treasury config changed before execution")
     if reviewed.predicted_token.lower() != current.predicted_token.lower() or reviewed.token_factory != current.token_factory or reviewed.token_factory_code_hash != current.token_factory_code_hash:
         raise LifecyclePlanningError("TOKEN_FACTORY_BINDING", "Token prediction or immutable factory binding changed before execution")
     if not current.simulation.admitted or current.progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
@@ -3220,6 +3296,7 @@ def simulate_launch_plan(
     receipts: Sequence[LifecycleReceiptReference] | None = None, fork: ControlledLaunchFork | None = None,
     cancel_event: asyncio.Event | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
+    ufg: UfgLaunchConfig | None = None,
 ) -> LaunchSimulation:
     """Freshly prove canonical unfinished work with inherited receipt evidence."""
     if isinstance(launch, PlannedLaunch):
@@ -3229,9 +3306,12 @@ def simulate_launch_plan(
         limits = launch.limits_source if limits is None else limits
         confirmations = launch.confirmations if confirmations is None else confirmations
         receipts = launch.receipt_references if receipts is None else receipts
+        if ufg is not None and hash_ufg_launch_config(ufg) != launch.ufg_config_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "Cannot replace the reviewed UFG treasury config")
+        ufg = launch.ufg
     else:
         plan, selected = launch, mode
-        account = plan.creator if account is None else account
+        account = _execution_account(plan) if account is None else account
     if selected is None:
         raise LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Simulation requires an explicitly selected mode")
     current = _plan_launch(client, plan, account=account, mode=selected, limits=limits,
@@ -3239,7 +3319,8 @@ def simulate_launch_plan(
         receipts=() if receipts is None else receipts, fork=fork, cancel_event=cancel_event,
         data_fee_estimator=data_fee_estimator,
         allow_topology_gaps=launch.allow_topology_gaps if isinstance(launch, PlannedLaunch) else False,
-        allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False)
+        allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False,
+        ufg=ufg)
     if isinstance(launch, PlannedLaunch):
         _assert_hook_deployments(launch, current)
     return current.simulation
@@ -3278,6 +3359,7 @@ def build_next_transaction(
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
     submission_client: Web3 | None = None, cancel_event: asyncio.Event | None = None,
     reviewed_transaction: LifecycleTransaction | Mapping[str, Any] | None = None,
+    ufg: UfgLaunchConfig | None = None,
 ) -> LifecycleTransaction | None:
     """Rebuild and prove the exact next wire envelope, without trusting caller proof.
 
@@ -3294,9 +3376,12 @@ def build_next_transaction(
         limits = launch.limits_source if limits is None else limits
         confirmations = launch.confirmations if confirmations is None else confirmations
         receipts = launch.receipt_references if receipts is None else receipts
+        if ufg is not None and hash_ufg_launch_config(ufg) != launch.ufg_config_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "Cannot replace the reviewed UFG treasury config")
+        ufg = launch.ufg
     else:
         plan, selected = launch, mode
-        account = plan.creator if account is None else account
+        account = _execution_account(plan) if account is None else account
     if selected is None:
         raise LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Building requires an explicitly selected mode")
     selected = _mode(selected)
@@ -3304,14 +3389,18 @@ def build_next_transaction(
     receipts = () if receipts is None else receipts
     _check_mining_cancelled(cancel_event)
     _check_client_identity(client, plan, account)
-    commitment = _validate_planning_intent(plan, account, selected, cancel_event)
+    commitment = _validate_planning_intent(plan, account, selected, cancel_event, ufg)
+    ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
     policy_guards: list[Callable[[], None]] = []
     def assert_policy() -> None:
         for guard in policy_guards:
             guard()
+        if (None if ufg is None else hash_ufg_launch_config(ufg)) != ufg_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed during build-next proof")
     block = read_block(client)
     progress = _read_launch_progress_at_block(client, plan, confirmations=confirmations, receipts=receipts,
         block=block, mode=selected, cancel_event=cancel_event)
+    _assert_ufg_binding(client, plan, ufg, progress, block)
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         assert_canonical(client, block)
         assert_chain(client, plan.chain_id)
@@ -3327,7 +3416,7 @@ def build_next_transaction(
             plan.chain_id, plan.orchestrator, policy_guards=policy_guards)
         price = reviewed.gas_price if reviewed is not None else _uint(max(quantity(rpc(client, "eth_gasPrice", [])), (block.base_fee_per_gas or 0) * 2), 256, "gas price")
         transactions = _make_transactions(plan, selected, progress, (), (), nonce=progress.head_account_nonce,
-            gas_cap=min(resolved.compute_cap(block), resolved.gas_cap(block)), gas_price=price, cancel=True)
+            gas_cap=min(resolved.compute_cap(block), resolved.gas_cap(block)), gas_price=price, cancel=True, ufg=ufg)
         if reviewed is not None and not _matches_reviewed(transactions[0], reviewed):
             raise LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed wire transaction differs from canonical cancellation")
         proof = _simulate_sequence(client, plan, transactions, block=block, predicted=progress.token, limits=resolved,
@@ -3343,7 +3432,8 @@ def build_next_transaction(
             cancel_event=cancel_event, data_fee_estimator=data_fee_estimator, block=block, owned_progress=progress,
             reviewed=reviewed, source_owned=True,
             allow_topology_gaps=launch.allow_topology_gaps if isinstance(launch, PlannedLaunch) else False,
-            allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False)
+            allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False,
+            ufg=ufg)
         proof = refreshed.simulation
         if not proof.admitted:
             raise LifecyclePlanningError("PLAN_NOT_ADMITTED", "; ".join(proof.reasons) or "Remaining launch execution cannot be proved", proof)

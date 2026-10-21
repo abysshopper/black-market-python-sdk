@@ -23,6 +23,8 @@ class KnownLifecycleProfile(str, Enum):
     V4_DYNAMIC_FEE_POOL = "v4-dynamic-fee-pool"
     V4_HMM_FIXED_POOL = "v4-hmm-fixed-pool"
     V4_HMM_DYNAMIC_POOL = "v4-hmm-dynamic-pool"
+    V4_UFG_FIXED_POOL = "v4-ufg-fixed-pool"
+    V4_UFG_DYNAMIC_POOL = "v4-ufg-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
@@ -87,6 +89,12 @@ class LifecycleDeploymentPreset:
 def _load_deployment() -> LifecycleDeploymentPreset:
     data = json.loads(files("black_market_sdk").joinpath("_lifecycle_release_20261008.json").read_text())
     addresses = data["addresses"]
+    ufg = json.loads(files("black_market_sdk").joinpath("_ufg_release_20261021.json").read_text())
+    if (ufg["chainId"] != data["chainId"] or ufg["orchestrator"].lower() != addresses["orchestrator"].lower()
+            or ufg["registry"].lower() != addresses["registry"].lower()):
+        raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "UFG presets must bind to the canonical lifecycle deployment")
+    data["adapters"].extend(ufg["adapters"])
+    data["profiles"].extend(ufg["profiles"])
     adapters = {row["id"]: LifecycleAdapterRegistration(row["address"], row["codehash"],
         row["capabilities"], row["configVersion"], True) for row in data["adapters"]}
     profiles = []

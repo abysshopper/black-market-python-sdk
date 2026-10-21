@@ -18,6 +18,11 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+Version **0.12.0** adds opt-in [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches):
+canonical native Abyss QUOTE pools and fixed/dynamic UFG V4 profiles can share
+one treasury. Use `UfgLaunchConfig`, proxy-specific transaction/approval builders,
+and the existing planner's `ufg=config` option. Ordinary core launches are unchanged.
+
 Version **0.11.0** adds HMM-aware gas sizing, automatic preparation packing, and
 bounded simulation-prefix admission with explicit deferred steps. See
 [simulation and recovery](docs/launch-guide.md#simulation-unsigned-commands-and-recovery).
@@ -28,6 +33,35 @@ profile keys now target the newly admitted V2 graph and 512-byte launch tails.
 `reference_deviation`; other defaults are unchanged. HMM V1 identities, hook
 enum values and 448-byte tails are no longer supported. See the
 [HMM configuration and owner-controls guide](docs/launch-guide.md#hmm-launch-configuration).
+
+## UFG treasury launches
+
+Set the plan's creator to `UFG_LAUNCH_PROXY_ADDRESS`, use
+`ufg_launch_nonce(principal, nonce)` and
+`build_ufg_fee_asset_policies(predicted_token, reserves)`. Select
+`KnownLifecycleProfile.V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` for V4, with
+`ufg_launch_config=config` on config6; canonical Abyss QUOTE/QUOTE_ORACLE uses
+its unchanged config1 without a tail. Reserve fees fund the treasury; launch-token
+fees burn. This is ERC20/no-rewards only, with 100% treasury share and no executor fee.
+
+```python
+from black_market_sdk import (
+    UfgLaunchConfig, validate_ufg_launch_plan, build_ufg_launch_transactions,
+    build_ufg_approvals, read_ufg_treasury,
+)
+
+config = UfgLaunchConfig(10000, 100, tuple(sorted(reserves, key=lambda asset: int(asset, 16))))
+validate_ufg_launch_plan(plan, config, predicted_token)
+approvals = build_ufg_approvals(plan)  # ERC20 approvals target the proxy, not escrow.
+transactions = build_ufg_launch_transactions(plan, config=config, mode="staged")
+# These are unsigned commands, not live execution admission.
+# After authorized execution: treasury = read_ufg_treasury(client, predicted_token)
+```
+
+The fork-only [`launch_ufg_treasury.py`](examples/launch_ufg_treasury.py) example
+executes native Abyss plus fixed V4 atomically and native Abyss plus dynamic V4
+in stages, without keys or mainnet writes. See the guide for principal funding,
+live planning, config hashes and the Anvil/native-Nitro proof boundary.
 
 ## Examples
 
