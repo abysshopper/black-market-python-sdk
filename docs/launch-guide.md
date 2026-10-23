@@ -1,1175 +1,599 @@
 # Launch guide
 
-The SDK separates read-only discovery, explicit economic plans, unsigned transaction
-building, wallet submission, and metadata publication. An address configuration is
-not a plan: every `LaunchPlanV1` and EIP-712 payload names its own chain and orchestrator.
+Use SDK **0.12.0** on Robinhood mainnet (**4663**). Start with the
+[one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
+Token amounts use raw integer units; USD inputs use 18 decimals.
 
-## 0.12.0 release
+## Choose an offering
 
-UFG treasury launches are additive and opt-in. They use the same economic plan,
-token prediction, pool-bound hook mining, canonical progress and execution proof,
-but the UFG proxy is the creator and the originating principal pays and executes.
-Core/non-UFG calldata, configuration layouts and defaults are unchanged.
-
-## UFG treasury launches
-
-The shipped Robinhood chain4663 graph pins:
-
-| Contract | Public constant / address |
-| --- | --- |
-| Launch proxy | `UFG_LAUNCH_PROXY_ADDRESS`: `0xf6673d859DE03eB74A0b01696Edb97f941dFD0CA` |
-| Treasury factory | `UFG_TREASURY_FACTORY_ADDRESS`: `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
-| Upstream UFG factory | `UFG_UPSTREAM_FACTORY_ADDRESS`: `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
-
-`KnownLifecycleProfile.V4_UFG_FIXED_POOL` (`v4-ufg-fixed-pool`) and
-`V4_UFG_DYNAMIC_POOL` (`v4-ufg-dynamic-pool`) freeze their distinct admitted
-adapters, envelopes, registration, topology, constructor graph and creation code.
-`UFG_FIXED_PROFILE_ID`, `UFG_DYNAMIC_PROFILE_ID`, `UFG_FIXED_ADAPTER_ID`,
-`UFG_DYNAMIC_ADAPTER_ID` and `is_ufg_profile` identify them.
-`tests/fixtures/ufg-registry-readback.json` records all four registry call results
-and creation-code children at block **94,551,140**, hash
-`0x0778956b5a7bad65f8182b969ac4efc6a7182a0a922fbcb94dc87bfea26e9cc4`.
-`python tools/ci/import_ufg_release.py /path/to/ufg-registry-readback.json`
-verifies the raw ABI bytes/chunk hashes and regenerates the packaged UFG release.
-Both hook creation-code payloads match the existing fixed/zero-royalty dynamic
-presets byte-for-byte; the UFG adapters, deployers and collectors remain distinct.
-Frozen construction evidence never grants current eligibility.
-
-### Identity, configuration and funding
-
-- `plan.creator = UFG_LAUNCH_PROXY_ADDRESS`; the core `plan.orchestrator` remains
-  `get_launch_addresses(4663).orchestrator`. All proxy commands must be sent by
-  the same nonzero principal.
-- Set `plan.nonce = ufg_launch_nonce(principal, nonce)` with `0 <= nonce < 2**96`.
-  The plan/launch ID still commits the core, proxy creator and namespaced nonce.
-  Never use the principal as creator or approve the core funding escrow.
-- Use ERC20, reward mode NONE, executor fee zero, at least one market and external
-  inventory/buy recipients (not the proxy).
-- `UfgLaunchConfig(treasury_share_bps=10000, exit_fee_bps=100,
-  reserve_assets=(quote,))` commits a 100% treasury share, an exit fee of 0..2000
-  basis points, and 1..7 nonzero strictly ascending unique reserves. Exclude the
-  predicted launch token. Reserve and market quote sets must match exactly.
-- `build_ufg_fee_asset_policies(token, reserves)` returns sorted policies: burn
-  100% of launch-token fees; send 100% of reserve fees to the fee owner; no rewards.
-  The fee owner is handed permanently to the UFG funding adapter, not the principal.
-- Native Abyss markets use canonical config1 QUOTE (2) or QUOTE_ORACLE (3), their
-  matching canonical profile ID and **no tail**. V4 uses only the UFG profiles,
-  config6, `fee_mode=1` (QuoteOnly), `lp_fee_pips=0`, zero-royalty profile terms and
-  the exact same `ufg_launch_config` in every market.
-
-`encode_ufg_launch_config` encodes a **single dynamic tuple**
-`(uint16,uint16,address[])`, including its leading `0x20` offset.
-`decode_ufg_launch_config` rejects noncanonical encodings; `hash_ufg_launch_config`
-is the keccak256 of those exact bytes. The pool-bound V6 codec automatically
-appends/splits the typed `ufg_launch_config` tail only for UFG profiles and preserves
-it through salt mining and plan serialization. Hook constructors commit only the
-canonical salt-normalized prefix; the complete plan commits both prefix and tail.
-`validate_ufg_launch_plan(plan, config, predicted_token)` mirrors every UFG-specific
-offline rule and raises `LifecyclePlanningError` with code `INVALID_UFG_PLAN`.
-The existing plan bounds and live registry/constructor/oracle checks still apply.
-
-`build_ufg_approvals(plan)` aggregates each ERC20 pull by asset and builds exact
-`approve(proxy, amount)` commands. ERC20 funding pulls `asset/amount`; conversion
-funding pulls `input_asset/input_amount`; native inputs require `msg.value` rather
-than an approval. Existing allowance-reset behavior is retained by live planning.
-The proxy returns unspent funding to the principal. `build_ufg_launch_transactions`
-compiles unsigned atomic or staged commands to the **proxy**, forwarding native
-value only on `launchAtomic`/`beginLaunch`. Staged commands are `beginLaunch`,
-ordered contiguous `prepareMarkets` batches, then `activateLaunch`;
-`build_ufg_cancel_transaction(plan)` compiles principal-authorized cancellation.
-
-### Preparation, proof and recovery
-
-Pass the immutable config as `ufg=config` to `plan_launch` or
-`prepare_and_plan_lifecycle_launch`, with `account=principal` and explicit mode.
-The latter mines exact UFG bound-hook salts with the existing machinery before
-final proof. `PlannedLaunch.ufg` retains the config; `simulate_launch_plan` and
-`build_next_transaction` inherit it and reject replacement. Raw plans must supply
-`ufg=config` again. Balances, approvals, execution nonces, simulation senders and
-receipt senders refer to the **principal**; canonical launch state still names the
-proxy creator. Remaining transactions and cancellation continue through the proxy.
-On live RPCs, existing stateful native-Nitro simulation/poster/affordability and
-fresh build-next admission requirements are not relaxed.
-
-`read_ufg_treasury(client, token)` calls `treasuryFactory.treasuryOf(token)` at a
-pinned block, returning a checksum treasury address or `None` for zero.
-`UFG_LAUNCH_PROXY_V1_ABI`, `UFG_TREASURY_FACTORY_V1_ABI`,
-`UFG_BLACK_MARKET_FACTORY_ABI`, `UFG_BLACK_MARKET_TREASURY_ABI` and
-`UFG_LAUNCH_CONFIG_COMPONENTS` expose exact proxy/upstream interfaces, including
-`collect`, `redeem` and `redeemSkipping`. Compare the proxy's `launchConfigHash`
-for `launch_id_of(plan)` with `hash_ufg_launch_config(config)` after execution.
-These helpers never sign, broadcast, or publish metadata.
-
-### Disposable fork example
+Run discovery before choosing a profile. These commands need neither funds nor a key:
 
 ```sh
-anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ --chain-id 4663 \
-  --port 8562 --gas-limit 100000000
-# In another terminal, using this checkout and its environment:
-PYTHONPATH=. python examples/launch_ufg_treasury.py
-```
-
-The example refuses non-loopback/non-Anvil endpoints and uses only the first
-unlocked Anvil default account. It plans with public token prediction, recipe,
-hook metadata/mining, config, policy and transaction APIs; performs real local
-ERC20 proxy approvals for the fixed case and NativeWrap funding for the dynamic
-case; `eth_call`s every proxy command from the principal before execution; and
-prints canonical Active state, treasury addresses and matching config hashes.
-No real key or metadata API is used. Stop Anvil when finished.
-A generic Anvil fork cannot certify Robinhood's ArbOS compute/poster precompiles;
-this fork exercise proves EVM behavior, not production native-Nitro admission.
-It does not fabricate those proofs or weaken the live planner.
-
-## 0.11.0 release
-
-Planning now adds the HMM V2 gas-forwarding reserve, greedily packs preparation,
-and proves the longest prefix fitting the RPC simulation budget. On Robinhood
-the default aggregate budget is 50,000,000 gas; callers may override
-`LaunchExecutionLimits.rpc_total_simulation_gas_limit`.
-`LaunchSimulation.deferred_transaction_ids` names every unproved suffix command.
-Those commands have no gas, gas price or admission until freshly proved by
-`build_next_transaction` from canonical progress. A successful prefix is admitted;
-this does **not** claim eventual activation or deferred buy outputs were proved.
-
-The planner option and `PlannedLaunch` field `prepare_batch_size` are removed.
-Inspect each prepare transaction's `first_market` and `market_count` instead.
-Pure offline `build_launch_transactions(..., preparation_batches=...)` still
-accepts exact explicit batches. A reviewed build-next envelope now receives one
-exact immediate replay without fresh measurement, price/poster recommendations,
-or full-suffix replay.
-
-## 0.10.0 release
-
-This is a breaking HMM V2-only cutover. The generic `HmmStrategyConfig`,
-`HmmLaunchConfig` and HMM helpers keep their names but use fifteen V2 strategy
-settings and exact 512-byte launch tails. Both generic profile keys select the
-October 18 admitted V2 graph; `KnownLifecycleHook.HMM_FIXED_POOL_V2` and
-`HMM_DYNAMIC_POOL_V2` replace the old hook enum values without aliases.
-`default_hmm_launch_config` now requires explicit `max_bid_quote` and
-`reference_deviation`; the other defaults remain unchanged. Rebuild unstarted
-HMM plans with the V2 identities and graph, rather than editing an already
-committed launch. Old 448-byte tails and HMM V1 presets are unsupported.
-This removes SDK support, not on-chain registrations.
-See [HMM launch configuration](#hmm-launch-configuration) for migration and controls.
-
-## 0.9.1 release
-
-Abyss recipes and lifecycle planning now support the canonical **0.01%** tier
-(`fee=100`, tick spacing **1**). Omit `tick_spacing` in
-`derive_launch_pool_recipe(..., fee=100)` to infer spacing 1 from `ABYSS_FEE_TIERS`.
-Use that same spacing when deriving multiple position ranges; permanent tails
-reach tick `887272` or `-887272` according to launch-token orientation.
-All existing tiers and example defaults (fee3000/spacing60) are unchanged.
-
-## 0.9.0 release
-
-Historical release: added the original HMM presets and 448-byte tails, superseded
-by the breaking 0.10.0 V2 cutover. The separately admitted Dynamic Fee Hook remains
-available and is unchanged by the HMM migration.
-
-## 0.8.0 release
-
-This release adds unstarted-launch topology validation, boundary tails enabled by
-default, and `position_gaps` replacing `staircase_boundaries`. Examples now default
-to unsigned dry runs; `--broadcast` explicitly authorizes execution without a hash
-prompt, while `--resume` preserves the original plan and metadata session.
-Reviewed transaction proof may consume the original gas padding but never silently
-raises the held gas or gas price. Configuration, financial state, receipt evidence,
-native execution proof, and canonical checks remain authoritative.
-
-Version **0.7.0** is a breaking cutover to the October 8 mined graph. Execution mode
-is required (`atomic` or `staged`): no automatic selection or atomic-first fallback.
-Unified preparation returns the final `PlannedLaunch`, not an intermediate salt-only
-plan. Receipt recovery uses typed `LifecycleReceiptReference` values. Construction
-metadata is frozen release evidence; complete current admission still requires live
-canonical proof. Caller-supplied tightening policy remains optional.
-
-## Deployed infrastructure
-
-`get_launch_addresses(4663)` returns the current mined `pool-launch-v1` infrastructure.
-The deployment's canonical manifest records successful receipts and runtime evidence
-at block **82,880,546**. The later Dynamic Fee Hook admission receipt at block
-**85,525,302** adds a third adapter and sixth profile. The October 18 HMM V2 Fixed
-and HMM V2 Dynamic admissions replace the SDK's earlier HMM offerings. The two
-UFG profiles bring the catalogue to six pool-bound V4/config6 offerings alongside
-four canonical Abyss/config1 variants.
-Discover current profile IDs
-from the registry or select matching frozen `KnownLifecycleProfile` metadata for
-offline construction. The unsigned template `admission.json` alone is not mined
-admission evidence.
-Neither frozen metadata nor an SDK key is a live admission certificate. Shared
-V4/config4 and pool-bound config5/V1 remain explicit codecs for matching admitted
-deployments, not mainnet defaults.
-
-| Contract | Address |
-| --- | --- |
-| Orchestrator | `0x91560876033d568d25CDe98C78c33ff8FC43962c` |
-| Implementation registry | `0xB2B0f9F36617810D67b8fC175153Aa10024C1358` |
-| Fee-owner registry | `0x64b5ca1f21B8E84305b0e4D847924dca39Eb1fcb` |
-| Directory | `0x1c7694Ed0F6624cC5794814261B1523E91986bb5` |
-| Fee-hub factory | `0xF14fD8D65D7833612A4bb909F1161731bb7039d3` |
-| Token factory | `0xd3cE64E49224a9a96075633f63761FE6BE22FE30` |
-| Funding escrow | `0x7bc77946CeF52A178583FCe1EEB7751983cEC703` |
-| Launch lens | `0xAce93e3910561aC67c6179c3a27F133F5Ef78F25` |
-| Fixed-fee pool-bound market adapter | `0xb334b44509a5237a39cE364c159913F14b6D1186` |
-| Fixed-fee hook deployer | `0x1Df787Cc099B047A606059Ac80A8296779266f9e` |
-| Dynamic Fee Hook market adapter | `0xDa8581E1241722154B44404a032C086708080519` |
-| Dynamic Fee Hook deployer | `0x59F83bC43A075C40c68dea444dcd9c639BE7F1E7` |
-| Collector factory | `0x43b394fE6865EE6797c60FCCcd33D7D765214b52` |
-| Canonical Abyss market adapter | `0x3ef760fcbbD618Ab6cB7E308e7fB39C93b9deFD0` |
-
-The frozen `LaunchInfrastructureAddresses` also includes the admin, validator,
-token/reward deployers, collector deployer, custody, pool manager, oracle factory,
-Abyss fee-source factory, and wrapped native asset. `LAUNCH_ADDRESSES` configures only
-chain `4663`; unconfigured chains raise `KeyError`. Local/workbench launches must
-supply the actual locally deployed orchestrator explicitly. Configuration lookup
-never rewrites a supplied plan, selects execution mode, signs, or sends a transaction.
-
-## Registry discovery and admission
-
-```sh
-# Reads the current mainnet deployment; no wallet or private key.
+python examples/quickstart.py
 python examples/launch_matrix.py
-# Select an actual local deployment explicitly.
-: "${LOCAL_ORCHESTRATOR:?Set the actual local orchestrator}"
-python examples/launch_matrix.py --chain-id 31337 --rpc-url http://127.0.0.1:8545 \
-  --orchestrator "$LOCAL_ORCHESTRATOR"
 ```
 
-`read_lifecycle_profiles(client, orchestrator=..., offset=0, limit=100)` calls the
-exact `profileIds`, `profile`, `adapter`, `profileTopology`, and `requireEligible`
-getters. A `LifecycleProfile` contains:
+`quickstart.py` prints ID, venue, `admitted`, and refusal `reason`; `launch_matrix.py`
+adds registration, topology, bounds, and author terms as JSON. Retired profiles can
+remain registered: filter by live admission. For another deployment, pass its actual
+`--chain-id`, `--rpc-url`, and `--orchestrator`; only chain4663 has shipped launch addresses.
 
-- `id`, `registration`, `adapter`, and certified `topology`.
-- `venue_kind`, `admitted`, and an explicit refusal `reason` when applicable.
-- For V4: a frozen `LaunchEnvelopeV2`, live `developer_terms`, and the registry's
-  `protocol_maximum_developer_fee_bps`.
-- For canonical Abyss: its independently certified graph without a V4 author envelope.
-
-Discovery validates actual runtime, core/dependency bindings, and configuration
-schema. Disabled offerings remain discoverable but cannot authorize a new launch.
-Unknown schemas are distinguished from position bounds or missing capabilities.
-Admission is pinned to the observed block, not an assumption about an address label.
-
-V4 `LaunchEnvelopeV2` binds the exact artifact/review/terms digests, topology,
-configuration/economic versions, callbacks, protocol treasury/fee denominator,
-stable beneficiary, royalty ceiling, executable bounds, and complete graph.
-`LaunchBoundsV2` consists of `minimum_tick_spacing`, `maximum_tick_spacing`,
-`maximum_positions`, `maximum_oracle_cardinality`, and `fee_mode_flags`.
-Registry author consent uses EIP-712 domain `Black Market Launch Registry`, version
-`2`, with six-argument `registerProfile`. Canonical Abyss uses the admin-only
-`registerAbyssProfile(uint8,registration)` certification route.
-
-## Plans and market configuration
-
-A `LaunchPlanV1` commits `chain_id`, `orchestrator`, `creator`, `nonce`, `token`,
-`funding`, `fee_assets`, `markets`, ordered `buys`, `deadline`, and `executor_fee_bps`.
-Use `launch_plan_from_dict` / `launch_plan_to_dict` for portable Solidity camelCase
-JSON with canonical decimal strings for large exact integers. `encode_launch_plan`,
-`hash_launch_plan`, `launch_id_of`, and `build_lifecycle_calldata` are public.
-Offline encoding/hashing is not registry, funding, gas, or sequential-execution proof.
-`predict_launch_token` also accepts a typed token-only draft with empty market/funding/
-fee arrays, so its predicted address can determine token-only range orientation.
-Prediction does not admit that draft for execution; complete-plan validation remains
-required by all execution builders.
-
-`LifecyclePoolBoundV4MarketConfigV6` requires inner and outer version **6**. Its
-fields in order are:
-
-```text
-version, lp_fee_pips, tick_spacing, sqrt_price_x96, hook_fee_pips,
-minimum_hook_fee_pips, fee_sensitivity_pips_seconds_per_tick, fee_mode,
-protocol_fee_denominator, treasury, external_liquidity_disabled, oracle_config_id,
-hook_salt, profile_id, terms_digest, developer_beneficiary, developer_fee_bps,
-positions
-```
-
-The exact config6 tuple is:
-
-```text
-(uint16,uint24,int24,uint160,uint24,uint24,uint32,uint8,uint8,address,bool,
- bytes32,bytes32,bytes32,bytes32,address,uint16,
- (int24,int24,uint128,bytes32,uint256)[])
-```
-
-`hook_fee_pips` is the maximum; the independent minimum must satisfy
-`0 <= minimum <= maximum <= 1,000,000`. Sensitivity is uint32 in fee-pips ×
-seconds/tick, not an implied minimum or LP fee. `LifecyclePoolBoundV4MarketConfigV5`
-is the explicit version5/V1 type without those two V2 policy fields.
-`LifecyclePoolBoundV4MarketConfig` is their type union, not a constructor.
-
-**Dynamic Fee Hook** is `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`
-(`v4-dynamic-fee-pool`), with hook key `KnownLifecycleHook.DYNAMIC_FEE_POOL_V1`
-(`dynamic-fee-pool-v1`). Its frozen profile ID is
-`0x27f219872fe934a5464bc9b900028256122f215b40cbdb69ef5f88cd5f627ccb`.
-It uses the existing config6/V2 construction and salt-mining helpers, with
-`lp_fee_pips=0` and `developer_fee_bps=0`. Supply explicit minimum, maximum
-(`hook_fee_pips`) and sensitivity: upward quote-per-base tick velocity increases
-the hook fee within those bounds; quiet or falling prices use the minimum.
-Copy beneficiary, terms digest, treasury and protocol denominator from its own
-envelope, never the fixed profile. Its creation code hash is
-`0xd448a4117b78714cc4f96824356c6a90ec666449fde5c57e2b7bbe072f5e4a7a`.
-The frozen bytes concatenate each admitted storage-child runtime after stripping
-its leading STOP byte. The fixed hook still charges its fixed maximum and remains
-the launch examples' selected offering; config6 fields alone do not select dynamic
-behavior. Fresh planning/simulation remains execution authority for both.
-
-### HMM launch configuration
-
-| Offering | Preset | Profile ID |
+| Offering | Select | Decide before building |
 | --- | --- | --- |
-| HMM V2 Fixed | `KnownLifecycleProfile.V4_HMM_FIXED_POOL` | `0x45e957bcc7068350a65f5b4de5453b674d54d0f5eb2a88fc839da13197e80e98` |
-| HMM V2 Dynamic | `KnownLifecycleProfile.V4_HMM_DYNAMIC_POOL` | `0x8e500f203ace505072e209c5f077e11de6d071ac7f298cd75c0e05c6a55c36e6` |
+| Canonical Abyss | `ABYSS_0` STANDARD; `ABYSS_1` STANDARD_ORACLE; `ABYSS_2` QUOTE; `ABYSS_3` QUOTE_ORACLE | Standard fees use both currencies; quote fees use the quote asset. Choose an enabled fee tier and oracle mode. |
+| Fixed V4 | `V4_FIXED_FEE_POOL` | One pool-bound hook per pool; `hook_fee_pips` is its fixed fee. |
+| Dynamic V4 | `V4_DYNAMIC_FEE_POOL` | Zero LP/developer fee; set minimum, maximum, and sensitivity. Upward quote-per-token tick velocity raises the hook fee; quiet/falling prices use the minimum. |
+| HMM V2 | `V4_HMM_FIXED_POOL` / `V4_HMM_DYNAMIC_POOL` | Zero LP/developer fee, explicit bid cap and reference deviation; [configure HMM](#hmm-launch-configuration). |
+| UFG treasury | Canonical Abyss QUOTE variants or `V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` | ERC20 without rewards; quote fees become redeemable reserves. [Use the proxy route](#ufg-treasury-launches). |
 
-Both require zero LP fee and zero developer fee. Copy graph and terms from the
-selected preset's envelope, not another V4 offering. HMM Fixed charges the fixed
-`hook_fee_pips`. HMM Dynamic uses explicit minimum/maximum/sensitivity and the
-absolute truncated-oracle tick movement over elapsed seconds, so movement in
-either direction can raise its fee. Both admit up to 32 positions and
-QuoteOnly/InputToken modes.
+Choose ERC20/ERC404 and no rewards/staking/dividends separately from the profile.
+ERC404 examples use 100 tokens per NFT unit. An oracle pool does not grant lending admission.
 
-Supply `hmm_launch_config` on `LifecyclePoolBoundV4MarketConfigV6`. The existing
-`encode_lifecycle_pool_bound_v4_market_config` automatically emits
-`abi.encode(V4MarketConfigV6) ++ abi.encode(HMMLaunchConfigV2)` for either HMM
-profile. The suffix is exactly **16 words / 512 bytes**: `strategy_share_bps`
-followed by the fifteen strategy settings. A plain config6, old 448-byte suffix,
-missing/extra bytes, noncanonical prefix or tail on a non-HMM profile fails.
-Decoding and salt mining preserve the suffix. The full plan hash commits it,
-but the factory's salt-independent hook market commitment hashes only the
-canonical zero-salt config6 prefix. The hook constructor remains the exact
-20-word / 640-byte `PoolBoundHookParametersV2`, without a second HMM argument.
+Select shipped construction metadata without an RPC:
+
+```python
+from black_market_sdk import (
+    KnownLifecycleProfile, get_launch_addresses,
+    get_known_lifecycle_profile, list_known_lifecycle_profiles,
+)
+
+addresses = get_launch_addresses(4663)
+catalog = list_known_lifecycle_profiles(
+    chain_id=4663, orchestrator=addresses.orchestrator,
+)
+fixed = get_known_lifecycle_profile(
+    chain_id=4663, orchestrator=addresses.orchestrator,
+    key=KnownLifecycleProfile.V4_FIXED_FEE_POOL,
+)
+assert fixed is not None and fixed.supported
+print([entry.key.value for entry in catalog])
+print(fixed.profile.id)
+```
+
+Selectors return `None`/an empty tuple for an unknown deployment. A supported
+preset supplies construction fields, not current permission to execute.
+`read_lifecycle_profiles(client, orchestrator=addresses.orchestrator)` reads live
+eligibility; final planning checks the chosen profile again.
+
+## Price the launch
+
+### Choose a starting valuation
+
+Opening FDV = token price × **total minted supply**. It is a valuation, not money
+deposited: the opening liquidity positions contain only the launch token.
+With **1,000,000 tokens** and a **$5,000** target, the unit price is **$0.005**.
+At an assumed WETH price of **$2,486.49**, that is about **0.00000201 WETH/token**.
+
+The examples default to `$5,000` through `EXAMPLE_TARGET_MARKET_CAP_USD`.
+The app uses a `$15,000` default/minimum, with $15K/$25K/$50K/$100K/custom choices.
+Neither default establishes an optimal cap or an anti-sniper guarantee. Holding
+shape and fees fixed, the same buy acquires a smaller share at a higher cap.
+
+### Convert decimals and address order
+
+Let `q` be human quote units per token, `dL` launch decimals (18), and `dQ` quote
+decimals. The launch token is token0 when its address is numerically smaller.
+The historical argument `launched_token_is_quote=True` means **launch token0**.
+Use `predict_launch_token` to determine that ordering before deriving ranges.
+
+| Launch token | Raw token1/token0 ratio | Opening end of its one-sided range |
+| --- | --- | --- |
+| token0 / `True` | `q × 10**(dQ-dL)` | Lower tick; buys move toward the upper boundary |
+| token1 / `False` | `1 / (q × 10**(dQ-dL))` | Upper tick; buys move toward the lower boundary |
+
+`sqrtPriceX96 = floor(sqrt(raw_ratio) × 2**96)`. For a six-decimal $1 quote,
+$0.005/token gives raw ratio **5 × 10^-15**, not 0.005. `1 << 96` means raw-unit
+parity, not a human USD price. Use integer helpers for the final tick alignment.
+
+### Derive the opening pool
+
+This arithmetic example assumes USDG at $1; it does not fetch a live price.
+Half the supply funds this pool; the other half must fund another market in a
+complete plan. Always pass `supply`: the helper's omitted default is **1B tokens**.
+
+```python
+from black_market_sdk import derive_launch_pool_recipe
+
+recipe = derive_launch_pool_recipe(
+    paired_token_decimals=6,
+    paired_token_usd_price_x18=10**18,
+    target_market_cap_usd_x18=5_000 * 10**18,
+    launched_token_is_quote=True,
+    fee=3000,
+    supply=1_000_000 * 10**18,
+    token_budget=500_000 * 10**18,
+)
+fdv_x18 = (
+    recipe.launch_sqrt_price_x96**2 * (1_000_000 * 10**18) * 10**18
+    // ((1 << 192) * 10**6)
+)
+print(recipe)
+print(fdv_x18)
+```
+
+| Output | token0 (`True`) | Same inputs with token1 (`False`) |
+| --- | ---: | ---: |
+| `launch_tick` | -329280 | 329280 |
+| `launch_sqrt_price_x96` | 5610644101265567582035 | 1118784514236214582089729076342544510 |
+| `liquidity` | 35408142276778286 | 35408142276778286 |
+| Tick range | [-329280, 887220] | [-887220, 329280] |
+| Raw launch-token maximum | 500000000000000000000000 | 500000000000000000000000 |
+| Raw quote deposit maximum | 0 | 0 |
+
+The printed `fdv_x18` is **5014946157970295405007**: aligned opening FDV
+**$5,014.946157970295405007**, about **$0.005014946158/token**. Show both the
+requested and aligned valuation in your review. Tick rounding changes the opening.
+
+### Split supply across pools and bands
+
+For multiple pools, keep **one full-supply valuation** and convert it through each
+quote's USD price/decimals. Split token inventory between pools, not FDV. Two
+half-supply pools each priced at $5,000 FDV do not make a $10,000 launch.
+Record each quote address, decimals, USD seed, source, and observation time.
+The runner fetches prices through `LAUNCH_API_URL` with a 15-second timeout.
+
+Use `derive_launch_position_ranges` for two to sixteen bands (default five):
+
+```python
+from black_market_sdk import derive_launch_position_ranges
+
+bands = derive_launch_position_ranges(
+    launch_sqrt_price_x96=recipe.launch_sqrt_price_x96,
+    launched_token_is_quote=True,
+    token_budget=500_000 * 10**18,
+    tick_spacing=60,
+    venue="uniswap-v4",
+    distribution_preset="early-scarcity",
+    position_count=4,
+    position_gaps="adjacent",
+    extend_final_range_to_boundary=True,
+)
+print([position.inventory_bps for position in bands.positions])
+```
+
+This prints **[366, 975, 2805, 5854]**: 3.66% / 9.75% / 28.05% / 58.54% of the
+pool budget. Early Scarcity puts less inventory near opening; Staircase uses stepwise
+weights; Smooth Ramp increases them gradually. App Single range/Even spread/Layered/
+Higher ground presets are separate. Use `venue="abyss"` for Abyss; runner `CASE` uses `"v4"`.
+
+Keep `position_gaps="adjacent"` for continuous opening-to-boundary coverage;
+Early Scarcity/Staircase otherwise retain source gaps. Fund the final boundary tail.
+Planner exceptions `allow_topology_gaps` / `allow_missing_permanent_tail` change this
+requirement; they do not repair mistaken geometry. One position uses the recipe directly.
+
+Market budgets sum to full supply; position maxima sum to each market budget.
+All unspent mint inventory is **burned before opening buys**, not a creator reserve.
+Review retained supply and burn: undersized positions can burn more than rounding dust.
+
+### Size and protect the opening buy
+
+`EXAMPLE_BUY_AMOUNT_WEI` defaults to **0.00001 ETH per buy**. At the WETH seed above,
+that is about $0.02486: smoke buys acquired roughly 4.9 tokens out of 1M, not a
+useful depth test for a $100 order. Preview your actual size and show net tokens,
+share of retained supply, total spend including fees, and post-buy spot price.
+A historical launch bought about 61% of supply with a buy larger than its opening
+quote-denominated FDV; spend alone does not describe the allocation.
+
+| Helper / option | What it protects or estimates |
+| --- | --- |
+| `estimate_launch_initial_buy` | Pure **first-band** estimate; excludes later bands, earlier ordered buys, and hook effects. Do not derive executable minima from it alone. |
+| `derive_launch_buy_sqrt_price_limit_x96` | Directional **price guard**; a tight guard can truncate a buy. It is not a token-output minimum. |
+| `buy_slippage_bps=50` | Planner diagnoses ordered buys, commits each output minimum, then simulates the final protected plan. |
+
+`min_token_out = simulated_token_out * (10000 - buy_slippage_bps) // 10000`.
+For illustrative output 123456789 and 50 bps, the minimum is **122839505**.
+Calibration requires activation inside the simulated prefix. A Kyber conversion
+floor protects ETH→quote, not quote→launch token. A minimum of **1 wei is unprotected**.
+
+## Build the plan
+
+`LaunchPlanV1` and its nested models are frozen dataclasses. Use `dataclasses.replace`
+to complete a draft; assigning `creator` or `nonce` directly raises an error.
+This function builds one plain Abyss/WETH market. Supply a fresh nonce/salt and a
+current WETH USD-X18 price. It reads token prediction but does not sign or submit.
 
 ```python
 from dataclasses import replace
-from black_market_sdk import default_hmm_launch_config, encode_lifecycle_pool_bound_v4_market_config
-
-# reviewed_v6 binds this V2 preset's ID, terms, economics and positions.
-# The two reviewed_* values are explicit policy, not SDK economic defaults.
-hmm = default_hmm_launch_config(
-    token_budget=market_budget, quote_asset=quote_asset,
-    max_bid_quote=reviewed_max_bid_quote,
-    reference_deviation=reviewed_reference_deviation,
+from web3 import Web3
+from black_market_sdk import (
+    LaunchPlanV1, LifecycleTokenConfig, LifecycleAssetFunding,
+    LifecycleFeeAssetPolicy, LifecycleFundingKind, LifecycleInitialBuy,
+    LifecycleMarketConfig, LifecycleAbyssMarketConfig, LifecycleAbyssPosition,
+    predict_launch_token, encode_lifecycle_abyss_market_config,
+    derive_launch_buy_sqrt_price_limit_x96,
 )
-reviewed_v6 = replace(reviewed_v6, hmm_launch_config=hmm)
-wire_config = encode_lifecycle_pool_bound_v4_market_config(reviewed_v6)
-# Optional reviewed decay: 72 hours; zero remains the default (off).
-hmm = replace(hmm, strategy=replace(hmm.strategy, premium_decay_seconds=259_200))
+
+def build_abyss_plan(client, *, creator, nonce, salt, quote_usd_x18):
+    creator = Web3.to_checksum_address(creator)
+    addresses = get_launch_addresses(4663)
+    quote = addresses.wrapped_native
+    deadline = int(client.eth.get_block("latest")["timestamp"]) + 3600
+    draft = LaunchPlanV1(
+        chain_id=4663, orchestrator=addresses.orchestrator,
+        creator=creator, nonce=nonce,
+        token=LifecycleTokenConfig(
+            kind=0, reward_mode=0, name="Example Token", symbol="EXAMPLE",
+            supply=1_000_000 * 10**18, nft_unit=0, metadata_uri="",
+            salt=salt, inventory_recipient=creator, burn_on_cancel=False,
+        ),
+        funding=(), fee_assets=(), markets=(), buys=(),
+        deadline=deadline, executor_fee_bps=275,
+    )
+    token = predict_launch_token(client, draft)
+    token0 = int(token, 16) < int(quote, 16)
+    opening = derive_launch_pool_recipe(
+        paired_token_decimals=18, paired_token_usd_price_x18=quote_usd_x18,
+        target_market_cap_usd_x18=5_000 * 10**18,
+        launched_token_is_quote=token0, fee=3000,
+        supply=draft.token.supply, token_budget=draft.token.supply,
+    )
+    preset = get_known_lifecycle_profile(
+        chain_id=4663, orchestrator=draft.orchestrator,
+        key=KnownLifecycleProfile.ABYSS_0,
+    )
+    assert preset is not None and preset.supported
+    config = LifecycleAbyssMarketConfig(
+        profile=0, fee=3000, oracle_config_id=bytes(32),
+        opening_sqrt_price_x96=opening.launch_sqrt_price_x96,
+        positions=(LifecycleAbyssPosition(
+            opening.tick_lower, opening.tick_upper,
+            opening.liquidity, draft.token.supply,
+        ),),
+    )
+    amount = 10**13
+    return replace(
+        draft,
+        markets=(LifecycleMarketConfig(
+            preset.profile.registration.adapter_id, preset.profile.id, quote,
+            draft.token.supply, 1, encode_lifecycle_abyss_market_config(config),
+        ),),
+        funding=(LifecycleAssetFunding(
+            quote, amount, LifecycleFundingKind.NATIVE_WRAP,
+            quote, amount, "0x0000000000000000000000000000000000000000", b"",
+        ),),
+        fee_assets=tuple(LifecycleFeeAssetPolicy(asset, 10000, 0, 0)
+                         for asset in sorted((token, quote), key=lambda a: int(a, 16))),
+        buys=(LifecycleInitialBuy(
+            0, amount, 1, creator,
+            derive_launch_buy_sqrt_price_limit_x96(
+                launch_sqrt_price_x96=opening.launch_sqrt_price_x96,
+                launched_token_is_quote=token0, slippage_bps=50,
+            ),
+        ),),
+    )
 ```
 
-`HmmLaunchConfig` contains `strategy_share_bps` and `HmmStrategyConfig`. The
-existing defaults are unchanged: 50% strategy share; bid/ask widths 5, gap 1,
-stale time 86,400 seconds, displacement 5 (widths/gap/displacement in tick
-spacings), premium 500 bps, four asks and no premium decay. Raw-unit thresholds
-are `token_budget // 100_000` for minimum token harvest, 10% of budget for offered
-exposure and 100% for acquired inventory. WETH quote deploy/harvest thresholds
-are 0.0005/0.005 ether; USDG uses 1/10 units at its six decimals. The helper
-resolves symbols or canonical addresses from the SDK quote catalogue. Other
-assets require explicit `min_quote_deploy` and `min_quote_harvest`, not an
-assumed USD peg. `quote_decimals` is optional.
+The buy's draft minimum is 1; use the protected preparation below before signing.
+For fixed/dynamic V4, construct `LifecyclePoolBoundV4MarketConfigV6`, encode with
+`encode_lifecycle_pool_bound_v4_market_config`, and set outer `config_version=6`.
+Copy treasury, denominator, beneficiary, and terms from the **selected** envelope;
+use `hook_salt=bytes(32)` before unified preparation. See [codecs](reference.md#encode-market-configs).
+Only one V4 market per token/quote is allowed; consolidate its positions. Abyss can
+use that quote in another market.
 
-The last two strategy fields are required, with no guessed risk defaults:
+| Funding choice | `LifecycleFundingKind` | Payment / approval |
+| --- | --- | --- |
+| Native ETH → WETH | `NATIVE_WRAP` | Wrap ETH in escrow; native value, no ERC20 approval. |
+| Native ETH → another quote, such as USDG | `SWAP` | Committed Kyber conversion; native value. |
+| Existing quote ERC20 | `ERC20` | Approve funding escrow for the exact input; UFG instead approves its proxy. |
 
-- `max_bid_quote`: positive bid quote-principal ceiling, in raw quote units,
-  at most `uint128.max`. It caps new/refreshed bids, not the launch-token budget.
-- `reference_deviation`: nonnegative int24 count of tick spacings from the
-  hook's truncated-oracle reference. In strategy tick coordinates, ask lower
-  must be at least `reference - deviation * spacing` and bid upper at most
-  `reference + deviation * spacing`. Zero does not disable the guard.
+For swaps, `asset/amount` is the output quote/floor; `input_asset/input_amount` is
+the payment. The admitted router's executable `target/data` belongs in funding,
+not a separate wallet swap into an inactive token. Funding outputs are sorted and
+unique; aggregate all buys using the same quote. Gas ETH is additional.
 
-`encode_hmm_launch_tail` and `validate_hmm_launch_config` enforce integer-only
-ABI widths and the factory's exact conditions: share ≤10,000, positive
-widths/stale time/displacement/harvest thresholds, nonnegative gap, premium
-≤5,000, 1–8 asks, offered cap ≥ask count and ≥minimum token harvest, acquired
-cap ≥minimum token harvest, and both inventory caps ≤uint128.max. Quote
-deployment may be zero; premium decay may be any uint32. Invalid small-budget
-calibrations and oversized caps fail rather than being silently clamped.
-`decode_hmm_launch_tail` requires exactly 512 canonical bytes.
+The runner sets **plan deadline = now + 3600 seconds** and **conversion deadline =
+now + 300 seconds**. Conversion validation permits at most 1200 seconds and cannot
+exceed the plan deadline. A long staged run can outlive its route while the plan
+is still valid; increasing gas does not refresh the committed conversion.
 
-On each swap, the V2 hook reserves the selected share of **both currencies'**
-post-treasury fees for its per-market manager, before fee collection. The
-remaining distribution fees follow normal fee-hub routing; changing the share
-does not reallocate already reserved fees. HMM does not burn tokens or touch
-permanently locked launch positions. The manager enforces the reference envelope
-and bid-principal cap when placing/refreshing its auxiliary book.
+## Prepare and simulate
 
-The current fee owner can immediately update **all fifteen** settings using
-`HMMLiquidityManagerV2.setStrategyConfig`, and use `setPlacementsPaused` to
-queue auxiliary-liquidity withdrawal and pause new placements, not fee collection.
-Updates request a refresh on the next maintenance pass. Lowering an intake cap
-does not liquidate existing inventory; existing lots retain their stored premium
-floor and age. `HMMFeeCollectorV2.setStrategyShareBps` changes future fee accrual.
-Use `HMM_LIQUIDITY_MANAGER_V2_ABI`, `HMM_FEE_COLLECTOR_V2_ABI` and
-`HMM_FEE_COLLECTOR_FACTORY_V2_ABI` with ordinary web3.py contracts.
-`HMM_STRATEGY_COMPONENTS` and `HMM_LAUNCH_COMPONENTS` describe the V2-only tuples;
-`HMM_FIXED_HOOK_V2_ABI` / `HMM_DYNAMIC_HOOK_V2_ABI` include the canonical hook
-constructor and strategy-fee reads.
+Use synchronous `Web3` clients. Unified preparation is asynchronous:
 
 ```python
-from dataclasses import astuple
-from black_market_sdk import HMM_LIQUIDITY_MANAGER_V2_ABI
+from black_market_sdk import prepare_and_plan_lifecycle_launch
 
-# client and this market's manager_address come from the reviewed deployed pool.
-manager = client.eth.contract(address=manager_address, abi=HMM_LIQUIDITY_MANAGER_V2_ABI)
-config_data = manager.encode_abi("setStrategyConfig", args=[astuple(hmm.strategy)])
-pause_data = manager.encode_abi("setPlacementsPaused", args=[True])
-# Encoding is not authorization to submit; only the current fee owner may call.
+async def prepare_first_launch(client, draft):
+    launch = await prepare_and_plan_lifecycle_launch(
+        client, draft, account=draft.creator, mode="atomic",
+        buy_slippage_bps=50, confirmations=1,
+    )
+    if not launch.admitted:
+        raise RuntimeError(launch.simulation.reasons)
+    return launch
 ```
 
-Run `python examples/hmm_launch_config.py --max-bid-quote 10000000000000000 --reference-deviation 0`
-for an offline illustration (0.01 WETH bid cap, zero deviation), or add `--live`
-to certify both presets' current admission without a wallet. Choose the two
-risk inputs explicitly for the intended market; these example values are not
-SDK defaults. Construction metadata is not live eligibility; normal lifecycle
-proof is still required.
+Use `asyncio.run(prepare_first_launch(client, draft))` from a synchronous program,
+or `await` it in an existing event loop. Keep the returned `launch.plan`, hash,
+mode, and confirmation policy: V4 salts and calibrated minima may change the draft.
+Preparation mines bound-hook salts locally, checks live admission/funding, and
+proves ordered execution. `plan_launch` is synchronous for an already-finalized plan.
 
-
-Each `LifecycleV4Position` has `tick_lower`, `tick_upper`, `liquidity`, `salt`, and
-`max_token_amount`. Position salts and the hook deployment salt are independent.
-`LifecycleV4MarketConfig` uses inner/outer version **4** and the V1 sequence
-without `hook_salt`. Current codecs require canonical bytes and explicit author,
-fee and configuration fields; no fee or author rate is chosen for you.
-
-The inner profile ID must equal the market's outer ID. `developer_beneficiary` is
-the stable admitted author identity, not today's payout address. An explicit rate,
-including zero, must fit both the frozen envelope and live protocol maximum.
-Treasury and protocol denominator are frozen terms. LP fees must be below
-1,000,000 pips; fee mode, tick spacing, and position count must fit admitted bounds.
-
-Creators select `oracle_config_id` and `external_liquidity_disabled` per pool.
-Robinhood oracle configurations P1 `(1,4096)`, P2 `(6,4096)`, and P3 `(17,4096)` can
-use the same admitted profile. The planner verifies the chosen ID against actual
-factory metadata at the pinned block. Unregistered IDs fail. Allowing external
-liquidity permits third-party LP add/remove after opening; permanent launch custody
-and pre-opening protection still apply.
-
-Canonical Abyss uses `LifecycleAbyssMarketConfig`, `LifecycleAbyssPosition`, and
-`encode_lifecycle_abyss_market_config`. Mixed Abyss/V4 plans are supported. At most
-one V4 market per quote is permitted across both V4 topologies; an Abyss market
-may use that quote. Funding/fee-asset arrays are ascending and unique, fee
-allocations sum to 10,000 bps, and all committed quantities stay exact.
-
-All market `token_budget` values must sum exactly to the committed supply, and
-every market's position `max_token_amount` values must sum exactly to its budget.
-Divide using exact integers and place any remainder in the final market/position.
-These are intended allocations, not actual mint debits. Rounded mint residuals
-are burned during activation before buys; they are never a creator reserve.
-`inventory_recipient` does not authorize an unallocated supply remainder.
-
-### Launch position-topology safety
-
-Every launch-created market must retain a **permanent tail with a nonzero token
-allocation**, bridged continuously from its opening price by the other positions.
-The tail's far endpoint is the protocol's usable spacing-aligned buy-push boundary,
-not mathematical infinity. A tail in an optional second market cannot cover a gap
-or replace the tail in the primary market.
-
-`derive_launch_position_ranges` now defaults
-`extend_final_range_to_boundary=True` (a breaking default change). Its final
-position reaches the boundary without adding inventory to the market's budget.
-The `position_gaps` option (`LaunchPositionGaps`) accepts `"source-gaps"` or
-`"adjacent"` for both Early Scarcity and Staircase. These two presets retain
-source gaps by default; choose `position_gaps="adjacent"` for continuous ranges
-without changing their source inventory weights or finite band widths. Smooth
-Ramp is always contiguous and rejects explicit `"source-gaps"`.
-
-The exported pure `assert_launch_topology_coverage(positions, opening_tick=...,
-tick_spacing=..., launched_token_is_quote=...)` accepts position attributes or
-mapping keys `tick_lower`, `tick_upper`, and `max_token_amount`. It validates the
-interval union, not the caller's order: overlapping bands and exact tick
-adjacency are valid. Opening containment uses `[lower, upper)` for launch token0,
-or `(lower, upper]` for token1's first downward crossing. The historical
-`launched_token_is_quote=True` convention means **launch token is token0**.
-Off-grid ticks, an uncovered opening, interior gaps, and a missing/zero-allocation
-tail raise `ValueError` with `TOPOLOGY_OFF_GRID_TICK`, `TOPOLOGY_OPENING_GAP`,
-`TOPOLOGY_INTERIOR_GAP`, and `MISSING_PERMANENT_TAIL` respectively.
-
-For **unstarted launches only**, `plan_launch` and
-`prepare_and_plan_lifecycle_launch` enforce this rule per market, using the pinned
-predicted token's actual address order, the opening tick derived from its configured
-sqrt price, V4's configured spacing, and Abyss's canonical fee-tier spacing.
-Started/waiting/in-flight and Active/Cancelled recovery skips this creation safety
-policy, like `buy_slippage_bps`: refusal cannot rewrite a committed on-chain plan.
-The planner flags are separate, explicit exceptions:
-
-- `allow_topology_gaps=True` skips **only interior gaps**, like the pure validator's
-  `allow_interior_gaps=True`; it does not permit a missing permanent tail.
-- `allow_missing_permanent_tail=True` skips **only** boundary reach and nonzero tail
-  allocation; it does not permit interior gaps.
-- Opening containment and tick alignment remain hard errors, even with both flags.
-  Exact market/supply and position/budget equality checks are unchanged.
-
-The exceptions are retained on `PlannedLaunch` and inherited during fresh
-simulation/build-next admission. They are SDK admission policy, not fields in
-`LaunchPlanV1`: they do not change ABI encoding, plan hashes, or committed calldata.
-
-## Unified preparation and final admission
-
-`await prepare_and_plan_lifecycle_launch(client, draft_plan, account=creator,
-mode="staged")` locally mines exact CREATE2 hook salts, rereads constructor/graph
-bindings, and returns the final fully planned `PlannedLaunch`. Pass the explicitly
-selected `atomic` or `staged` mode; preparation never selects or changes it.
-Use `launch.plan`, `launch.plan_hash`, `launch.hook_deployments`, and
-`launch.simulation` for review. Do not plan the original draft again or reuse a
-diagnostic simulation as final admission. Require `launch.admitted` before
-requesting any signature or metadata staging.
-
-Optional `buy_slippage_bps` derives minimums from actual ordered diagnostic buy
-results, then proves the complete final protected plan. It does not rewrite a
-started launch. Economic plans and deployment salts are immutable after submission.
-`read_pool_bound_hook_deployment` accepts an unmined draft;
-`mine_pool_bound_hook_salt` supports cancellable local search.
-`build_pool_bound_hook_deployment_transaction` returns optional unsigned
-predeployment calldata without registration, initialization, fee-source binding,
-minting, custody sealing, buying, or opening.
-
-The market commitment domain is `black-market.pool-bound-market-economics.v1`.
-Only `hook_salt` is normalized: profile, terms, author, rate, economics, and every
-position remain committed. Prediction hashes the exact certified creation-code
-chunks plus the version-matched constructor: `PoolBoundHookParametersV1` for
-config5 or `PoolBoundHookParametersV2` for config6, including independent minimum
-and sensitivity. Initcode/runtime limits are 49,152/24,576 bytes. An existing
-hook must match deployer-recorded runtime and exact constructor, key, dependency,
-and opening-state commitments; callback bits alone do not prove provenance.
-Shared topology separately authenticates its typed three-argument constructor.
-
-Public ABI fragments include `FIXED_FEE_POOL_HOOK_V1_ABI`,
-`POOL_HOOK_DEPLOYER_V1_ABI`, `POOL_MARKET_ADAPTER_V1_ABI`,
-`SHARED_MARKET_ADAPTER_V1_ABI`, and `POOL_FEE_COLLECTOR_FACTORY_V1_ABI`.
-Actual lifecycle reads also export `ABYSS_MARKET_ADAPTER_V1_ABI` (`profileId(3)`),
-`LAUNCH_TOKEN_CONTEXT_V1_ABI`, `LAUNCH_ERC404_V1_ABI`,
-`V4_FEE_LIQUIDITY_LOCKER_V2_ABI`, and the token factory's `TokenDeployed` event.
-Profile/dependency domains are `black-market.launch-profile.v2` and
-`black-market.v4-dependencies.v2`; the collector factory getter is
-`dependencyDigest(address)`.
-
-## Simulation, unsigned commands, and recovery
-
-| API | Purpose |
-| --- | --- |
-| `prepare_and_plan_lifecycle_launch(client,plan,account=...,mode=...)` | Salt mining, optional buy protection, and final available-prefix admission |
-| `plan_launch(client,plan,account=...,mode=...)` | Admission of already finalized economics in the explicit mode |
-| `simulate_launch_plan(client,launch,account=...)` | Reexecute against current canonical progress and caps |
-| `build_next_transaction(client,launch,account=...)` | Revalidate and emit only the next proven unsigned step |
-| `read_launch_progress(client,plan,mode=...,confirmations=...,receipts=...)` | Canonical progress and confirmed/pending/replaced/orphaned receipt evidence |
-| `read_launch_markets(client,plan,offset=...,limit=...)` | Canonical market/position/custody identities and live state |
-| `preview_lifecycle_fees(client,hub,executor=...)` | Current no-argument V3 `claimAndSplit()` through `eth_call` |
-
-Staged mode partitions preparation only. Minting all positions, permanent custody
-sealing, ordered opening buys, refunds, and public activation form one indivisible
-activation transaction. An overlimit activation is refused, not split or silently
-changed. Execution grouping never changes committed economics.
-
-The planner greedily packs contiguous markets using 14,500,000 gas per shipped
-HMM V2 market and 16,000,000 otherwise. At a 32M compute cap, 1/2/3/5 HMM markets
-pack as `[1]`, `[2]`, `[2, 1]`, `[2, 2, 1]`. If a multi-market prepare fails
-measurement after consuming at least 95% of its envelope, the planner halves that
-batch and re-plans. This includes CREATE's `DeploymentFailed`; a lower-gas semantic
-failure is not retried or hidden. Activation remains indivisible.
-
-The aggregate budget selects a prefix using begin 9.5M, the preparation costs
-above, activation 6M per market plus the HMM reserve, and small approval estimates.
-Measurement failures after cumulative request gas usage reaches 95% of that budget
-truncate before the failed command; genuine failures inside the prefix still fail.
-Only that prefix is measured and exactly replayed. Admitted plans expose the rest
-as `simulation.deferred_transaction_ids` (empty for complete coverage).
-Deferred transactions have no `gas_limit`, `gas_price`, estimate or admission.
-Rebuild the immediate next transaction after every canonical receipt to obtain its
-fresh exact envelope; never sign a deferred command directly. Prefix admission is
-not a guarantee the remaining launch will succeed. `buy_slippage_bps` refuses if
-activation is deferred: use a native provider with a larger aggregate budget or
-omit calibration and supply already-committed buy minima.
-
-Quote/fee assets and exact direct ERC20/native-wrap funding are permissionless;
-admission checks actual code, transfers, balances, budgets, and wrapped-native
-binding. Swap conversion requires registry-approved input, target/spender, and code
-hash. Sequential simulation needs `eth_simulateV1` or an explicitly owned, separate
-loopback Anvil fork created with `create_controlled_launch_fork`. A controlled fork
-executes real transactions only in its owned snapshot, verifies source/fork identity
-and account state, and restores it. The creator must already be unlocked there;
-the SDK does not sign or impersonate automatically. Disconnected deployment calls
-or unsupported simulation backends remain provisional and cannot authorize a step.
-
-`LaunchExecutionLimits` and `LifecycleLimitResolver` are optional tightening policy,
-not a mandatory backend service. Missing RPC/account/calldata policy stays explicit
-in `unknown_constraints` without rejecting otherwise proved execution. Supplied caps
-are enforced; a failed/malformed resolver or mismatched supplied block/hash, chain,
-orchestrator or account is rejected. The SDK's own canonical simulation context
-binds the actual proof even when independent policy provenance was not supplied.
-
-`LaunchSimulation` and each `LifecycleTransaction.admission` expose three separate
-outcomes:
-
-| Field | Values | Scope |
+| Mode | Transactions after approvals | What can be interrupted |
 | --- | --- | --- |
-| `execution_proof` | `proved`, `failed`, `unavailable` | Selected prefix measurement plus exact gas-envelope replay and postconditions; held envelopes use direct exact replay |
-| `protocol_fit` | `proved`, `failed`, `unknown` | Pinned protocol ceilings and known tightening policy; an economic revert does not prove gas fit |
-| `transport_preflight` | `not-requested`, `passed`, `failed` | Optional immediate-next-transaction estimate on the supplied submission RPC |
+| `atomic` | One launch transaction | The whole launch succeeds or reverts. |
+| `staged` | Begin → packed preparation transactions → one activation | Preparation is split; activation still mints, locks, buys, and opens every market together. |
 
-`admitted` certifies the exact current execution against proved protocol and known
-policy, not wallet acceptance or future execution. On generic EVM chains, the
-bounded header and actual validated backend are used; an absent independent
-per-transaction cutoff is reported, never replaced with an invented Ethereum cap.
-An optional `data_fee_estimator` still adds external chain-specific fees exactly
-once. Without it, external data fees remain explicitly unknown.
+Staging is not rollback: an expired begun launch remains begun until cancelled.
+Select the mode explicitly; a refusal does not authorize changing the economics.
 
-On chain4663, the SDK pins `ArbSys.arbOSVersion()` at `0x64` and
-`ArbGasInfo.getMaxTxGasLimit()` / `getMaxBlockGasLimit()` at `0x6c` to the same
-canonical context. ArbSys returns `55 +` the actual ArbOS version; actual version
-50 or newer and valid positive decoded ceilings are required. Read failure never
-falls back to the unusually large header gas limit or a hard-coded compute cap.
-`limits.execution_gas_ceiling` is the native compute ceiling;
-`limits.transaction_gas_ceiling` is a separate known total-envelope policy, if any.
+Robinhood's default aggregate `eth_simulateV1` budget is **50M gas**. Fresh ordinary
+plans estimate begin **9.5M**, preparation **16M/market**, activation **6M/market**:
+one market **31.5M**, two **53.5M**, three **75.5M**, before any approval estimates.
+These are prefix-selection estimates, not measured gas or a chain transaction cap.
 
-Native Nitro permissive simulation measures compute, including a gross
-`maxUsedGas` requirement when returned. `NodeInterface.gasEstimateL1Component()` at
-`0xc8` supplies a pinned exact-calldata poster budget even for future dependent
-steps. Each budget receives integer-ceiling headroom separately. The validated
-native replay charges actual poster gas and proves ArbOS compute enforcement;
-the SDK never subtracts an approximate poster quote to assert exact compute use.
-The total gas envelope and receipt gas may exceed the compute ceiling.
+`launch.simulation.deferred_transaction_ids` lists the suffix outside the proof.
+Deferred transactions have no signing gas/price/admission. `buy_slippage_bps`
+requires activation outputs, so the fixed protected-buy runner refuses a deferred
+activation. For a larger plan, use a native provider supporting a larger request
+and pass `LaunchExecutionLimits(rpc_total_simulation_gas_limit=...)` in your
+integration. The Python runner has no environment override for that aggregate cap.
+A generic Anvil fork cannot prove Robinhood's native Nitro metering.
 
-For measured gross requirement `G = maxUsedGas` (falling back to `gasUsed`), the
-compute target is `max(G + R, ceil(G * (10000 + headroom_bps) / 10000))`.
-For atomic/activation transactions containing shipped HMM V2 fixed/dynamic
-markets, `R = 4_250_000 + 500_000 * (hmm_market_count - 1)` exactly once per
-transaction; all other commands use zero reserve. The hook requires gas available
-before manager calls that never appears in gas-used measurements. Optional reserve
-and percentage targets are clamped to the actual compute and total-envelope caps,
-then the chosen gas is exactly replayed. Padding alone cannot refuse a fitting
-measurement. Poster gas stays a separate envelope component, not a second fee.
-`poster_gas` / `poster_fee` are budget observations, not extra charges:
-`data_fee_included_in_gas=True`, `data_fee=0`, and `total_fee` is already
-`gas_limit * gas_price`. A generic Anvil fork cannot prove native ArbOS metering
-and is refused for Nitro, while generic EVM controlled-fork support is unchanged.
+## Sign and confirm
 
-A separate non-persisting native capability probe verifies all three getters
-through validated simulation. Only that isolated probe temporarily supplies its
-sender balance so an exactly funded payer need not fund probe calls. Actual
-lifecycle measurement, exact replay, nonce/state checks and affordability always
-use real source state without balance/code/allowance injection.
+Call `build_next_transaction` after every confirmed receipt. Review and sign its exact
+`as_transaction()` envelope; `submission_client` optionally preflights your send RPC.
+Deferred commands cannot be signed.
 
-Pass `submission_client=...` to `build_next_transaction` to estimate only the
-immediate next unsigned transaction on the active submission reader. It checks
-the reader's chain before and after `eth_estimateGas` and uses the exact reviewed
-`from/to/data/value/gas/gasPrice` at `latest`; no gas-envelope expansion, signatures,
-or writes occur. A refusal raises `LaunchSubmissionPreflightError` with
-`code="SUBMISSION_PREFLIGHT_FAILED"` and a copied simulation retaining its proved
-execution admission but `transport_preflight="failed"`. A returned transaction's
-admission has `transport_preflight="passed"`. Planning does not estimate future
-dependent steps against nonexistent current state. Wallet/account/chain guards
-are still required immediately around the eventual signature request.
+This loop **spends funds when called** with your authorized `eth-account` local wallet.
+Supply `persist`, your application's durable owner-only journal callback. Resolve any
+previously signed hash first. Exceptions stop execution without automatically resending.
 
-With an explicitly supplied generic-EVM `fork`, a held immediate envelope is
-replayed directly in that owned disposable fork, with no estimation pass. The
-backend is selected before replay and never changes after a replay failure.
-Nitro held envelopes always require the native backend.
+```python
+from dataclasses import asdict
+from black_market_sdk import (
+    LifecycleReceiptReference, build_next_transaction,
+    launch_plan_to_dict, read_launch_progress,
+)
+import time
 
-The planning owner checks source chain and canonical block identity once after
-proof; standalone public readers retain their own end guards, and submission
-preflight is followed by a source check. Transport drift to a different-chain fork
-sharing the same block hash raises `LaunchStateChanged` with `code="CHAIN_MISMATCH"`.
-Headroom is an integer from 0 through 10000 bps;
-header and transaction/simulation/execution/compute gas ceilings are positive
-uint64 values. Chain/version/provenance and fee quantities retain their own widths;
-calldata/request byte caps must be positive safe integers.
-Gas-buffer arithmetic itself stays exact at arbitrary integer width. A zero or
-uint64-overflow reviewed gas budget is refused before replay, with unavailable
-execution proof and failed protocol fit; it cannot emit a next transaction.
-
-Reread after receipts, replacement, reload, wallet switch, or reorg. Direct EOA
-execution and settled nonces remain required; contract accounts are not silently
-treated as supported wallets. Unconfirmed approvals and local counters are not authority.
-Pass `receipts=(LifecycleReceiptReference(transaction_hash,
-replacement_hash=..., confirmations=..., observed_block_number=...,
-observed_block_hash=...),)` rather than a bare hash sequence. Persist observed
-receipt block identity so reorg/replacement recovery remains bound to the reviewed
-transaction. `PlannedLaunch.receipt_references` retains that typed evidence;
-`progress.receipts` contains the resulting statuses.
-`build_next_transaction(..., action="cancel")` explicitly requests an eligible
-cancellation, refunding only unspent launch-isolated external funding, not gas,
-setup cost, or inventory disposed under the committed cancellation policy.
-
-```sh
-# Hash your complete current economic plan offline; does not prove admission.
-: "${PLAN_JSON:?Set the path to your reviewed complete plan}"
-python examples/quickstart.py "$PLAN_JSON"
-# Encode a complete explicit config6 JSON (Solidity camelCase fields).
-: "${V4_CONFIG_JSON:?Set the path to your complete config}"
-python examples/launch_recipe.py "$V4_CONFIG_JSON"
-
-# Plan/simulate/recover; no caller policy or limits service is required.
-: "${RPC_URL:?}" "${CREATOR:?}"
-python examples/launch_submit.py "$PLAN_JSON" --rpc-url "$RPC_URL" \
-  --account "$CREATOR" --mode staged --finalize-bound
-# Optional: add --submission-rpc-url for a read-only immediate-next preflight.
-# Known --chain-gas-cap/--rpc-gas-cap/--account-gas-cap/--calldata-cap only tighten.
+def execute_launch(client, launch, wallet, persist, references=()):
+    references = list(references)
+    def save():
+        persist({"plan": launch_plan_to_dict(launch.plan), "mode": launch.mode,
+                 "confirmations": launch.confirmations,
+                 "receipts": [asdict(item) for item in references]})
+    while True:
+        command = build_next_transaction(
+            client, launch, receipts=tuple(references), submission_client=client,
+        )
+        if command is None:
+            return read_launch_progress(
+                client, launch.plan, mode=launch.mode,
+                confirmations=launch.confirmations, receipts=tuple(references),
+            )
+        if (client.eth.chain_id != launch.plan.chain_id
+                or wallet.address.lower() != launch.account.lower()):
+            raise RuntimeError("Wallet or chain changed")
+        signed = wallet.sign_transaction(command.as_transaction())
+        tx_hash = Web3.to_hex(signed.hash)
+        references.append(LifecycleReceiptReference(
+            tx_hash, confirmations=launch.confirmations,
+        ))
+        save()  # Retain the computed hash BEFORE submission.
+        client.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = client.eth.wait_for_transaction_receipt(tx_hash)
+        references[-1] = replace(
+            references[-1], observed_block_number=receipt["blockNumber"],
+            observed_block_hash=Web3.to_hex(receipt["blockHash"]),
+        )
+        save()
+        if receipt["status"] != 1:
+            raise RuntimeError("Transaction reverted; inspect the retained receipt")
+        while client.eth.block_number < receipt["blockNumber"] + launch.confirmations - 1:
+            time.sleep(2)
+        read_launch_progress(
+            client, launch.plan, mode=launch.mode,
+            confirmations=launch.confirmations, receipts=tuple(references),
+        )
 ```
 
-For recovery, supply `--receipts receipt-references.json` and the original
-`--confirmations` depth. Reference JSON uses `transaction_hash`, optional
-`replacement_hash`, `confirmations`, `observed_block_number`, and
-`observed_block_hash`; numbers may be exact decimal strings and hashes are hex
-bytes32. A wrapper with `plan` and `receipts` is accepted, and unsigned output emits
-reusable typed `receipts` alongside progress. `--transaction-hash` remains a
-hash-only convenience alias: it lacks replacement and original inclusion evidence,
-so it cannot detect an orphaned inclusion after the same hash is mined elsewhere.
-Do not use `--finalize-bound` after submission or with retained receipt evidence.
-Reconcile original canonical progress read-only before deliberately authorizing
-remaining work; never automatically repeat an orphaned step.
+A normal staged sequence is begin receipt → prepare receipt(s) → activation
+receipt → `LifecyclePhase.ACTIVE`. A `None` command can also mean Cancelled:
+inspect the returned phase. Confirm markets with `read_launch_markets`, then check
+permanent custody, retained supply/burn, and each ordered buy's spend/output.
+Keep `replacement_hash` and the original observed block identity when reconciling
+replacements/reorgs. Receipt inclusion and your chosen confirmation depth are separate.
 
-## Standalone token-launch examples
+## Publish metadata
 
-These examples use the installed public `black_market_sdk` and run one fixed case
-per file. **No mode flag means dry run: no transactions are signed or broadcast.**
-Use `--broadcast` to deliberately spend real funds and publish; token/market/custody
-state is permanent. `--resume <dir>` continues an existing execution without
-regenerating its identity. Unknown, duplicate, or combined mode flags fail before
-configuration, artifacts, or RPC/API calls, with usage text. There are no fixture
-files, default keys, or chain-only execution mode. `launch_recipe.py` /
-`launch_submit.py` remain the separate saved-plan construction/read-only tools.
+Use `LaunchApiClient(LaunchApiConfig(base_url="https://api.abyss.trading"))`.
+Construction sends nothing. The fixed runners stage metadata **before** execution
+and publish only the confirmed activation transaction, not begin/preparation.
 
-### Setup once
-
-From this checkout, or with the selected file and its two helper files copied
-together into your own `examples/` directory:
-
-```sh
-python -m pip install black-market-sdk
-cp examples/.env.example .env
-chmod 600 .env
-```
-
-Set `LAUNCH_API_URL` and exactly one key source before any RPC/API call:
-`PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` to a local owner-only V3 JSON keystore.
-`EXAMPLE_KEYSTORE_PASSWORD` defaults to `""`; empty-password scrypt keystores work
-through `eth_account.Account.decrypt` without another dependency. Reads are bounded,
-reject symlinks/non-regular files, and enforce owner-only permissions; authenticated
-decryption determines the creator and checks any declared address. Neither/both
-signer sources are errors; no key/password is logged. The API must run the real
-launch router, session database, `LaunchActivated` indexer and public DTO against
-the execution chain. There is no guessed production API or silent API skip.
-
-Dry-run uses the key only to derive the public creator address (including keystore
-decryption when configured); it never constructs `LocalSigningWallet` or signs.
-It still needs the configured RPC/API for discovery, prices, funding builds, and
-native simulation. All variables are listed in [`../examples/README.md`](../examples/README.md)
-and the copyable `examples/.env.example`.
-
-`RPC_URL` defaults to `ROBINHOOD_MAINNET_RPC`. Remote RPC/API URLs require HTTPS;
-explicit loopback HTTP is accepted for owned local services. API URL credentials,
-queries and fragments are rejected. RPC URL credentials are redacted in diagnostics.
-The examples resolve canonical chain4663 infrastructure from the SDK and validate
-live decimals for each selected quote (WETH/18 or USDG/6). Each market resolves oracle authority from its
-selected admitted V4 envelope graph or Abyss factory; Abyss-only cases do not need
-any V4 admission. WETH retains the registered P1 `(1,4096)` read. USDG discovers
-factory `OracleConfigRegistered` logs through the pinned block and revalidates
-each candidate with `oracleConfigs` at that block before deterministic compatible
-selection. No compatible registration means a loud unsigned refusal.
-
-Fixed chain4663 examples use the execution RPC's native simulation backend.
-Generic Anvil/Hardhat simulation cannot prove ArbOS metering and is not offered
-as a fallback. Generic-EVM controlled forks remain available through the SDK and
-the saved-plan CLI. The examples do not invent transaction or calldata caps;
-optional `LAUNCH_*_CAP` environment values only tighten known policy. Each
-immediate step receives a fresh read-only submission preflight on `RPC_URL`.
-Unavailable or unsuccessful full-case simulation fails admission without scenario
-fallback, market removal or source rollback. The capability-only probe described
-above does not alter actual launch funding or state.
-
-Existing process environment wins. The small stdlib `.env` loader reads once and
-supports ordinary `KEY=value`, quoted values and comments, with no shell
-interpolation, command execution or extra dependency.
-
-Optional `EXAMPLE_TOKEN_NAME`, `EXAMPLE_TOKEN_SYMBOL`, and
-`EXAMPLE_TOKEN_DESCRIPTION` are NFC-normalized and trimmed. They must satisfy
-the API's 100/32/2000-codepoint bounds and the protocol's 128/32-byte name/symbol
-bounds. Identity is frozen into the economic review and signed metadata, not
-reread from environment after approval.
-
-`EXAMPLE_IMAGE_PATH` optionally selects PNG, JPEG or WebP bytes (maximum 5 MiB).
-Type is detected from content, not extension. The frozen SHA-256/type/length is
-included in the review and EIP-712 authorization. The original session's exact
-API-issued create-only presigned headers are used for one PUT, then the original
-session is refreshed and `complete_launch_upload` must verify it as ready before
-chain submission. No automatic image PUT retry or metadata-only fallback exists.
-Descriptor/dimensions and public image identity remain bound through publication.
-Unset preserves the metadata-only (`image:null`) flow.
-Final success also requires the indexed/public token DTO's non-null matching image
-reference and one bounded (15-second, 5-MiB, no-redirect/no-retry) GET of its public
-URL with HTTP200 and a non-empty body in the matching image MIME family. Identical bytes must match
-the signed type/length/SHA; differing bytes are permitted as an inferred API
-transformation within the image MIME family, explicitly recorded with served
-digest/type/length in `published-image.json`. Failure is nonzero and retains evidence.
-
-### Dry run, then broadcast
-
-```sh
-python examples/launch_erc20_v4.py
-python examples/launch_erc20_abyss.py
-python examples/launch_erc404_v4.py
-python examples/launch_erc404_abyss.py
-python examples/launch_erc20_staking_v4.py
-python examples/launch_erc20_dividends_abyss.py
-python examples/launch_erc20_burn_mixed.py
-python examples/launch_erc404_dividends_mixed.py
-python examples/launch_erc20_multi_quote.py
-python examples/launch_erc20_depth_v4.py
-python examples/launch_erc20_dividends_multiquote_mixed.py
-```
-
-All eleven commands above default to the same unsigned planning path. Output starts
-with **`DRY RUN — no transactions signed or broadcast.`** The runner discovers
-profiles, derives economics, freezes the optional image descriptor, builds funding,
-mines/proves the final protected plan, prints the full economic review, and saves
-`run.json`, `plan.json`, `admission.json`, `economic-review.json`, events, empty
-receipts, and `result.json`. Successful dry-run exits 0 with execution `dry-run`,
-chain status `planned`, and API status `not-run`; failed admission still exits
-nonzero. No wallet signer, attribution signature, chain submission, image upload,
-or publication is performed. The last output line is the exact same case command
-with `--broadcast`, using the running Python interpreter:
-
-```sh
-python examples/launch_erc20_v4.py --broadcast
-```
-
-`--broadcast` alone authorizes the full execution path, **without interactive
-economic-review admission or any supplied review hash**. It prepares and reviews a
-fresh plan against current state; the earlier dry-run is evidence, not a saved
-execution commitment. Planner admission, bound economics at every signature,
-canonical/reorg checks, image verification, and deadlines still apply. Never rerun
-a partially submitted case as a fresh broadcast; continue its retained directory:
-
-```sh
-python examples/launch_erc20_v4.py --resume launch-results/<original-run>
-```
-
-| File | Fixed case |
+| Order | Public API / action |
 | --- | --- |
-| `launch_erc20_v4.py` | ERC20/no rewards, one V4 position, one buy, atomic |
-| `launch_erc20_abyss.py` | ERC20/no rewards, one Abyss position, one buy, atomic |
-| `launch_erc404_v4.py` | ERC404/no rewards, one V4 position, one buy, staged |
-| `launch_erc404_abyss.py` | ERC404/no rewards, one Abyss position, one buy, atomic |
-| `launch_erc20_staking_v4.py` | ERC20/staking, two V4 positions, two ordered buys, staged |
-| `launch_erc20_dividends_abyss.py` | ERC20/holder dividends, three Abyss positions, one buy, staged |
-| `launch_erc20_burn_mixed.py` | ERC20/3000-bps token burn, two dual-fee V4 + one Abyss position, one buy per market, staged |
-| `launch_erc404_dividends_mixed.py` | ERC404/holder dividends, two V4 + three Abyss positions, one buy per market, staged |
-| `launch_erc20_multi_quote.py` | ERC20/no rewards, V4 WETH + V4 USDG + Abyss WETH, one position/buy each, staged |
-| `launch_erc20_depth_v4.py` | ERC20/no rewards, four adjacent Early Scarcity V4 bands with increasing inventory and final boundary tail, one buy, staged |
-| `launch_erc20_dividends_multiquote_mixed.py` | ERC20/4000-bps dividends, V4 WETH/USDG two positions each + Abyss WETH three, three buys, staged |
+| 1 | Build `LaunchSessionCreateMetadata` with name, symbol, and string description; optionally bind `LaunchSessionImageDescriptor` to exact PNG/JPEG/WebP bytes (≤5 MiB). |
+| 2 | Call `build_launch_attribution_typed_data` with chain, wallet, metadata, image, idempotency key, nonce, deadline, and explicit `verifying_contract=plan.orchestrator`; request the wallet's EIP-712 signature. |
+| 3 | Persist the exact signed request/key, then call `create_launch_upload_session(LaunchSessionCreateRequest(...), idempotency_key)`. Save returned `sessionId` and private `capability` immediately. |
+| 4 | If an image was declared: `put_launch_image(session["upload"], image_bytes)` → `get_launch_upload_session(chain_id, session_id, capability)` → `complete_launch_upload(chain_id, session_id, capability)`. Require image readiness before launch. |
+| 5 | Execute and confirm activation; verify canonical Active state and all markets. |
+| 6 | Call `publish_launch_upload_session(chain_id, session_id, capability, LaunchSessionPublishRequest(chain_id, activation_hash))`. |
+| 7 | Handle `LaunchPublishPending` (HTTP 202): save `session`, respect `retry_after_ms`, read the same session, and continue publication of the same hash. |
+| 8 | Call `get_launch(chain_id, token)`; verify token, activation hash/block, metadata/image readiness, and indexed height. Check `canonicalStatus` for optimistic versus final indexing. |
 
-The three new cases are additive real-run validation candidates, not replacements
-for the original eight. Dual V4 markets use different quotes; Abyss may reuse WETH.
+Use `LaunchAttributionAuthorization(nonce, deadline, signature)` inside the create
+request. The API assigns the image key; `LaunchSessionMetadata` is not the create
+model. `renew_launch_upload_url` renews an expired image URL for the same session.
+Never put a session capability or signed request into public logs.
 
-Each invokes `run_launch_example(case)` in `examples/launch_examples.py`, supported
-by `examples/_launch_support.py`. Copy these helpers alongside the selected example
-for use with an installed SDK. No source-tree import injection is used.
-ERC20 supply is 1,000,000 tokens; ERC404 supply is 10,000 tokens with 100-token NFT
-units. Pricing targets **$5,000 USD using the entire actual minted supply**, never
-a divided market budget. `derive_launch_pool_recipe` uses each market's actual
-predicted token order and quote decimals, fee3000 and spacing60. WETH uses one price
-snapshot from the selected `LAUNCH_API_URL` (`configuration.apiUrl`). Each read makes
-one GET to `/api/v1/token-prices?chainId=4663&limit=100`, with a 15-second transport timeout,
-elapsed retrieval checks, a 1-MiB body limit, no redirects, retries, pagination or
-global cache. The snapshot must contain exactly one ready, `priced=true` WETH row
-for chain4663 with an exact positive uint256 `priceUsdX18`, `source=anchor`, and
-direct reviewed Chainlink anchor identity, empty path and zero hops. Missing,
-unpriced, malformed, wrong-identity or unavailable snapshots refuse signing;
-there is no manual, external-provider or fixed 1:1 fallback.
-USDG's separate seed is its SDK-catalogued `usdPeg` price of `10**18` USD-X18 with
-six decimals. Every market, proved buy and post-buy valuation retains its own quote
-identity/decimals and original USD seed.
+`LaunchApiConfig.retries=3` means **up to three attempts** for all JSON methods,
+including POST and metadata PUT, on transport failures, 429/502/503/504, and some
+malformed successes. Repeated attempts retain the same body/key/capability.
+Image PUT has **one attempt**. Set `retries=1` for one JSON attempt; **`retries=0`
+sends nothing**. The fixed runner's bounded publication loop uses one-attempt clients;
+it handles pending/indexing retries itself. After uncertain session creation,
+reconcile the original signed request: idempotent replay may omit the capability.
 
-This published API price is an **indicative USD launch-seeding valuation**, not an
-executable swap quote or chain/receipt authority. The review preserves API origin,
-exact price, index/graph blocks, original upstream `sourceTimestamp`, local
-`retrievedAt` and `upstreamAgeSeconds`. A newly retrieved snapshot does not make
-an old upstream observation fresh. The examples do not impose a 15-minute
-contract-round cutoff on the operator's selected API price. RPC still owns chain
-identity, canonical blocks, balances, nonce, token prediction, native execution
-proof and confirmed receipts; its block fields are distinct from API blocks.
-The full supply is apportioned across markets with an exact final remainder.
-Each one-position market uses its budget-funded recipe liquidity; multiple
-positions use `derive_launch_position_ranges` with the original requested count,
-Staircase (`early-scarcity` for Depth), `position_gaps="adjacent"` and the final
-boundary tail. Position allocation
-caps sum to their market budget and liquidity consumes that allocation except
-exact Solidity rounding dust, which burns rather than becoming creator inventory.
-Mixed venues share the same opening USD price.
-`EXAMPLE_TARGET_MARKET_CAP_USD` optionally overrides the target with a validated
-positive exact USD decimal of at most 18 fractional places. Target price and
-rounded opening valuation differ by tick-spacing rounding. The economic review
-separately shows minted supply, expected retained supply after dust burn, and
-both opening valuations. It also decodes the final proved ordered-buy receipt:
-all-in average execution prices include fees and price impact, and are **not**
-the post-buy marginal spot price. Confirmed `chain.json` records actual retained
-supply, live spot and post-buy valuation at each observed market block, using the
-original reviewed per-quote USD seed as its explicit conversion basis.
-Every ordered buy pays native ETH, default **10¹³ wei (0.00001 ETH)**.
-`EXAMPLE_BUY_AMOUNT_WEI` overrides that per-buy native input for every quote.
-The runner uses the API's fresh `POST /api/v1/quote/kyber/build?chainId=4663`
-with native `tokenIn=zeroAddress`, quote `tokenOut`, exact aggregate input,
-`sender=recipient=fundingEscrow`, conversion slippage **50 bps**, and a **300-second**
-launch-purpose expiry equal to the committed plan deadline. Build calldata decodes
-as the reviewed router's `swap`; currencies, escrow receiver, exact input, minimum
-output, executor/payload, flags, fees and native value must match.
-`EXAMPLE_KYBER_API_URL` optionally chooses a different Abyss API; its default is
-`LAUNCH_API_URL`. No independent preview is required: the build endpoint owns
-fresh route discovery. HTTP/build/refusal errors are retained without a retry/fallback.
+Completion has four checks: **receipt confirmed → markets active → metadata
+published → API indexed**. A publication or image error after activation leaves
+the token live. Resume publication; do not deploy another token to fix an API error.
 
-Native input is aggregated per quote (`buy count × per-buy ETH input`). Each
-`LifecycleFundingKind.SWAP` entry commits `input_asset=zeroAddress`, the reviewed
-router/data and API `amountOutMinimum`. That exact floor is apportioned over its
-ordered buys with a deterministic final remainder. Creators need native ETH for
-inputs and gas, not pre-funded WETH/USDG. Pinned registry target/spender/runtime
-and the complete SDK execution proof must admit every conversion; otherwise
-execution stops unsigned with the refusal, never NativeWrap/direct ERC20 funding
-or a separate wallet swap. The existing 50-bps protected token-output buys apply
-on top of conversion slippage.
-Config6 bound V4 and config1 canonical Abyss QUOTE_ORACLE profile3 are discovered
-live. V4 uses explicit maximum/minimum hook fees of 10,000/1,000 pips and
-sensitivity 7,654,321 fee-pips × seconds/tick. The unified call mines salts,
-derives ordered-buy minimum outputs with the reviewed **50-bps** protection,
-and proves the final protected plan without changing other economics or mode.
-Submitted recovery plans are never regenerated or given new minima.
+## Recover or cancel
 
-Optional `NFT_BASE_URI` supplies your own hosted ERC404 NFT base URI; the default
-is empty and does not pretend a metadata service exists. NFT units/mirrors remain
-part of the ERC404 case and on-chain verification.
+For a fixed runner, preserve its original broadcast directory and invoke the same
+case with `--resume "launch-results/<original-run>"`. Resume can sign remaining
+transactions and publish; it is not a dry run. Never start another `--broadcast`
+to continue a partially executed plan.
 
-### Example ceilings, signing, and API publication
-
-The examples do not invent chain/RPC/account/calldata ceilings. Protocol ceilings
-come from canonical SDK reads; unknown transport policy remains explicit.
-Optional `LAUNCH_CHAIN_GAS_CAP`, `LAUNCH_RPC_GAS_CAP`, `LAUNCH_ACCOUNT_GAS_CAP` and
-`LAUNCH_CALLDATA_CAP` select reviewed positive tightening limits. They do not
-bypass complete admission or replay. SDK gas headroom defaults to 1500 bps.
-
-The real SDK admission runs before signed API metadata staging. The wallet signs
-the complete attribution EIP-712 payload locally with creator/chain/domain checks.
-The runner holds the original immediate command, then freshly proves it with
-`reviewed_transaction` and the actual `submission_client` immediately before signing.
-Subsequent staged commands each get one held review after their preceding receipt;
-preparation grouping and original receipt evidence are retained. Changed gas,
-gas price, calldata, value, target, sender, chain, nonce or command identity is
-refused, not silently expanded. The signing boundary also rechecks the launch
-deadline, source client and creator. `economic-review.json` displays and retains
-the exact target, original API snapshot/provenance, upstream age and retrieval
-time, minted and expected retained supply, token order, opening unit price/
-valuations, position budgets/liquidity/rounding burns, fees, protected buys and
-final plan. The hash is computed, printed, and saved as provenance in both modes,
-not requested as input. Only `--broadcast` proceeds beyond the review; its
-`economic-admission.json` records `authorization: "--broadcast"` and that review
-hash as evidence. A fresh invocation generates a different original plan.
-Every attribution and transaction signature retrieves a validated snapshot from
-the same selected API and checks the bound source, target, supply, predicted
-order and original plan against current canonical RPC state. Any API origin,
-chain, any quote identity/decimals, WETH direct-anchor identity or exact USD
-price change requires a fresh plan and economic review, never an automatically
-rewritten intent. API index/graph blocks and retrieval/upstream times may advance
-with unchanged price and identity while the original review remains retained.
-An unchanged old upstream timestamp remains old and is displayed as such.
-Invalid or unavailable snapshots cannot authorize the original intent.
-Source RPC signing and unlocked-account sends are forbidden. The `--broadcast`
-choice authorizes local signing and execution; it never replaces the signature
-guard or SDK's independent admission of the exact immediate command.
-
-Before `eth_sendRawTransaction`, the computed signed hash and exact unsigned
-envelope are fsynced to `receipts.json` as a broadcast attempt. Raw bytes are
-retained only in `signed-<hash>.private.json` (mode0600). Broadcast has no retry;
-timeouts and wrong returned hashes retain the computed hash for manual recovery.
-RPC transport retries are disabled and requests have a 120-second bound.
-
-Real receipts and canonical chain invariants prove token, markets, permanent
-custody and ordered buys. The API receives only the confirmed atomic/activate
-transaction hash. Only actual `202`/`LaunchPublishPending` responses are polled,
-respecting `Retry-After` within the absolute 90-second deadline. Each HTTP call
-uses one attempt with the remaining timeout, reserving the client's final failed
-attempt backoff. Other errors fail immediately. Fresh original-session reads
-precede signatures and publication mutations. Required session fields, status
-cross-fields, unbound expiry, full canonical signed metadata and the original
-optional image descriptor/readiness are validated on creation, refresh and publication. The real
-`/api/v1/launches/<token>?chainId=4663` DTO must match the complete metadata,
-token and activation block/hash; no invented projection fills an unavailable indexer.
-Before every next-command review/signature and terminal verification, retained
-receipts must be canonically confirmed and free of reorgs. Publication additionally
-rereads the original activation receipt, block/hash, confirmation depth and
-canonical Active state before mutation and final success. Reorgs retain evidence
-and halt for explicit `launch_submit.py --receipts` read-only reconciliation;
-orphaned steps are never automatically re-signed.
-
-### Retained results
-
-Every run automatically creates `launch-results/<timestamp-case-random>/`, with
-no user output option. Artifacts remain after errors or Ctrl+C:
-
-| Artifact | Evidence |
+| Saved/on-chain state | Action |
 | --- | --- |
-| `run.json`, `plan.json` | Redacted case/configuration, fresh nonce/salt and finalized plan diagnostics; not authoritative recovery intent |
-| `events.jsonl`, `admission.json` | Stages/timing, actual backend/admission, gas/envelope proof, redacted RPC failures/revert traces |
-| `economic-review.json` | Exact pricing/supply/allocation/fee/buy review and computed review hash as provenance, in both modes |
-| `economic-admission.json` | Broadcast-only evidence: `authorization: "--broadcast"`, computed review hash, and timestamp; never a hash input gate |
-| `receipts.json`, `chain.json` | Pre-broadcast computed hashes/envelopes, real receipts, Active token/markets/custody/buys |
-| `api.json`, `result.json` | Actual publication DTO when reached, failed stage/traceback/causal/revert/API details |
-| `recovery.private.json` | Mode0600 exact finalized portable plan, economic review/hash, original mode/confirmations, signed API request, session capability, activation hash and latest response |
-| `published-image.json` | Optional bounded public image GET: HTTP200, served MIME/length/digest, original descriptor, and explicit inferred transformation evidence |
-| `signed-<hash>.private.json` | Mode0600 signed raw transaction, exact envelope and computed hash |
+| Unsigned, not begun | Rebuild/review if economics or quotes changed. A dry-run directory is not a broadcast recovery session. |
+| Signed hash, receipt unknown/pending | Query that exact hash and account nonce; retain any replacement hash. Resolve inclusion before another signature. |
+| Begun/prepared, deadlines valid | Resume the original plan, mode, receipts, salts, and minima. Preparation batches may be rebuilt from progress. |
+| Plan expired or committed conversion expired before activation | Read cancellation eligibility and build `action="cancel"` for the original plan. A new route cannot replace committed funding. |
+| Active, metadata/indexing incomplete | Recover the activation receipt and existing session; resume publication only. Active launches cannot be cancelled. |
+| Reorged or replaced receipt | Reconcile original block/hash and replacement read-only; authorize only remaining canonical work. |
+| Cancelled | Terminal. Inspect refunds and inactive inventory disposition before planning anything else. |
 
-Dry runs retain the complete planning/review evidence and empty receipts; chain,
-API, signed-transaction, and private session/recovery artifacts are produced only
-when their execution phases are reached.
+`build_next_transaction(client, original_plan, account=creator, mode="staged",
+action="cancel", receipts=references)` produces the currently proved cancellation
+command. Cancellation does not need disabled profile admission to become enabled.
+Before activation, inventory goes to the committed `inventory_recipient` or burns
+according to `burn_on_cancel`; it remains inactive. Escrow refunds remaining assets;
+wrapped ETH can return as WETH. Spent gas is not refunded.
 
-Never share private files. The original finalized plan, mode and confirmation
-policy are fsynced privately before the first attribution signature and retained
-unchanged through session/publication updates. Recover from that exact private
-intent and original receipts, never from redacted public plan diagnostics.
-Public output preserves structured property names while recursively redacting
-secret-named values, registered string secrets, signatures, capabilities,
-authorization, secret environment values and endpoint credentials.
-A failure exits nonzero and preserves execution-chain state. There
-is no automatic retry, relaunch or rollback. Inspect the original hash/token/session
-after a broadcast or API failure: another invocation deliberately creates another
-token, not a recovery attempt.
+For ordinary saved core plans, `examples/launch_submit.py` reads progress and emits
+unsigned next/cancel commands; `--receipts` accepts snake_case receipt-reference JSON.
+`launch_recipe.py` encodes bare V4 prefixes. These CLIs do **not construct UFG/HMM
+tails**: submit has no `ufg` option, and recipe has neither tail input. Use typed SDK
+integration for these offerings; an already complete HMM plan must retain its tail.
 
-`EXAMPLE_BUY_AMOUNT_WEI` optionally sets the exact **native ETH paid** for each
-opening buy as a positive canonical decimal uint256 wei string. The default is
-`10000000000000` (0.00001 ETH); `100000000000000` selects 0.0001 ETH. This changes
-the per-quote aggregate Kyber conversion inputs and resulting committed quote
-budgets together, not gas limits, liquidity, opening price or fees. No USDG-specific
-amount override or direct ERC20 funding path exists. Retain the exact protected
-plan and conversion calldata before signing.
+| Symptom | Cause | Next action |
+| --- | --- | --- |
+| HTTP 403/429 on chain ID, balance, or `eth_simulateV1` | RPC throttling | Wait or change RPC, then resume the same run. A 429 is not a revert. |
+| Begun launch past deadline | Interrupted staged run | Cancel the original launch; do not expect a fresh run to continue it. |
+| `eth_getLogs` range error | Genesis scan exceeds the provider's 10M-block range | Start at deployment block 82,880,313 and query chunks ≤10M blocks. |
+| `KYBER_UNAVAILABLE` / invalid WETH route | Swap requested for ETH→WETH | Use NativeWrap; reserve Kyber for other quotes. |
+| `INVALID_KYBER_INTENT` | Conversion expiry exceeds 1200 seconds or reused plan deadline | Build unstarted funding with its separate 300-second clock. |
+| `PLAN_NOT_ADMITTED` gas | Stale transaction envelope | Rebuild with `build_next_transaction`; do not force the old gas. |
+| `ECONOMIC_REVIEW_REQUIRED` hash mismatch | Hash belongs to another invocation | Review/admit the same saved plan. |
+| `PUBLISH_TIMEOUT`, `API_INDEX_TIMEOUT`, or image URL failure after activation | Publication/indexing failure | Token is live; resume publication, not deployment. |
 
-## Stable authors, payouts, and fee claims
+## After launch
 
-Author helpers require an explicit trusted `registry`. Canonical hub authentication
-starts at `registry.core()` → `core.feeFactory()` → `factory.isHub(hub)`; a hub's
-self-reported version or registry does not establish membership.
+Locked launch liquidity **can never be withdrawn**. Fee collection, owner credits,
+holder rewards, hook royalties, and UFG redemption are separate actions.
 
-- `read_lifecycle_author` reads live payout and hub count; unknown authors have zero payout.
-- `build_set_author_payout_transaction` builds `setAuthorPayout(authorId,payout)`.
-  Registry admin/current payout controls routing, not frozen identity or terms.
-- `read_author_hubs` pages **1..100** hubs; offset may equal total, not exceed it.
-- `read_developer_fees` reads supported-asset credits/reserves and frozen source terms
-  without harvesting. Unsupported asset and zero credit are distinct.
-- `build_claim_developer_fees_transaction` builds `claimDeveloperFees(authorId,asset)`.
-  Any caller pays reserved credits only to the live payout, without a harvest bounty.
-- `build_claim_developer_fees_page_transaction` targets canonical factory pagination:
-  **1..10** hubs, at most eight ascending unique nonzero assets; `assets=()` selects
-  each hub's actual assets. Builders never silently sort inputs.
+| Role | Read / action | Where value goes |
+| --- | --- | --- |
+| Anyone collecting fees | `preview_lifecycle_fees(client, hub, executor=account)`, then hub `claimAndSplit()` | Splits collected fees; caller earns the configured collection reward, if any. |
+| Current fee owner | Hub `claimableOwnerFees(owner, asset)` → `claimOwnerFees(asset, owner)` from that owner | Withdraws reserved owner credits; harvesting alone does not withdraw them. |
+| Staking participant | Rewards contract `pendingRewards(beneficiary)` → `claim()` / `claimFor(beneficiary)` | Pays the beneficiary's accrued staking rewards. |
+| Dividend holder | Dividend contract `pendingRewards(beneficiary)` → `claim()` / `claimFor(beneficiary)` | Pays holder dividends; app UI supports reward claims. |
+| Hook author | `read_developer_fees` → developer-claim builder | Pays the author's live payout; SDK integration, separate from creator ownership. |
+| UFG holder | Treasury `redeem(amount, minOut, recipient)` | Burns tokens for current reserves less exit fee; see below. |
 
-Unsigned author builders return `chainId`, `from`, `to`, `data`, and zero `value`.
-`decode_developer_claim_receipt(receipt,transaction=...)` binds exact builder context
-and event emitter. Factory row statuses are **0 paid, 1 zero, 2 unsupported, 3 failed**.
-`cursor_complete` is separate from `payments_succeeded`; failed rows stay retryable
-even at the last page. A successful direct claim without a matching event is
-`outcome='unobserved'`, not an invented payment or zero. Zero claims emit no hub event.
+Read the hub/rewards addresses from `read_launch_progress` and market state.
+Use `LAUNCH_FEE_HUB_V3_ABI`, `MULTI_ASSET_REWARDS_V1_ABI`, and
+`LIFECYCLE_DIVIDEND_V1_ABI` with web3.py contracts for the ordinary claim methods.
 
-Use an explicit current gas budget for bounded hub/asset calls, factory overhead,
-and EIP-150 headroom. Gas estimation can succeed despite failed rows; decode every
-row and preserve failed claims for caller-controlled retry. The exported V3 hub,
-factory, V2 fee-owner registry, and V2 implementation registry ABIs include current
-credits, source terms, payouts, two-step ownership, and claim events.
+### Stable authors, payouts, and fee claims
 
-## Real metadata API usage and tests
+Use `read_lifecycle_author` / `read_author_hubs` with a trusted `registry`; helpers
+authenticate hub membership through registry → core → fee factory.
+`build_set_author_payout_transaction` updates live routing under current payout/admin control.
+Use `build_claim_developer_fees_transaction` for one hub/asset, or
+`build_claim_developer_fees_page_transaction` for 1–10 hubs and ≤8 sorted unique assets.
+`assets=()` selects actual hub assets. Any caller can pay the live payout without a bounty.
+Decode with `decode_developer_claim_receipt(receipt, transaction=transaction)` and retry
+failed rows only; [claim statuses](reference.md#decode-author-claims) distinguish each outcome.
 
-`LaunchApiClient(LaunchApiConfig(base_url=...))` is opt-in and performs no request
-on construction. API URLs require HTTPS by default. For an explicitly selected
-local test service, use `LaunchApiConfig(base_url="http://127.0.0.1:18763",
-allow_loopback_http=True)`. This allows HTTP only for numeric loopback IPs or
-`localhost`, without credentials, query, or fragment; it never enables remote HTTP.
-The test suite and example opt into that local mode. Presigned upload URLs still
-require HTTPS regardless of this option.
+## UFG treasury launches
 
-The real stdlib transport bounds responses, returns safe typed errors, and performs
-no proxy discovery or redirect forwarding.
-`build_launch_attribution_typed_data` and `build_launch_metadata_update_typed_data`
-require explicit `verifying_contract`. Callers own wallet signing, idempotency,
-recovery state, and retry decisions; no write is retried automatically.
-Session creation requires `LaunchSessionCreateMetadata`, including a string
-`description`; `LaunchSessionMetadata` represents canonical metadata and is not
-accepted as a create request. Callers cannot preassign `image_key` on creation.
-`LaunchSessionDirectUpload` uses the keyword `expires_in_seconds`.
+Creating a UFG treasury launch currently requires the SDK; the app displays them
+but its creation flow is not shipped. Use the canonical launch proxy and
+`ufg=config` on the planner, not an ordinary EOA/core launch.
 
-The example uses a real service and omits images so no object store is needed:
+| Rule | Required value |
+| --- | --- |
+| Token / rewards | ERC20; no staking/dividends |
+| Creator / payer / refunds | Creator is `UFG_LAUNCH_PROXY_ADDRESS`; signer, payer, and refund recipient are the principal |
+| Treasury / exit share | `treasury_share_bps=10000`; `exit_fee_bps` 0–2000 |
+| Collection reward | `executor_fee_bps=0` |
+| Reserves | 1–7 ascending unique nonzero addresses, exactly the set of market quotes; exclude the launch token |
+| Abyss markets | Canonical QUOTE / QUOTE_ORACLE (`ABYSS_2` / `ABYSS_3`), config1 without a tail |
+| V4 markets | UFG fixed/dynamic profiles only, config6 with identical `ufg_launch_config`, QuoteOnly (`fee_mode=1`), LP fee zero; HMM is excluded |
 
-```sh
-export LAUNCH_API_TEST_URL=http://127.0.0.1:18763
-export LAUNCH_API_TEST_CHAIN_ID=4663
-export LAUNCH_API_TEST_ORCHESTRATOR=0x91560876033d568d25CDe98C78c33ff8FC43962c
-python examples/launch_api_lifecycle.py
+Set proxy identity **before token prediction or pricing**. For a token-only draft:
 
-# Explicitly sign/write only against a loopback test service.
-: "${LAUNCH_API_TEST_PRIVATE_KEY:?Set a disposable test wallet private key}"
-python examples/launch_api_lifecycle.py --signed --state-file launch-session.private.json
-# Read persisted session state without signing or writing.
-python examples/launch_api_lifecycle.py --state-file launch-session.private.json
+```python
+from black_market_sdk import (
+    UfgLaunchConfig, UFG_LAUNCH_PROXY_ADDRESS, ufg_launch_nonce,
+    build_ufg_fee_asset_policies, validate_ufg_launch_plan,
+)
+
+def ufg_identity(draft, *, principal, nonce96):
+    return replace(
+        draft, creator=UFG_LAUNCH_PROXY_ADDRESS,
+        nonce=ufg_launch_nonce(principal, nonce96), executor_fee_bps=0,
+    )
+
+async def prepare_ufg(client, plan, *, config, principal):
+    token = predict_launch_token(client, plan)
+    plan = replace(plan, fee_assets=build_ufg_fee_asset_policies(token, config.reserve_assets))
+    validate_ufg_launch_plan(plan, config, token)
+    return await prepare_and_plan_lifecycle_launch(
+        client, plan, account=principal, mode="staged", ufg=config,
+        buy_slippage_bps=50,
+    )
 ```
 
-Before the first create POST, the API-only example fsyncs the exact original wire
-request, signature and idempotency key to a new mode-0600 recovery file. A returned
-capability is retained by atomic, fsynced replacement of that same record before
-validation or further HTTP requests. The initial POST has one attempt. Unknown
-issuance stops and permits only service reconciliation, never replay or a new
-session. After a successful issuance, the example checks identical signed create
-idempotency without reissuing or overwriting the original capability.
-Capabilities are never printed. Version-2 records retain complete signed intent;
-legacy capability-only files remain GET-only recovery records and cannot establish
-the missing signed metadata intent. Protect the file and exact request; regenerating
-a wall-clock deadline changes the body. Metadata-only sessions start
-`ready_to_launch` but do **not** represent an on-chain launch.
+Choose `nonce96` in `[0, 2**96)`; keep inventory/buy recipients external to the proxy.
+Build `UfgLaunchConfig(10000, 100, sorted_reserve_tuple)` for a 1% exit fee.
+`build_ufg_approvals` approves the **proxy**, not escrow. Native funding uses value.
+`PlannedLaunch.ufg` carries the original config through `build_next_transaction`;
+raw-plan recovery must pass that same `ufg=config`, including cancellation.
+The generic wallet loop also needs to persist this config for UFG recovery.
 
-With an actual image-store configuration, callers can bind a descriptor, PUT the
-exact bytes with every issued header/create-only condition, complete verification,
-and explicitly publish an actual confirmed launch hash. A `202` raises
-`LaunchPublishPending` with the returned state and retry delay. Session reads/URL
-renewal provide recovery. These image/publish flows are not part of the metadata-only
-HTTP suite and require real storage/chain/indexer prerequisites.
+Quote fees enter the treasury after protocol share; launch-token fees burn. The fee
+owner is the funding adapter, not the principal. `read_ufg_treasury(client, token)`
+returns a treasury address or `None`. Use `UFG_BLACK_MARKET_TREASURY_ABI` for
+`collect()` and `redeem(uint256,uint256[],address)`; minima follow reserve order.
+Holders redeem a pro-rata share of **current** reserves less exit fee, not a guaranteed
+USD floor. `redeemSkipping` supports explicit reserve exclusions; inspect its ABI.
 
-### Service contract and suite selection
+`examples/launch_ufg_treasury.py` exercises mixed Abyss+fixed atomic and Abyss+dynamic
+staged launches on a disposable local Anvil fork, using its unlocked account and
+without metadata. It is not a mainnet broadcast runner or native-Nitro gas proof.
+See [fork setup](../examples/README.md#ufg-treasury-launches-fork-only) and
+[proxy addresses/codecs](reference.md#resolve-deployment-addresses).
 
-Run a real Abyss API test service using `createLaunchesRouter`, its actual session
-repository, and an isolated migrated PostgreSQL database. Enable chain `4663` and
-set the API deployment's `contracts.launchFactory` to the current orchestrator
-address above; this is the attribution EIP-712 verifying contract. A healthy HTTP
-listener alone is insufficient: private session routes and authorization/persistence
-must be enabled. The SDK does not start an API service or substitute echo responses.
+## HMM launch configuration
 
-Environment contract:
+Select `V4_HMM_FIXED_POOL` or `V4_HMM_DYNAMIC_POOL` and copy that preset's envelope.
+Both use zero LP/developer fees and require `hmm_launch_config` on config6.
+HMM Dynamic responds to absolute oracle tick movement per elapsed second, so
+movement in either direction can raise its fee; it differs from Dynamic V4 above.
 
-| Variable | Meaning |
-| --- | --- |
-| `LAUNCH_API_TEST_URL` | Required actual test HTTP service URL |
-| `LAUNCH_API_TEST_CHAIN_ID` | Defaults to `4663`; must match the service |
-| `LAUNCH_API_TEST_ORCHESTRATOR` | Defaults to current mainnet orchestrator; must match service authorization |
-| `LAUNCH_API_TEST_PRIVATE_KEY` | Required only for explicitly selected signed tests/example; disposable EOA, no funding needed |
+`default_hmm_launch_config` requires two explicit controls: `max_bid_quote`
+(positive raw quote principal cap, ≤uint128.max) and `reference_deviation`
+(nonnegative int24 tick-spacing count around the truncated-oracle reference).
+Zero reference deviation **does not disable** the reference guard.
 
-```sh
-python -m pytest -q
-python -m pytest -q tests/test_launch_api_http.py -m 'launch_api_http and not launch_api_write'
-python -m pytest -q tests/test_launch_api_http.py -m launch_api_http
+```python
+from black_market_sdk import (
+    default_hmm_launch_config, encode_lifecycle_pool_bound_v4_market_config,
+)
+
+def encode_hmm_market(reviewed_v6, *, token_budget, quote_asset,
+                      max_bid_quote, reference_deviation, premium_decay_seconds=0):
+    hmm = default_hmm_launch_config(
+        token_budget=token_budget, quote_asset=quote_asset,
+        max_bid_quote=max_bid_quote, reference_deviation=reference_deviation,
+    )
+    hmm = replace(hmm, strategy=replace(
+        hmm.strategy, premium_decay_seconds=premium_decay_seconds,
+    ))
+    configured = replace(reviewed_v6, hmm_launch_config=hmm)
+    return encode_lifecycle_pool_bound_v4_market_config(configured)
 ```
 
-Default pytest selects only local unit tests. The GET-only HTTP subset checks malformed
-capability rejection and unknown-session handling with no key or indexed launch.
-The full HTTP suite signs with the public SDK typed-data builder and `eth-account`,
-then exercises actual metadata-only creation, normalized persisted reads, exact
-idempotent replay, signed conflict, malformed/wrong capability, wallet/domain/metadata
-binding, expired deadline, and invalid signature. Missing service configuration/key
-fails an explicitly selected suite; it is not a skipped or pretend-passing integration.
-Signed tests/examples refuse non-loopback URLs. No suite sends chain transactions.
+Apply each `replace` **before encoding**; later changes cannot update the market bytes.
+The V2 tail is **512 bytes**; unknown quotes need explicit deploy/harvest thresholds.
 
-## DEX/lending network configuration
-
-`get_addresses()` defaults to workbench `46631`; explicitly pass `4663` for mainnet.
-Abyss infrastructure is canonical on mainnet. On `31337` and `46631`, Abyss fields
-read bare, then `VITE_`, then `NEXT_PUBLIC_` environment overrides at import time.
-Lending fields use that precedence on `31337` and public prefixes only on `46631`.
-`liquidation_executor` is the exception: all three prefixes work on every chain.
-Explicit zero-address overrides remain zero rather than selecting another deployment.
-Local `31337` lending defaults remain zero.
-
-Current mainnet lending pool is `0x5D8878b145904425C598f12EB8eD550985369a82` and its
-addresses provider is `0x892faB533E8D04135D902F94974e45dB48C17697`. The address view
-also includes current data/UI/wallet providers, oracle, protocol vault, native gateway,
-and lending lens. This lens is distinct from the lifecycle lens in the launch view.
-DEX ABIs/fee tiers/pool keys, exact TickMath, lending wallet/client factories,
-reserve/user normalization, catalog overlays, and RAY/WAD helpers remain available.
+The default **50%** strategy share funds auxiliary liquidity from both currencies'
+post-treasury fees; it does not burn tokens or unlock launch positions.
+See [HMM defaults and owner controls](reference.md#configure-hmm-controls).

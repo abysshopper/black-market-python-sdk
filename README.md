@@ -2,13 +2,19 @@
 
 # Abyss Python SDK
 
-Python SDK for token launches, swaps, and lending with [web3.py](https://web3py.readthedocs.io).
-Import the public package as `black_market_sdk`. Requires Python 3.10+.
+Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
+Package **0.12.0**, Python **3.10+**, import `black_market_sdk`.
+The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
 
-Install the package with `python -m pip install black-market-sdk`, or use a checkout
-to run and customize the examples:
+Install the published package in your Python environment:
+
+```sh
+python -m pip install black-market-sdk==0.12.0
+```
+
+For the runnable examples, install an editable checkout:
 
 ```sh
 git clone https://github.com/abysshopper/black-market-python-sdk.git
@@ -18,113 +24,98 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-Version **0.12.0** adds opt-in [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches):
-canonical native Abyss QUOTE pools and fixed/dynamic UFG V4 profiles can share
-one treasury. Use `UfgLaunchConfig`, proxy-specific transaction/approval builders,
-and the existing planner's `ufg=config` option. Ordinary core launches are unchanged.
+## Discover without a wallet
 
-Version **0.11.0** adds HMM-aware gas sizing, automatic preparation packing, and
-bounded simulation-prefix admission with explicit deferred steps. See
-[simulation and recovery](docs/launch-guide.md#simulation-unsigned-commands-and-recovery).
-
-Version **0.10.0** introduced a breaking HMM V2-only cutover: generic HMM helpers and
-profile keys now target the newly admitted V2 graph and 512-byte launch tails.
-`default_hmm_launch_config` requires explicit `max_bid_quote` and
-`reference_deviation`; other defaults are unchanged. HMM V1 identities, hook
-enum values and 448-byte tails are no longer supported. See the
-[HMM configuration and owner-controls guide](docs/launch-guide.md#hmm-launch-configuration).
-
-## UFG treasury launches
-
-Set the plan's creator to `UFG_LAUNCH_PROXY_ADDRESS`, use
-`ufg_launch_nonce(principal, nonce)` and
-`build_ufg_fee_asset_policies(predicted_token, reserves)`. Select
-`KnownLifecycleProfile.V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` for V4, with
-`ufg_launch_config=config` on config6; canonical Abyss QUOTE/QUOTE_ORACLE uses
-its unchanged config1 without a tail. Reserve fees fund the treasury; launch-token
-fees burn. This is ERC20/no-rewards only, with 100% treasury share and no executor fee.
-
-```python
-from black_market_sdk import (
-    UfgLaunchConfig, validate_ufg_launch_plan, build_ufg_launch_transactions,
-    build_ufg_approvals, read_ufg_treasury,
-)
-
-config = UfgLaunchConfig(10000, 100, tuple(sorted(reserves, key=lambda asset: int(asset, 16))))
-validate_ufg_launch_plan(plan, config, predicted_token)
-approvals = build_ufg_approvals(plan)  # ERC20 approvals target the proxy, not escrow.
-transactions = build_ufg_launch_transactions(plan, config=config, mode="staged")
-# These are unsigned commands, not live execution admission.
-# After authorized execution: treasury = read_ufg_treasury(client, predicted_token)
+```sh
+python examples/quickstart.py
+python examples/launch_matrix.py
 ```
 
-The fork-only [`launch_ufg_treasury.py`](examples/launch_ufg_treasury.py) example
-executes native Abyss plus fixed V4 atomically and native Abyss plus dynamic V4
-in stages, without keys or mainnet writes. See the guide for principal funding,
-live planning, config hashes and the Anvil/native-Nitro proof boundary.
+These commands read profile IDs, venues, admission, and refusal reasons. They do
+not need a key or send transactions. Select from live admission, not a fixed count.
 
-## Examples
+## Run your first launch
 
-The most complete case is [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py).
-On Robinhood mainnet (**chain 4663**), it:
-
-1. Creates an ERC20 with 1,000,000 initial tokens and holder dividends.
-   Fee-asset allocations split 40% to rewards and 60% to the owner, not a 40% tax.
-2. Splits liquidity across V4/WETH (two positions), V4/USDG (two), and Abyss/WETH
-   (three), priced from the same whole-supply USD valuation (default $5,000).
-3. Funds one opening buy per market with 0.00001 ETH each by default. ETH wraps
-   into WETH; USDG uses an admitted Kyber conversion. ETH for gas is additional.
-4. Prepares and proves the available staged prefix, prints the economic review,
-   and saves artifacts. Buy calibration requires activation outputs to fit the
-   selected RPC's simulation budget. The default dry-run never signs or submits.
-5. With authorization, stages metadata, begins and prepares the markets, then
-   activates all seven positions and three buys together. It verifies chain
-   results and API publication; optional images are verified before submission.
-
-### Configure and run
-
-From the checkout root, create `.env` without overwriting existing configuration:
+Start with [`launch_erc20_abyss.py`](examples/launch_erc20_abyss.py): one ERC20,
+one canonical Abyss pool, one permanent position, and one opening buy, atomically.
 
 ```sh
 cp -n examples/.env.example .env
 chmod 600 .env
 ```
 
-Set `LAUNCH_API_URL` and exactly one key source: `PRIVATE_KEY`, or
-`EXAMPLE_KEYSTORE_PATH` to an owner-only V3 JSON keystore (`EXAMPLE_KEYSTORE_PASSWORD`
-defaults to empty). Optional `RPC_URL` overrides the official chain4663 RPC.
-Remote endpoints require HTTPS; existing environment values override `.env`.
+Set `LAUNCH_API_URL=https://api.abyss.trading` and exactly one key source:
+`PRIVATE_KEY`, or `EXAMPLE_KEYSTORE_PATH` with `EXAMPLE_KEYSTORE_PASSWORD` if needed.
+Fund that creator with ETH for the buy **and gas**. `RPC_URL` optionally overrides
+the official mainnet RPC. Process environment values override `.env`.
 
 ```sh
-# Dry run: no signing, chain submission, image upload, or publication.
-python examples/launch_erc20_dividends_multiquote_mixed.py
-# Explicitly authorize spending funds and publishing; no confirmation prompt.
-python examples/launch_erc20_dividends_multiquote_mixed.py --broadcast
-# After partial execution, replace this path with the ORIGINAL run directory.
-python examples/launch_erc20_dividends_multiquote_mixed.py --resume "launch-results/<original-run>"
+# Dry run: discovery, pricing, funding checks, simulation; no signatures or writes.
+python examples/launch_erc20_abyss.py
+# Authorizes spending and publication, without an interactive prompt.
+python examples/launch_erc20_abyss.py --broadcast
+# After partial execution, use the ORIGINAL broadcast run directory.
+python examples/launch_erc20_abyss.py --resume "launch-results/<original-run>"
 ```
 
-Dry-run needs live RPC/API access, the creator key, funding, and admission.
-Review the saved `economic-review.json` in `launch-results/`. Broadcast builds a
-**fresh plan**; resume may spend/publish but retains the original plan and session.
-Keep recovery files; never commit or share keys, private artifacts, or signed bytes.
+Even a dry run needs the creator key, sufficient funds, and live RPC/API access.
+Review the full supply, aligned starting valuation, fees, buy output/share, minimum
+output, and gas before broadcasting. `--broadcast` builds a **fresh plan**, not the
+dry-run plan. `--resume` retains the original identity, plan, receipts, and session.
+Keep recovery files private; never commit keys, capabilities, or signed bytes.
 
-## Creating your own
+### Understand the defaults
 
-Copy the case wrapper beside its helpers, then customize it:
+- ERC20 supply: **1,000,000** tokens; ERC404 supply: **10,000**, with 100-token NFT units.
+- `EXAMPLE_TARGET_MARKET_CAP_USD=5000`: full minted-supply valuation, not cash raised.
+  At 1M tokens, that is $0.005/token before tick rounding. It is not a recommendation.
+- `EXAMPLE_BUY_AMOUNT_WEI=10000000000000`: **0.00001 ETH per buy**, plus gas.
+  WETH funding wraps ETH; USDG funding uses a Kyber conversion.
+- Abyss fee: **3000 pips (0.3%)**, spacing 60. Fixed V4 examples add a **1% hook fee**
+  to their 0.3% LP fee. Their config6 minimum does not select dynamic behavior.
+- Reward examples allocate **40% of distributed fees** to rewards and 60% to the
+  owner. The **275 bps** collection reward is a fee-distribution share, not a trader tax.
 
-```sh
-cp examples/launch_erc20_dividends_multiquote_mixed.py examples/launch_my_token.py
-python examples/launch_my_token.py
-```
+## Examples
 
-Edit `CASE`: unique `id`, `tokenKind` (0 ERC20 / 1 ERC404), `rewardMode`
-(0 none / 1 staking / 2 dividends), `mode` (`atomic` / `staged`), `markets`
-(`venue`, `quote`, `positions`), and `buysPerMarket`. Supported venues are
-`v4`/`abyss`, quotes `WETH`/`USDG`. Customize identity, valuation, and buy input
-with the `EXAMPLE_*` keys in [`.env.example`](examples/.env.example).
-For supply, fees, budgets, or ranges, adapt `construct_plan`, `fee_policies`, and
-`derive_market_pricing` in `launch_examples.py`; copy `_launch_support.py` with it.
+All eleven cases use `launch_examples.py` and `_launch_support.py`.
+Counts below are markets / positions / ordered buys.
 
-See the [launch/API guide](docs/launch-guide.md), [runner configuration](examples/README.md),
-and [MIT license](LICENSE) for deeper reference.
+| Script in `examples/` | Token / rewards | Counts | Mode |
+| --- | --- | --- | --- |
+| [`launch_erc20_abyss.py`](examples/launch_erc20_abyss.py) | ERC20 | 1 / 1 / 1 | atomic |
+| [`launch_erc20_v4.py`](examples/launch_erc20_v4.py) | ERC20 | 1 / 1 / 1 | atomic |
+| [`launch_erc20_staking_v4.py`](examples/launch_erc20_staking_v4.py) | ERC20 staking | 1 / 2 / 2 | staged |
+| [`launch_erc20_dividends_abyss.py`](examples/launch_erc20_dividends_abyss.py) | ERC20 dividends | 1 / 3 / 1 | staged |
+| [`launch_erc20_burn_mixed.py`](examples/launch_erc20_burn_mixed.py) | ERC20 burn split | 2 / 3 / 2 | staged |
+| [`launch_erc404_v4.py`](examples/launch_erc404_v4.py) | ERC404 | 1 / 1 / 1 | staged |
+| [`launch_erc404_abyss.py`](examples/launch_erc404_abyss.py) | ERC404 | 1 / 1 / 1 | atomic |
+| [`launch_erc404_dividends_mixed.py`](examples/launch_erc404_dividends_mixed.py) | ERC404 dividends | 2 / 5 / 2 | staged |
+| [`launch_erc20_multi_quote.py`](examples/launch_erc20_multi_quote.py) | ERC20, WETH + USDG | 3 / 3 / 3 | staged |
+| [`launch_erc20_depth_v4.py`](examples/launch_erc20_depth_v4.py) | ERC20, four bands | 1 / 4 / 1 | staged |
+| [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py) | ERC20 dividends, WETH + USDG | 3 / 7 / 3 | staged |
+
+The three-market/seven-position case is **not a first-run template**. Its fresh
+prefix estimate is **75.5M gas**: begin 9.5M + preparation 3 × 16M + activation
+3 × 6M, above the default **50M simulation window**. Even two ordinary markets
+estimate 53.5M. These protected-buy examples need activation inside the proof;
+see [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
+
+## Choose an offering
+
+| Offering | Use it for | Guide |
+| --- | --- | --- |
+| Canonical Abyss | STANDARD / STANDARD_ORACLE / QUOTE / QUOTE_ORACLE pools | [Choose an offering](docs/launch-guide.md#choose-an-offering) |
+| Fixed V4 | Pool-bound hook with a fixed trading fee | [Build the plan](docs/launch-guide.md#build-the-plan) |
+| Dynamic V4 | Fee minimum, maximum, and tick-velocity sensitivity | [Choose an offering](docs/launch-guide.md#choose-an-offering) |
+| HMM V2 | Fixed/dynamic V4 plus fee-funded auxiliary liquidity | [HMM launch configuration](docs/launch-guide.md#hmm-launch-configuration) |
+| UFG treasury | ERC20 with quote-fee reserves and holder redemption | [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches) |
+
+## Integrate and recover
+
+Follow the [launch guide](docs/launch-guide.md) for pricing, signing, publication,
+recovery, and claims. Check **receipt confirmed → markets active → metadata
+published → API indexed** separately; an API timeout does not undo an open token.
+
+See [runner configuration](examples/README.md), [limits and codecs](docs/reference.md),
+[release changes](CHANGELOG.md), and the [MIT license](LICENSE).
