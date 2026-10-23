@@ -450,7 +450,7 @@ to continue a partially executed plan.
 
 `build_next_transaction(client, original_plan, account=creator, mode="staged",
 action="cancel", receipts=references)` produces the currently proved cancellation
-command. Cancellation does not need disabled profile admission to become enabled.
+command. Cancellation still works after the profile stops being admitted.
 Before activation, inventory goes to the committed `inventory_recipient` or burns
 according to `burn_on_cancel`; it remains inactive. Escrow refunds remaining assets;
 wrapped ETH can return as WETH. Spent gas is not refunded.
