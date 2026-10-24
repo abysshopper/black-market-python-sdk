@@ -1,20 +1,122 @@
 # Python launch examples
 
-The eleven `launch_erc20_*.py` / `launch_erc404_*.py` cases share
-`launch_examples.py` and `_launch_support.py`. Their token, market, position, buy,
-and atomic/staged choices remain fixed. See the [case table](../README.md#examples)
-and [lifecycle guide](../docs/launch-guide.md#standalone-token-launch-examples).
+Start with `launch_erc20_abyss.py` or `launch_erc20_v4.py`: one market, one position,
+one opening buy. The [eleven-case table](../README.md#examples) lists the fixed
+wrappers; each imports `launch_examples.py` and `_launch_support.py`.
+For SDK integrations, follow the [launch guide](../docs/launch-guide.md).
+
+## Configure once
+
+From an editable checkout (`python -m pip install -e .`):
+
+```sh
+cp -n examples/.env.example .env
+chmod 600 .env
+```
+
+Set `LAUNCH_API_URL=https://api.abyss.trading` and exactly one key source:
+`PRIVATE_KEY`, or an owner-only V3 JSON keystore at `EXAMPLE_KEYSTORE_PATH`.
+`EXAMPLE_KEYSTORE_PASSWORD` defaults to empty. Process environment values override
+`.env`. Remote RPC/API endpoints require HTTPS; owned loopback services can use HTTP.
+
+A dry run derives the creator address from that key and needs enough ETH for the
+buy and gas, plus working RPC/API access. It does not create a signer, sign, upload,
+or publish. For wallet-free discovery, run `quickstart.py` or `launch_matrix.py`.
+
+## Dry run, then broadcast
+
+```sh
+python examples/launch_erc20_abyss.py
+python examples/launch_erc20_abyss.py --broadcast
+```
+
+The first command prints `DRY RUN — no transactions signed or broadcast.`, discovers
+profiles, derives prices/ranges, builds funding, and proves the protected plan.
+Review the full supply, aligned FDV, fees, buy output/share/minimum, and gas.
+Artifacts are saved in a printed `launch-results/<timestamp-case-random>/` directory.
+A successful dry run exits 0 with execution `dry-run`, chain `planned`, API `not-run`.
+Planning failure exits nonzero and retains diagnostics.
+
+`--broadcast` authorizes spending and metadata publication without a confirmation
+prompt. It builds a **fresh plan**, not the dry-run commitment. It stages metadata,
+executes, verifies canonical chain state, then publishes the activation hash.
+V4 wrappers select the fixed-fee profile; they do not switch to dynamic or HMM.
+
+The three-market examples estimate **75.5M** against the default **50M aggregate
+simulation window**. Two ordinary markets estimate 53.5M. Protected-buy planning
+requires activation inside that window; use a one-market starter. A larger
+integration needs a provider that supports the request and an explicit
+`LaunchExecutionLimits.rpc_total_simulation_gas_limit` override. The fixed runner
+has no environment variable for that aggregate limit.
+
+## Continue the original run
+
+```sh
+python examples/launch_erc20_abyss.py --resume "launch-results/<original-run>"
+```
+
+Use the original **broadcast** directory after any partial execution. Resume keeps
+its plan identity, session, and receipts, and can spend/publish remaining work.
+An Active launch resumes verification/publication, not deployment.
+Keep private recovery files, keys, capabilities, and signed bytes out of commits
+and shared output. A dry-run directory has no issued publication session.
+
+Only no arguments, `--broadcast`, or `--resume <dir>` are accepted. Omitting the
+argument after `--resume`, unknown/duplicate flags, mixed modes, or extra arguments
+exit **2** before configuration/network access. Supplying a nonexistent directory
+(or one without its recovery file) reaches **`MISSING_RECOVERY`**, exit **1**.
+For a reorg or uncertain signed hash, reconcile read-only first; see
+[recovery and cancellation](../docs/launch-guide.md#recover-or-cancel).
+
+## Fund the opening buys
+
+| Quote / source | Funding | Required balance |
+| --- | --- | --- |
+| WETH from native ETH | `NATIVE_WRAP`: escrow wraps ETH; no Kyber route | Buy ETH plus gas |
+| Other quote, such as USDG, from ETH | `SWAP`: admitted committed Kyber conversion | Native input plus gas |
+| Existing quote ERC20, custom SDK plan | `ERC20`: approve the funding escrow | Exact ERC20 input plus gas ETH |
+
+The default buy is **0.00001 ETH per ordered buy**, not per launch. Quote conversions
+have a **now + 300 s** deadline (maximum 1200 s); the plan has **now + 3600 s**.
+A stalled staged run can outlive the conversion. Use the saved plan's cancellation
+path if funding is expired; a fresh broadcast cannot continue its identity.
+
+## Change the fixed case
+
+Copy a wrapper next to both helpers, or copy all three together and install
+`black-market-sdk==0.12.0`. In `CASE`, `tokenKind` is 0 ERC20 / 1 ERC404;
+`rewardMode` is 0 none / 1 staking / 2 dividends; `mode` is `atomic` / `staged`.
+`markets` selects `venue` (`v4` / `abyss`), `quote` (`WETH` / `USDG`), and position
+count; `buysPerMarket` controls ordered buys. `distributionPreset` accepts the SDK
+range presets. For supply, fee policies, budgets, or ranges, adapt `construct_plan`,
+`fee_policies`, and `derive_market_pricing` in `launch_examples.py`.
+The typed helper uses `venue="uniswap-v4"`, not runner `"v4"`.
+
+## Environment variables
+
+See [.env.example](.env.example). Amounts are exact decimal strings.
+
+| Variable | Meaning / default |
+| --- | --- |
+| `PRIVATE_KEY` | Creator key; configure this or the keystore, not both |
+| `EXAMPLE_KEYSTORE_PATH` / `EXAMPLE_KEYSTORE_PASSWORD` | Owner-only regular V3 JSON keystore / password (empty by default) |
+| `LAUNCH_API_URL` | Required API origin: `https://api.abyss.trading` |
+| `RPC_URL` | Official Robinhood mainnet RPC by default |
+| `EXAMPLE_KYBER_API_URL` | Conversion-build API; defaults to `LAUNCH_API_URL`; unused for ETH→WETH |
+| `EXAMPLE_BUY_AMOUNT_WEI` | Positive native input **per buy**; `10000000000000` (0.00001 ETH) |
+| `EXAMPLE_TARGET_MARKET_CAP_USD` | Full minted-supply target; `5000`, up to 18 decimal places |
+| `EXAMPLE_TOKEN_NAME` / `EXAMPLE_TOKEN_SYMBOL` | Optional identity overrides; ≤100/32 codepoints and ≤128/32 UTF-8 bytes |
+| `EXAMPLE_TOKEN_DESCRIPTION` | Optional description, ≤2000 codepoints |
+| `EXAMPLE_IMAGE_PATH` | Optional PNG/JPEG/WebP ≤5 MiB; dry-run binds descriptor, broadcast uploads/verifies |
+| `NFT_BASE_URI` | Hosted ERC404 metadata base URI; empty by default, ignored for ERC20 |
+| `LAUNCH_CHAIN_GAS_CAP` / `LAUNCH_RPC_GAS_CAP` / `LAUNCH_ACCOUNT_GAS_CAP` | Optional positive per-transaction gas-policy caps |
+| `LAUNCH_CALLDATA_CAP` | Optional positive calldata byte cap |
 
 ## UFG treasury launches (fork only)
 
-`launch_ufg_treasury.py` is a separate no-argument, no-key public SDK example.
-It refuses remote/non-Anvil RPCs and executes only on a disposable local
-Robinhood fork (default `http://127.0.0.1:8562`, optionally `UFG_FORK_RPC_URL`).
-It launches native Abyss QUOTE plus UFG fixed V4 atomically using real local
-ERC20 proxy approvals, then native Abyss QUOTE plus UFG dynamic V4 in stages with
-NativeWrap. Every command is `eth_call`-checked from the principal before sending;
-output includes Active state, treasury addresses and matching config hashes.
-The pricing input is explicitly a fork arithmetic fixture, not a live quote.
+`launch_ufg_treasury.py` uses a disposable local Anvil fork and its first unlocked
+account. It refuses remote/non-Anvil RPCs. Default `UFG_FORK_RPC_URL` is
+`http://127.0.0.1:8562`; set it in the process environment, not the fixed runner's `.env`.
 
 ```sh
 anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ --chain-id 4663 \
@@ -23,147 +125,21 @@ anvil --fork-url https://rpc.mainnet.chain.robinhood.com/ --chain-id 4663 \
 PYTHONPATH=. python examples/launch_ufg_treasury.py
 ```
 
-Stop Anvil afterward. No real keys, mainnet writes or metadata API are used.
-Anvil EVM execution does not certify native-Nitro compute/poster admission; the
-production `ufg=config` planner retains those exact existing proof requirements.
-See [UFG lifecycle details](../docs/launch-guide.md#ufg-treasury-launches).
+It exercises Abyss+UFG fixed V4 atomically with ERC20 proxy approvals, then
+Abyss+UFG dynamic V4 in stages with NativeWrap. It checks each command and reports
+Active state, treasury addresses, and config hashes. Stop Anvil afterward.
+The example uses no real key or metadata API and does not prove native-Nitro gas.
+For production use [typed UFG planning](../docs/launch-guide.md#ufg-treasury-launches).
+`launch_recipe.py` cannot encode UFG/HMM tails; `launch_submit.py` has no UFG option.
 
-## HMM presets and launch tails
-
-`python examples/hmm_launch_config.py --max-bid-quote 10000000000000000 --reference-deviation 0`
-prints WETH HMM V2 settings and the exact 512-byte launch tail for HMM Fixed/HMM Dynamic.
-The values above are explicit illustration inputs (a 0.01 WETH bid cap and zero
-reference deviation), not SDK risk defaults. Choose both for the intended market.
-Add `--live` for read-only
-discovery that requires both registered profiles to be admitted; no key, signing,
-funding or metadata writes. See the [HMM configuration guide](../docs/launch-guide.md#hmm-launch-configuration)
-to bind `hmm_launch_config` to a reviewed config6 before encoding a market.
-The existing funded launch cases retain the fixed-fee offering; they never
-silently switch to HMM.
-
-Lifecycle planners automatically pack preparation markets; examples no longer
-force one market per transaction or propagate a uniform batch size. Recovery
-uses each transaction's exact `first_market` / `market_count` span.
-On chain4663, the default simulation budget proves a fitting prefix and reports
-`simulation.deferred_transaction_ids`; only freshly proved steps have signing
-gas/price/admission. These examples request actual-output buy calibration, so
-activation must fit that budget: otherwise planning refuses rather than inventing
-opening outputs. A higher-budget native RPC also requires the corresponding
-`LaunchExecutionLimits.rpc_total_simulation_gas_limit` override in the runner.
-
-## Configure once
-
-Install the SDK (`python -m pip install -e .` from this checkout, or install
-`black-market-sdk` when copying a case and both helpers). Copy `.env.example` into
-`.env` in the directory where you run the command, protect it with owner-only
-permissions, and configure `LAUNCH_API_URL` plus exactly one key source.
-Existing process environment values override `.env`; never commit keys,
-keystores, passwords, or private launch artifacts.
-
-Both modes derive the public creator address from the configured key. Keystore
-decryption is allowed for that purpose. Dry-run does not construct the local
-wallet signer or sign anything. Planning still contacts the configured RPC/API
-for discovery, prices, funding builds, and read-only native simulation, and still
-requires successful SDK admission and sufficient funding.
-
-## 1. Dry run (default)
-
-Choose any fixed case; no mode flag means dry run:
+## Inspect HMM V2 configuration
 
 ```sh
-python examples/launch_erc20_v4.py
+python examples/hmm_launch_config.py --max-bid-quote 10000000000000000 --reference-deviation 0
 ```
 
-The first output line is:
-
-```text
-DRY RUN — no transactions signed or broadcast.
-```
-
-The runner performs discovery, selects admitted profiles, derives economics,
-freezes the optional image descriptor, builds funding, and prepares/proves the
-complete protected plan. It prints the same full economic review used for
-execution and saves `run.json`, finalized `plan.json`, `admission.json`,
-`economic-review.json`, `events.jsonl`, empty `receipts.json`, and `result.json`
-in `launch-results/<timestamp-case-random>/`.
-
-On the known chain/core, V4 cases explicitly retain the admitted
-`KnownLifecycleProfile.V4_FIXED_FEE_POOL` offering even when Dynamic Fee Hook is
-also admitted. Missing/disabled fixed profiles refuse rather than switch hooks;
-unknown deployments still require one unambiguous supported V4 offering.
-
-A successful dry-run exits 0 with `execution: "dry-run"`, chain status `planned`,
-and API status `not-run`. It does not sign attribution, send transactions,
-create an upload session, upload an image, or publish. Refused/failed planning
-exits nonzero with retained diagnostics. The last output line is the exact case
-command with `--broadcast`, using the currently running Python interpreter and
-shell-safe quoting.
-
-## 2. Broadcast (explicit execution)
-
-```sh
-python examples/launch_erc20_v4.py --broadcast
-```
-
-**Choosing `--broadcast` authorizes execution.** It intentionally skips interactive
-review admission: there is no hash to type or environment hash to supply. The
-review hash is still computed, printed, and saved as provenance. Broadcast-only
-`economic-admission.json` records `authorization: "--broadcast"`, the computed
-`reviewHash`, and the timestamp; it is evidence, not a hash input gate.
-
-Broadcast prepares a fresh current-state plan, then runs local signing,
-broadcast, canonical chain verification, optional image upload/verification, and
-API publication. The previous dry-run plan is not a saved execution commitment.
-All other safety checks remain: complete SDK planner admission, unchanged bound
-economics at each signature, exact immediate-command preflight, canonical/reorg
-barriers, original image identity/readiness, and deadlines. No refused case is
-silently reduced, retried, or relaunched.
-
-## Continue an existing launch
-
-After a partial broadcast, resume its original recovery directory instead of
-creating a fresh token:
-
-```sh
-python examples/launch_erc20_v4.py --resume launch-results/<original-run>
-```
-
-`--resume <dir>` keeps the original publication/continuation path, committed plan,
-session, and receipt evidence. It is not a dry-run or a fresh launch. Preserve the
-private recovery files and reconcile reorgs with the read-only `launch_submit.py`
-workflow in the lifecycle guide. Never share private files or signed raw bytes.
-
-Only three argument shapes are accepted: no arguments, `--broadcast`, or
-`--resume <dir>`. Unknown flags, duplicate flags, missing directories, extra
-arguments, and mixed modes fail immediately with usage text and exit status 2,
-before configuration or network calls.
-
-## Environment variables
-
-All fixed-case runner variables are shown in [.env.example](.env.example):
-
-| Variable | Meaning / default |
-| --- | --- |
-| `PRIVATE_KEY` | Local creator private key. Required unless `EXAMPLE_KEYSTORE_PATH` is set; never configure both. Dry-run only derives the public address. |
-| `EXAMPLE_KEYSTORE_PATH` | Alternative owner-only regular V3 JSON keystore; symlinks/non-regular or unsafe-permission files are rejected. |
-| `EXAMPLE_KEYSTORE_PASSWORD` | Keystore password; defaults to the empty string. Never logged. |
-| `LAUNCH_API_URL` | Required Abyss API origin for USD pricing and broadcast upload sessions/publication. No guessed API default. |
-| `RPC_URL` | Optional RPC endpoint; defaults to the SDK's official Robinhood chain4663 mainnet RPC. |
-| `EXAMPLE_KYBER_API_URL` | Optional separate Abyss API for native-input conversion builds; defaults to `LAUNCH_API_URL`. WETH funding uses native wrapping; other quotes use admitted committed conversions. |
-| `EXAMPLE_BUY_AMOUNT_WEI` | Native ETH input per ordered buy, a positive canonical decimal uint256; defaults to `10000000000000` (0.00001 ETH). Gas is additional. |
-| `EXAMPLE_TARGET_MARKET_CAP_USD` | Opening USD valuation target based on the full minted supply; defaults to `5000`. Positive exact decimal, at most 18 fractional places. |
-| `EXAMPLE_TOKEN_NAME` | Optional NFC-normalized/trimmed case name override; nonempty, at most 100 codepoints and 128 UTF-8 bytes. |
-| `EXAMPLE_TOKEN_SYMBOL` | Optional NFC-normalized/trimmed symbol override; nonempty, at most 32 codepoints and 32 UTF-8 bytes. |
-| `EXAMPLE_TOKEN_DESCRIPTION` | Optional NFC-normalized/trimmed description override; at most 2000 codepoints. |
-| `EXAMPLE_IMAGE_PATH` | Optional PNG/JPEG/WebP file, at most 5 MiB. Dry-run reviews its SHA-256/type/length only; broadcast signs, uploads, verifies, and checks the public image. Unset means metadata-only. |
-| `NFT_BASE_URI` | Optional hosted ERC404 NFT metadata base URI; defaults to empty. Ignored by ERC20 cases. |
-| `LAUNCH_CHAIN_GAS_CAP` | Optional positive integer tightening policy for chain transaction gas. No invented ceiling by default. |
-| `LAUNCH_RPC_GAS_CAP` | Optional positive integer tightening policy for RPC transaction gas. |
-| `LAUNCH_ACCOUNT_GAS_CAP` | Optional positive integer tightening policy for account transaction gas. |
-| `LAUNCH_CALLDATA_CAP` | Optional positive integer tightening policy for calldata byte length. |
-
-Remote RPC/API endpoints require HTTPS; explicit loopback HTTP is accepted for
-owned local services. API credentials, query strings, and fragments in URLs are
-rejected. Public artifacts redact secrets and RPC credentials; private artifacts
-are owner-only. None of these variables substitutes for explicit `--broadcast`
-or an explicit original-launch `--resume` continuation.
+This prints settings and the 512-byte V2 tail using explicit illustration inputs:
+0.01 WETH bid cap and zero reference deviation. Choose both for your market.
+`--live` adds read-only admission checks; it does not launch or sign.
+The fixed funded cases remain non-HMM. See [HMM configuration](../docs/launch-guide.md#hmm-launch-configuration)
+and [API test-service setup](../docs/reference.md#test-against-an-api-service).
