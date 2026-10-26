@@ -11,7 +11,7 @@ import json
 import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 from contextlib import contextmanager
 from functools import wraps
@@ -165,6 +165,12 @@ class _LifecycleReadClient:
         self._sequence = 0
         self.closed = False
         self.nitro_proofs: set[tuple[Any, ...]] = set()
+        self.immutable_predictions: dict[str, str] = {}
+        self._gas_prices: dict[tuple[int, str], int] = {}
+        self._canonical_pins: dict[int, LaunchBlock] = {}
+        self.receipt_headers: dict[int, LaunchBlock | None] = {}
+        self._expected_chain: int | None = None
+        self.completion_checks: list[Callable[[], None]] = []
 
     def assert_open(self) -> None:
         if self.closed:
@@ -223,9 +229,53 @@ class _LifecycleReadClient:
             pending.set_exception(error)
             raise
 
+    def pinned_key(self, method: str, params: Sequence[Any], block: LaunchBlock) -> str:
+        return json.dumps([block.number, block.block_hash.lower(), method, params], separators=(",", ":"))
+
+    def has_read(self, method: str, params: Sequence[Any], block: LaunchBlock) -> bool:
+        self.assert_open()
+        with self._lock:
+            return self.pinned_key(method, params, block) in self._reads
+
+    def seed_read(self, method: str, params: Sequence[Any], block: LaunchBlock, value: Any) -> None:
+        self.assert_open()
+        with self._lock:
+            self._reads[self.pinned_key(method, params, block)] = value
+
+    def gas_price(self, block: LaunchBlock) -> int:
+        self.assert_open()
+        with self._lock:
+            key = (block.number, block.block_hash.lower())
+            if key not in self._gas_prices:
+                self._gas_prices[key] = max(quantity(self.run("eth_gasPrice", [])), (block.base_fee_per_gas or 0) * 2)
+            return self._gas_prices[key]
+
+    def check_source(self, chain_id: int, blocks: Sequence[LaunchBlock]) -> None:
+        self.assert_open()
+        if self._expected_chain is not None and self._expected_chain != chain_id:
+            raise LaunchStateChanged("Lifecycle observations belong to different source chains")
+        self._expected_chain = chain_id
+        for block in blocks:
+            previous = self._canonical_pins.get(block.number)
+            if previous is not None and previous != block:
+                error = LaunchStateChanged("Lifecycle observations disagree on a canonical block")
+                error.code = "STATE_REORGED"
+                raise error
+            self._canonical_pins[block.number] = replace(block)
+
+    def finalize(self) -> None:
+        self.assert_open()
+        for block in self._canonical_pins.values():
+            assert_canonical(self, block)
+        if self._expected_chain is not None:
+            assert_chain(self, self._expected_chain)
+        for check in self.completion_checks:
+            check()
+        self.assert_open()
+
     def read(self, method: str, params: Sequence[Any], block: LaunchBlock) -> Any:
         self.assert_open()
-        key = json.dumps([block.number, block.block_hash.lower(), method, params], separators=(",", ":"))
+        key = self.pinned_key(method, params, block)
         with self._lock:
             if key in self._reads:
                 if self.on_diagnostic is not None:
@@ -264,6 +314,11 @@ class _LifecycleReadClient:
             self._pending.clear()
             self._chain_id = None
             self.nitro_proofs.clear()
+            self.immutable_predictions.clear()
+            self._gas_prices.clear()
+            self._canonical_pins.clear()
+            self.receipt_headers.clear()
+            self.completion_checks.clear()
 
 
 @contextmanager
@@ -294,7 +349,9 @@ def read_invocation(stage: str):
             scope = _LifecycleReadClient(client)
             try:
                 with lifecycle_stage(scope, stage):
-                    return work(scope, *args, **kwargs)
+                    result = work(scope, *args, **kwargs)
+                    scope.finalize()
+                    return result
             finally:
                 scope.close()
         return invoke
@@ -312,7 +369,9 @@ def async_read_invocation(stage: str):
             scope = _LifecycleReadClient(client)
             try:
                 with lifecycle_stage(scope, stage):
-                    return await work(scope, *args, **kwargs)
+                    result = await work(scope, *args, **kwargs)
+                    await asyncio.to_thread(scope.finalize)
+                    return result
             finally:
                 scope.close()
         return invoke
@@ -391,6 +450,20 @@ def read_chain_id(client: Any) -> int:
     return client.observe_chain_id() if isinstance(client, _LifecycleReadClient) else quantity(rpc(client, "eth_chainId", []))
 
 
+def read_gas_price(client: Any, block: LaunchBlock) -> int:
+    return client.gas_price(block) if isinstance(client, _LifecycleReadClient) else max(quantity(rpc(client, "eth_gasPrice", [])), (block.base_fee_per_gas or 0) * 2)
+
+
+def check_lifecycle_source(client: Any, chain_id: int, *blocks: LaunchBlock) -> None:
+    """Defer nested checkpoints to one uncached outer source guard."""
+    if isinstance(client, _LifecycleReadClient):
+        client.check_source(chain_id, blocks)
+    else:
+        assert_chain(client, chain_id)
+        for block in dict.fromkeys(blocks):
+            assert_canonical(client, block)
+
+
 def failure_reason(failure: Any) -> str:
     """Expose fixed refusal text and numeric codes, never native messages/data."""
     from .lifecycle import LifecyclePlanningError
@@ -448,7 +521,7 @@ class LaunchLimitContext:
 
 
 
-def read_block(client: Web3, tag: str | int = "latest") -> LaunchBlock:
+def read_block(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, tag: str | int = "latest") -> LaunchBlock:
     raw = rpc(client, "eth_getBlockByNumber", [hex(tag) if isinstance(tag, int) else tag, False])
     if raw is None:
         raise LaunchStateChanged("the requested canonical block is unavailable")
@@ -466,14 +539,14 @@ def read_block(client: Web3, tag: str | int = "latest") -> LaunchBlock:
     )
 
 
-def assert_canonical(client: Web3, block: LaunchBlock) -> None:
+def assert_canonical(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, block: LaunchBlock) -> None:
     if read_block(client, block.number).block_hash != block.block_hash.lower():
         error = LaunchStateChanged("the estimate/read block was reorganized; read and simulate again")
         error.code = "STATE_REORGED"
         raise error
 
 
-def assert_chain(client: Web3, chain_id: int) -> None:
+def assert_chain(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, chain_id: int) -> None:
     if quantity(rpc(client, "eth_chainId", [])) != chain_id:
         error = LaunchStateChanged("the simulation source chain changed; read and simulate again")
         error.code = "CHAIN_MISMATCH"

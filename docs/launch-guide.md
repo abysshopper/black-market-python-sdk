@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.12.0** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.13.0** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -310,6 +310,21 @@ mode, and confirmation policy: V4 salts and calibrated minima may change the dra
 Preparation mines bound-hook salts locally, checks live admission/funding, and
 proves ordered execution. `plan_launch` is synchronous for an already-finalized plan.
 
+An admitted `launch.transactions[0]` includes its exact nonce, gas and gas price.
+Use it for review instead of running another unreviewed planning pass. Before signing,
+call `build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`
+once for fresh canonical progress and exact-envelope admission. Never use the stored
+planning result alone as fresh signing authority.
+
+Atomic callers with an explicit signing gas policy may pass
+`fixed_final_envelope=LifecycleFinalEnvelope(gas=31_000_000)` to
+`prepare_and_plan_lifecycle_launch`. This is an exact gas choice, not a ceiling or recommendation.
+Omitting `gas_price` freezes the operation's single fee recommendation; supplying it
+holds that exact price. Protected preparation still measures diagnostic buy outputs
+and validates the exact final protected calldata/gas/price. Staged plans and
+approval-first sequences cannot use this option. A failed held envelope is refused,
+not enlarged.
+
 | Mode | Transactions after approvals | What can be interrupted |
 | --- | --- | --- |
 | `atomic` | One launch transaction | The whole launch succeeds or reverts. |
@@ -333,9 +348,12 @@ A generic Anvil fork cannot prove Robinhood's native Nitro metering.
 
 ## Sign and confirm
 
-Call `build_next_transaction` after every confirmed receipt. Review and sign its exact
+Call `build_next_transaction` after every confirmed receipt, passing the immediate
+reviewed transaction when one is held. Review and sign only the returned exact
 `as_transaction()` envelope; `submission_client` optionally preflights your send RPC.
-Deferred commands cannot be signed.
+Immediately before signing, verify the active provider's account/chain, fresh pending
+nonce and pending balance for value plus fees. SDK proof does not replace those
+wallet/provider guards. Deferred commands cannot be signed.
 
 This loop **spends funds when called** with your authorized `eth-account` local wallet.
 Supply `persist`, your application's durable owner-only journal callback. Resolve any

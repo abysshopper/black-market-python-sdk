@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.12.0**.
+for SDK **0.13.0**.
 
 ## Resolve deployment addresses
 
@@ -189,6 +189,22 @@ actual provider/account policy; its aggregate override is
 `submission_client` on `build_next_transaction` estimates only the next envelope.
 `LaunchSubmissionPreflightError` retains execution proof while marking transport
 failure. Do not treat a public RPC 429 as an economic revert or a gas-cap measurement.
+
+Lifecycle planning aggregates only the reviewed Robinhood deployment's
+caller-independent Nitro limits, factory token prediction and head progress.
+Multicall3 runtime is hash-attested at the same block. Poster quotes retain the
+exact caller/value and are never aggregated. Reads and fees reuse only within an
+open invocation and an exact canonical pin, except the reviewed immutable factory's
+deterministic token prediction, which survives the construction-to-execution pin
+transition inside that invocation. No cross-invocation proof or latest-state cache
+is introduced. The invocation checks every distinct proof/receipt block and the
+source chain once at its final boundary, after optional submission preflight.
+
+`LifecycleFinalEnvelope(gas, gas_price=None)` is the optional exact atomic envelope
+for `prepare_and_plan_lifecycle_launch`. Unlike
+`account_transaction_gas_limit`, its gas is the actual final proof/signing gas.
+An omitted price uses the invocation's single recommended fee; an explicit price
+is not raised. Final exact validation, EOA/funding checks and Nitro admission remain.
 
 ## Observe planner diagnostics
 

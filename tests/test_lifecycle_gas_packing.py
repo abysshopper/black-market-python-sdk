@@ -232,7 +232,7 @@ def test_owner_guard_collapses_planning_rpc_count(monkeypatch):
     assert planned.admitted
     assert provider.operations.count("eth_chainId") == 2
     assert provider.operations.count("eth_getBlockByNumber") == 2
-    assert len(provider.operations) == 18  # Node ledger: 17 + one poster quote.
+    assert len(provider.operations) == 15  # Five invariant getters share one attested aggregate.
 
 
 def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
@@ -361,4 +361,4 @@ def test_unified_preparation_retains_only_owner_source_guards(monkeypatch):
     assert planned.admitted and planned.progress.head_block.number == 52
     assert provider.operations.count("eth_chainId") == 2
     assert provider.operations.count("eth_getBlockByNumber") == 3
-    assert len(provider.operations) == 20
+    assert len(provider.operations) == 17

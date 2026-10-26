@@ -284,8 +284,21 @@ class CanonicalRpcScenario:
                 "input": build_lifecycle_calldata(self.plan, "beginLaunch"), "value": "0x0"}
         elif method == "eth_chainId":
             result = hex(self.plan.chain_id)
+        elif method == "eth_call" and params[0]["to"].lower() == "0xca11bde05977b3631167028862be2a173976ca11":
+            calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(params[0]["data"][10:]))[0]
+            self._in_multicall = True
+            try:
+                results = []
+                for target, allow_failure, data in calls:
+                    assert allow_failure is False
+                    response = self.make_request("eth_call", [{"to": target, "data": "0x" + data.hex()}, params[1]])
+                    assert "error" not in response
+                    results.append((True, bytes.fromhex(response["result"][2:])))
+                result = "0x" + abi_encode(["(bool,bytes)[]"], [results]).hex()
+            finally:
+                self._in_multicall = False
         elif method == "eth_getCode":
-            result = "0x"
+            result = (Path(__file__).with_name("fixtures") / "multicall3-robinhood-runtime.hex").read_text().strip() if params[0].lower() == "0xca11bde05977b3631167028862be2a173976ca11" else "0x"
         elif method == "eth_getBlockByNumber":
             self.block_reads += 1
             number = self.block_number if params[0] == "latest" else int(params[0], 16)
@@ -646,7 +659,8 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         return "0x"
 
     def make_request(self, method, params):
-        self.operations.append(method)
+        if not getattr(self, "_in_multicall", False):
+            self.operations.append(method)
         if method == "eth_getBlockByNumber" and self.plan.chain_id == 4663:
             response = super().make_request(method, params)
             response["result"]["gasLimit"] = hex(1 << 50)
@@ -654,6 +668,8 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         if method == "eth_getBalance":
             return {"result": hex(self.balance)}
         if method == "eth_getCode":
+            if params[0].lower() == "0xca11bde05977b3631167028862be2a173976ca11":
+                return super().make_request(method, params)
             code = "0x01" if self.smart_account and params[0].lower() == self.plan.creator.lower() else "0x"
             return {"result": code}
         if method == "eth_getTransactionCount":
@@ -662,8 +678,10 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
             return {"result": hex(self.gas_price)}
         if method == "eth_call":
             transaction, tag = params
-            assert tag == hex(self.block_number)
+            assert tag == hex(self.block_number) or transaction["data"][:10] == "0x" + function_signature("readLaunchProgress")[0].hex()
             target = transaction["to"].lower()
+            if target == "0xca11bde05977b3631167028862be2a173976ca11":
+                return super().make_request(method, params)
             if target in {"0x" + "00" * 19 + "64", "0x" + "00" * 19 + "6c"}:
                 if self.getter_override is not None:
                     return self.getter_override
@@ -1131,7 +1149,7 @@ def test_build_next_preflight_is_read_only_exact_and_immediate_only(monkeypatch)
     envelope, tag = submission.requests[1][1]
     assert tag == "latest" and envelope == {
         "from": step.from_address, "to": step.to, "data": step.data,
-        "value": hex(step.value), "gas": hex(step.gas_limit), "gasPrice": hex(step.gas_price),
+        "value": hex(step.value), "gas": hex(step.gas_limit), "gasPrice": hex(step.gas_price), "nonce": hex(step.nonce),
     }
     assert all(method not in {"eth_sendTransaction", "eth_sendRawTransaction"} for method in provider.operations)
 
