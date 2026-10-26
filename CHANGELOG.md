@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Rewrite launch guidance around pricing, one-market deployment, publication, and recovery; move limits/codecs/gas details into `docs/reference.md` and correct funding, deadlines, and API retry instructions.
-
 ## 0.13.0
 
 - Aggregate the reviewed Robinhood Nitro getters, immutable factory prediction and head progress with pinned, runtime-attested Multicall3. Keep caller-sensitive poster estimates on their original direct path.
@@ -11,6 +7,7 @@
 - Share one fee recommendation and immutable known-factory prediction inside preparation, including diagnostic/final protection passes. No mutable state is cached across invocations or block pins.
 - Add `LifecycleFinalEnvelope(gas, gas_price=None)` and `fixed_final_envelope` to atomic preparation. Omitted price uses the operation's single recommendation; supplied price is exact. The final protected command still receives validated exact-envelope replay and never auto-enlarges.
 - Use admitted `PlannedLaunch.transactions[0]` as the review envelope and one reviewed `build_next_transaction` as final SDK admission. Signing integrations must still refresh the active provider account/chain, pending nonce and pending balance immediately before signing.
+- Rewrite launch guidance around pricing, one-market deployment, publication, and recovery; move limits/codecs/gas details into `docs/reference.md` and correct funding, deadlines, and API retry instructions.
 
 ## 0.12.0
 
