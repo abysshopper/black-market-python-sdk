@@ -277,6 +277,7 @@ from .lifecycle import (
     LifecycleEvent,
     LifecycleFeeAssetPolicy,
     LifecycleFundingKind,
+    LifecycleFinalEnvelope as LifecycleFinalEnvelope,
     LifecycleHookTopology,
     LifecycleInitialBuy,
     LifecycleLimitResolver,
@@ -423,4 +424,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"

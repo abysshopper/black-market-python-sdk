@@ -4,6 +4,14 @@
 
 - Rewrite launch guidance around pricing, one-market deployment, publication, and recovery; move limits/codecs/gas details into `docs/reference.md` and correct funding, deadlines, and API retry instructions.
 
+## 0.13.0
+
+- Aggregate the reviewed Robinhood Nitro getters, immutable factory prediction and head progress with pinned, runtime-attested Multicall3. Keep caller-sensitive poster estimates on their original direct path.
+- Finalize each lifecycle invocation with one fresh source-chain check and one canonical check per distinct proof/receipt block, after any submission preflight. Retain confirmation-bound and pending nonces, receipt identity, reorg detection and exact replay.
+- Share one fee recommendation and immutable known-factory prediction inside preparation, including diagnostic/final protection passes. No mutable state is cached across invocations or block pins.
+- Add `LifecycleFinalEnvelope(gas, gas_price=None)` and `fixed_final_envelope` to atomic preparation. Omitted price uses the operation's single recommendation; supplied price is exact. The final protected command still receives validated exact-envelope replay and never auto-enlarges.
+- Use admitted `PlannedLaunch.transactions[0]` as the review envelope and one reviewed `build_next_transaction` as final SDK admission. Signing integrations must still refresh the active provider account/chain, pending nonce and pending balance immediately before signing.
+
 ## 0.12.0
 
 - Add opt-in UFG treasury launches through the canonical principal-funded proxy, without changing the existing core launch path.
@@ -55,4 +63,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.12.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.13.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

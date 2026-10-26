@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.12.0**, Python **3.10+**, import `black_market_sdk`.
+Package **0.13.0**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.12.0
+python -m pip install black-market-sdk==0.13.0
 ```
 
 For the runnable examples, install an editable checkout:

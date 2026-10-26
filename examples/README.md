@@ -84,7 +84,7 @@ path if funding is expired; a fresh broadcast cannot continue its identity.
 ## Change the fixed case
 
 Copy a wrapper next to both helpers, or copy all three together and install
-`black-market-sdk==0.12.0`. In `CASE`, `tokenKind` is 0 ERC20 / 1 ERC404;
+`black-market-sdk==0.13.0`. In `CASE`, `tokenKind` is 0 ERC20 / 1 ERC404;
 `rewardMode` is 0 none / 1 staking / 2 dividends; `mode` is `atomic` / `staged`.
 `markets` selects `venue` (`v4` / `abyss`), `quote` (`WETH` / `USDG`), and position
 count; `buysPerMarket` controls ordered buys. `distributionPreset` accepts the SDK
