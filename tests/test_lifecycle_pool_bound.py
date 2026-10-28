@@ -280,7 +280,7 @@ def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_
             assert not planned.admitted and planned.simulation.execution_proof == "unavailable"
             assert planned.simulation.failure_category == "source"
             assert all(transaction.gas_limit is None and transaction.gas_price is None
-                and transaction.admission is not None and not transaction.admission.admitted
+                and transaction.admission is None
                 for transaction in planned.transactions)
         else:
             assert planned.admitted

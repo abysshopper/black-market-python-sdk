@@ -136,9 +136,9 @@ def test_protected_preparation_pins_once_and_keeps_calibration_separate(prepared
 
 
 @pytest.mark.parametrize("entry,total,calls,simulations,prices", [
-    ("plan", 11, 3, 1, 1), ("simulate", 11, 3, 1, 1),
+    ("plan", 12, 3, 2, 1), ("simulate", 12, 3, 2, 1),
     ("build", 11, 3, 1, 1), ("reviewed", 9, 2, 1, 0),
-    ("staged", 11, 3, 1, 1), ("staged-reviewed", 9, 2, 1, 0),
+    ("staged", 12, 3, 2, 1), ("staged-reviewed", 9, 2, 1, 0),
 ])
 def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations, prices):
     _, client, launch = prepared

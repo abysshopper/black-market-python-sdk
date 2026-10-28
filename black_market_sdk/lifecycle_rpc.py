@@ -1089,7 +1089,7 @@ def simulate_transactions(
         # Only initial generic-EVM measurement may select an explicitly supplied
         # fork after request/structural failure. Returned execution refusals and
         # validated replay cannot switch their backend.
-        if not validation and result.confidence != "stateful" and fork is not None and limits.protocol != "nitro":
+        if not validation and result.failure_category == "source" and fork is not None and limits.protocol != "nitro":
             return _simulate_fork(client, fork, transactions, block, validation, limits, postconditions, postcondition_validator)
         return result
     finally:

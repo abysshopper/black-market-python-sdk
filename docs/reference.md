@@ -155,18 +155,29 @@ header gas field. Read failures stop admission.
 
 - `LaunchExecutionLimits.execution_gas_ceiling` caps compute;
   `transaction_gas_ceiling` is separate total-envelope policy.
-- Native `eth_simulateV1` runs the final calldata with `validation=True`. Its gross
-  `maxUsedGas` (or `gasUsed`) is the complete envelope, including native poster gas.
-  `compute_gas_estimate` is therefore unset rather than presenting total gas as compute.
+- Native `eth_simulateV1` runs the final calldata with `validation=True` at the
+  exact complete envelope returned for signing. Never use a 50M discovery ceiling
+  as that final envelope merely because the provider accepts a large request.
+  Validated `maxUsedGas` (or `gasUsed`) includes native poster gas; it is not compute.
 - `NodeInterface.gasEstimateL1Component()` at `0xc8` supplies one poster estimate
   for the immediate final command. Calibration and later commands do not quote it.
-- With complete gross requirement `G`, the target is
-  `max(G + R, ceil(G * (10000 + headroom_bps) / 10000))`. Default headroom: 1500 bps.
-  For atomic/activation with HMM, `R = 4_250_000 + 500_000 * (hmm_markets - 1)`;
-  other commands use zero. Reserve is applied once per transaction.
-- Targets clamp to the available complete-envelope budget. The validated final
-  measurement is authoritative; no redundant replay or automatic rescue enlarges it.
-  Explicitly reviewed envelopes still receive one exact gas/price simulation.
+- Reuse protected-buy calibration's compute observation `G`, exposed as
+  `simulation.steps[i].compute_gas_required`, when available. If missing, run one
+  unvalidated sizing pass. With compute `G`, size
+  `max(G + R, ceil(G * (10000 + headroom_bps) / 10000)) + buffered_poster_gas`.
+  Default headroom is 1500 bps. For atomic/activation with HMM,
+  `R = 4_250_000 + 500_000 * (hmm_markets - 1)`; other commands use zero.
+  Keep compute separate from prior complete gas or provisional suffix ceilings;
+  a new poster quote can exceed the entire previous total.
+- Bound both calibration/sizing discovery and new final proposals by policy and
+  pinned native affordability after committed values. Nitro checks upfront fees
+  even with `validation=False`. Validate once and return that exact final envelope.
+  Only the immediate envelope is final. Later steps prove feasibility with
+  conservative affordable budgets and have `provisional=True`, no fee estimate,
+  signing gas/price or admission. `build_next_transaction` freshly sizes each at
+  its turn. Explicitly reviewed gas/price are never changed.
+- Generic-EVM controlled-fork sizing uses gross `eth_estimateGas`; final exact
+  validation does not size from refund-reduced receipt gas.
 - Poster gas is already inside the envelope: `data_fee_included_in_gas=True`,
   `data_fee=0`, `total_fee=gas_limit * gas_price`. Do not add `poster_fee` again.
   Receipt/total gas can exceed the compute ceiling.
@@ -238,6 +249,13 @@ client.on_diagnostic = on_diagnostic
 
 Only opt-in observation runs. Avoid adding keys, signed calldata, upload capabilities,
 or credential-bearing URLs to your own diagnostic output.
+
+In 0.14.0, build-next no longer emits nested `plan.context`, `plan.domain` or
+`plan.inputs` stages for whole-plan metadata or suffix work.
+`simulation.envelope` rescue events are removed. Ordinary final validation uses
+`simulation.measure`, also used by an optional sizing pass; only explicitly
+reviewed proof retains `simulation.replay`. Use returned admission/outcomes for
+completion, not a fixed event sequence or the presence of a particular stage.
 
 ## Decode author claims
 

@@ -321,6 +321,11 @@ planning result alone as fresh signing authority.
 Build-next retains receipt/nonce confirmation handling, but compiles the original
 preparation boundaries and simulates only the next command. It does not repeat
 profile discovery or simulate the remaining suffix.
+The full staged prefix is still simulated for feasibility. Only its immediate
+transaction has final signing gas, fee estimates and admission; later
+`simulation.steps` are marked `provisional=True`. They are freshly poster-quoted,
+sized and exactly validated when they become next. A suffix simulation ceiling
+is never a future transaction's fee estimate.
 
 Atomic callers with an explicit signing gas policy may pass
 `fixed_final_envelope=LifecycleFinalEnvelope(gas=31_000_000)` to
