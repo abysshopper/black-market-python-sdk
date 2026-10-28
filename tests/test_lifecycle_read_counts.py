@@ -351,3 +351,47 @@ def test_fixed_envelope_also_applies_without_mining_or_buy_calibration():
     assert launch.transactions[0].gas_price == 7
     assert client.counts["eth_gasPrice"] == 0
     assert client.counts["eth_simulateV1"] == 2
+
+
+@pytest.mark.parametrize("retained,actual,accepted", [(None, 7, True), (0, 0, True), (0, 7, False)])
+@pytest.mark.parametrize("replacement", [False, True])
+@pytest.mark.parametrize("pending", [False, True])
+def test_observed_receipt_nonce_binds_retained_original_or_replacement(
+        prepared, retained, actual, accepted, replacement, pending):
+    _, client, launch = prepared
+    original = client.provider.make_request
+    effective = "0x" + ("dd" if replacement else "cc") * 32
+    def receipts(method, params):
+        if method == "eth_getTransactionReceipt":
+            assert params == [effective]
+            return {"result": None if pending else {
+                "blockNumber": "0x31", "blockHash": BLOCK_HASH, "status": "0x1"}}
+        if method == "eth_getTransactionByHash":
+            assert params == [effective]
+            return {"result": {"from": PRINCIPAL, "to": UFG_LAUNCH_PROXY_ADDRESS,
+                "input": build_ufg_launch_transactions(launch.plan, config=terms(), mode="atomic")[0].data,
+                "nonce": hex(actual), "value": hex(10**14)}}
+        return original(method, params)
+    client.provider.make_request = receipts
+    reference = LifecycleReceiptReference("0x" + "cc" * 32,
+        replacement_hash=effective if replacement else None, nonce=retained)
+    client.calls.clear()
+    if accepted:
+        progress = read_launch_progress(client, launch.plan, confirmations=2,
+            mode="atomic", receipts=(reference,), ufg=terms())
+        status, = progress.receipts
+        assert status.nonce == actual and status.replaced is replacement
+        assert status.status == ("pending" if pending else "confirmed")
+    else:
+        with pytest.raises(LifecyclePlanningError) as failure:
+            read_launch_progress(client, launch.plan, confirmations=2,
+                mode="atomic", receipts=(reference,), ufg=terms())
+        assert failure.value.code == "RECEIPT_NONCE"
+    assert client.counts["eth_getTransactionByHash"] == 1
+    assert client.counts["eth_getTransactionCount"] == 0
+
+
+@pytest.mark.parametrize("nonce", [-1, True, 1.5, "7", 1 << 64])
+def test_observed_receipt_nonce_requires_an_exact_uint64(nonce):
+    with pytest.raises(ValueError):
+        LifecycleReceiptReference("0x" + "cc" * 32, nonce=nonce)

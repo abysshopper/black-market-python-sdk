@@ -321,6 +321,8 @@ transaction nonce. The wallet assigns that nonce; `LaunchPlanV1.nonce` is still
 committed launch identity, including UFG principal namespacing. Optional
 `LifecycleReceiptReference.nonce` / receipt-status nonce records an actual submitted
 transaction, not a planning observation.
+If retained nonce evidence conflicts with the actual submitted/replacement
+transaction, reconciliation refuses it with `RECEIPT_NONCE`; it is not overwritten.
 Use the immediate envelope for review instead of another unreviewed planning pass.
 Before signing, call
 `build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`

@@ -2187,6 +2187,9 @@ def _receipt_status(client: Web3, plan: LaunchPlanV1, reference: LifecycleReceip
     transaction = rpc(client, "eth_getTransactionByHash", [effective])
     if transaction is not None and transaction.get("nonce") is not None:
         observed_nonce = quantity(transaction["nonce"])
+        if reference.nonce is not None and observed_nonce != reference.nonce:
+            raise LifecyclePlanningError("RECEIPT_NONCE",
+                "Submitted or replacement transaction differs from the retained nonce")
     if raw is None:
         return status("pending", reference.observed_block_number, reference.observed_block_hash)
     if transaction is None:

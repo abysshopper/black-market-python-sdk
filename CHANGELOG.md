@@ -3,6 +3,7 @@
 ## 0.15.0
 
 - Remove EOA nonce reads from lifecycle planning, progress, simulation and next-command construction. Unsigned envelopes omit nonce; optional receipt-reference/status nonce records actual submitted transaction evidence. Launch/domain nonces and UFG namespace identity are unchanged.
+- Reject an actual submitted/replacement nonce that conflicts with retained receipt evidence (`RECEIPT_NONCE`), using the existing transaction lookup without additional RPC calls.
 - Cache successful chain identity once per underlying client session, evict failed observations, and remove final chain rereads and nonce-based global-mempool quietness gates.
 - Batch `ArbGasInfo.getPricesInWei` at the same L2 pin. Its total L2 price supplies Robinhood's recommendation; a conservative EOA/Brotli data bound replaces per-transaction NodeInterface poster calls. Held reviewed gas prices remain exact.
 - Add `compute_lifecycle_opening_buys` and ordered `LifecycleOpeningBuyQuote` results for release-owned unopened curves, including overlap, bitmap-word rounding, dynamic opening minimum fees, dust and uint256 overflow branches. These mathematical quotes are not live-pool or execution proof.
