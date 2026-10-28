@@ -270,6 +270,59 @@ class CanonicalRpcScenario:
         self.block_hash = BLOCK_HASH
         self.base_fee_per_gas = 1
 
+    def lens_snapshot(self, transaction, tag):
+        from black_market_sdk import LAUNCH_LENS_ABI, LAUNCH_LENS_SNAPSHOT_COMPONENTS, LAUNCH_PLAN_COMPONENTS_V1
+        from black_market_sdk.lifecycle import (
+            _ERC20_READ_ABI, _encode_function, _json_tuple, _known_bound_deployment, _tuple_type,
+            encode_pool_bound_hook_parameters, predict_pool_bound_hook_address,
+        )
+        entry = LAUNCH_LENS_ABI[0]
+        types = [canonical_abi_type(item) for item in entry["inputs"]]
+        values, owner, spender, tokens, attempts = abi_decode(types, bytes.fromhex(transaction["data"][10:]))
+        request = launch_plan_from_dict(_json_tuple(LAUNCH_PLAN_COMPONENTS_V1, values))
+        number = self.block_number if tag == "latest" else int(tag, 16)
+        phase = self.latest_phase if number == self.block_number else self.confirmed_phase
+        predicted = vector().get("predictedToken", "0x1000000000000000000000000000000000000001")
+        balances = []
+        for token in tokens:
+            observations = []
+            for name, args in (("balanceOf", [owner]), ("allowance", [owner, spender])):
+                response = self.make_request("eth_call", [{"to": token,
+                    "data": _encode_function(_ERC20_READ_ABI, name, args)}, tag])
+                observations.append(abi_decode(["uint256"], bytes.fromhex(response["result"][2:]))[0])
+            balances.append((token, *observations))
+        hooks = []
+        for index, market in enumerate(request.markets):
+            if market.config_version not in (5, 6):
+                continue
+            deployment, parameters = _known_bound_deployment(request, index, predicted)
+            salt, hook = int(deployment.salt, 16), deployment.predicted_hook
+            found = False
+            if attempts:
+                for _ in range(attempts):
+                    if int(hook, 16) & 0x3fff == 0x1afc:
+                        found = True
+                        break
+                    salt += 1
+                    hook = predict_pool_bound_hook_address(deployer=deployment.deployer,
+                        init_code_hash=deployment.init_code_hash, salt=salt.to_bytes(32, "big"))
+            hooks.append((index, parameters.registrar, deployment.deployer,
+                encode_pool_bound_hook_parameters(parameters, config_version=market.config_version),
+                bytes.fromhex(deployment.init_code_hash[2:]), salt.to_bytes(32, "big"),
+                hook if found else ZERO, found))
+        prepared = []
+        if phase:
+            for index in range(len(request.markets)):
+                adapter, market = self.prepared_market(index)
+                success = not getattr(self, "live_failure", False)
+                prepared.append((index, adapter, market, success, (market[0][-1], 0, 0, False, 0),
+                    b"" if success else b"unavailable"))
+        balance = int(self.make_request("eth_getBalance", [owner, tag])["result"], 16)
+        snapshot = (request.chain_id, number, bytes.fromhex(self.block_hash[2:]),
+            request.deadline - 100, balance, balances, predicted, bytes.fromhex(launch_id_of(request)[2:]),
+            self.progress(phase), prepared, hooks)
+        return "0x" + abi_encode([_tuple_type(LAUNCH_LENS_SNAPSHOT_COMPONENTS)], [snapshot]).hex()
+
     def progress(self, phase):
         if phase == 0:
             return (b"\0" * 32, b"\0" * 32, ZERO, 0, 0, 0, ZERO, ZERO, ZERO, 0, 0, 0, 0, 0)
@@ -284,6 +337,8 @@ class CanonicalRpcScenario:
                 "input": build_lifecycle_calldata(self.plan, "beginLaunch"), "value": "0x0"}
         elif method == "eth_chainId":
             result = hex(self.plan.chain_id)
+        elif method == "eth_call" and params[0]["to"].lower() == "0xcb4bb3caca71fe52eace8170cf83e901418646f8":
+            result = self.lens_snapshot(params[0], params[1])
         elif method == "eth_call" and params[0]["data"][:10] == "0x" + keccak(text="findMany((address,bytes32,uint256,uint160)[],uint256)")[:4].hex():
             searches, attempts = abi_decode(["(address,bytes32,uint256,uint160)[]", "uint256"], bytes.fromhex(params[0]["data"][10:]))
             salts, hooks, found = [], [], []

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.1
+
+- Enable the deployed Robinhood (4663) planning lens in `LifecycleDeploymentPreset.launch_lens`, without caller configuration or API changes. The existing inspection lens is unchanged.
+- Deployment: `0xcb4bb3caca71fe52eace8170cf83e901418646f8`, transaction `0xafdf35fa50d2c3fe08f1ab231a4e5d5e4dd5629c57f14dfe0a3aff5b0b8404ff`, block `100095353`, runtime codehash `0xc19e86bfed47afbb6ff719293edd8fb8bb3399d5d017b3f533d90cc72e58f1d3`.
+
 ## 0.14.0
 
 - Pin each planning invocation once and batch same-block progress, prediction, Nitro limits, native balances, ERC20 balances and allowances through Multicall3 without a minimum batch size. Batch prepared-directory reads and dependent adapter reads in their respective stages.
@@ -73,4 +78,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.14.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.14.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
