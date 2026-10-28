@@ -85,6 +85,10 @@ def test_default_quote_calibration_requires_explicit_unknown_thresholds():
     with pytest.raises(ValueError):
         default_hmm_launch_config(token_budget=BUDGET, quote_asset="USDG", quote_decimals=True,
             max_bid_quote=1, reference_deviation=0)
+    for quote, decimals in (("USDG", 18), ("WETH", 6)):
+        with pytest.raises(ValueError, match="must match the supported quote asset"):
+            default_hmm_launch_config(token_budget=BUDGET, quote_asset=quote, quote_decimals=decimals,
+                max_bid_quote=1, reference_deviation=0)
 
 
 @pytest.mark.parametrize("field,value", [
