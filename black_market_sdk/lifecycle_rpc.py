@@ -20,6 +20,7 @@ from typing import Callable, Protocol
 import asyncio
 import inspect
 import re
+from weakref import WeakKeyDictionary
 
 from eth_utils import keccak
 from urllib.parse import urlsplit
@@ -136,10 +137,30 @@ def _transport_identity(client: Any) -> tuple[Any, ...]:
     return (provider, getattr(provider, "endpoint_uri", None),
             getattr(request, "__self__", None), getattr(request, "__func__", request))
 
+_session_lock = RLock()
+_session_facts: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def _capability_facts(source: Any) -> set[tuple[Any, ...]]:
+    """Successful transport capabilities survive pins, never mutable state."""
+    owner = getattr(source, "provider", None) or source
+    identity = tuple(value if isinstance(value, (str, int, type(None))) else id(value)
+        for value in _transport_identity(source))
+    with _session_lock:
+        try:
+            previous = _session_facts.get(owner)
+            if previous is None or previous[0] != identity:
+                previous = (identity, set())
+                _session_facts[owner] = previous
+            return previous[1]
+        except TypeError:
+            # A non-weak-referenceable custom client still supports uncached reads.
+            return set()
+
 
 
 class _LifecycleReadClient:
-    def __init__(self, source: Any) -> None:
+    def __init__(self, source: Any, *, verify_source: bool = True) -> None:
         self.source = source
         self.provider = getattr(source, "provider", None)
         self.on_diagnostic = getattr(source, "on_diagnostic", None)
@@ -164,7 +185,9 @@ class _LifecycleReadClient:
         self._chain_id: Future | None = None
         self._sequence = 0
         self.closed = False
-        self.nitro_proofs: set[tuple[Any, ...]] = set()
+        self.capabilities = _capability_facts(source)
+        self.verify_source = verify_source
+        self.lens_snapshots: dict[tuple[int, str, str], Any] = {}
         self.immutable_predictions: dict[str, str] = {}
         self._gas_prices: dict[tuple[int, str], int] = {}
         self._canonical_pins: dict[int, LaunchBlock] = {}
@@ -265,10 +288,11 @@ class _LifecycleReadClient:
 
     def finalize(self) -> None:
         self.assert_open()
-        for block in self._canonical_pins.values():
-            assert_canonical(self, block)
-        if self._expected_chain is not None:
-            assert_chain(self, self._expected_chain)
+        if self.verify_source:
+            for block in self._canonical_pins.values():
+                assert_canonical(self, block)
+            if self._expected_chain is not None:
+                assert_chain(self, self._expected_chain)
         for check in self.completion_checks:
             check()
         self.assert_open()
@@ -313,11 +337,11 @@ class _LifecycleReadClient:
             self._reads.clear()
             self._pending.clear()
             self._chain_id = None
-            self.nitro_proofs.clear()
             self.immutable_predictions.clear()
             self._gas_prices.clear()
             self._canonical_pins.clear()
             self.receipt_headers.clear()
+            self.lens_snapshots.clear()
             self.completion_checks.clear()
 
 
@@ -346,7 +370,7 @@ def read_invocation(stage: str):
                 client.assert_open()
                 with lifecycle_stage(client, stage):
                     return work(client, *args, **kwargs)
-            scope = _LifecycleReadClient(client)
+            scope = _LifecycleReadClient(client, verify_source=not stage.startswith("plan"))
             try:
                 with lifecycle_stage(scope, stage):
                     result = work(scope, *args, **kwargs)
@@ -366,7 +390,7 @@ def async_read_invocation(stage: str):
                 client.assert_open()
                 with lifecycle_stage(client, stage):
                     return await work(client, *args, **kwargs)
-            scope = _LifecycleReadClient(client)
+            scope = _LifecycleReadClient(client, verify_source=not stage.startswith("plan"))
             try:
                 with lifecycle_stage(scope, stage):
                     result = await work(scope, *args, **kwargs)
@@ -530,13 +554,16 @@ def read_block(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, tag: st
     block_hash = hex_bytes(raw["hash"])
     if len(block_hash) != 66:
         raise RuntimeError("Canonical block hash must have 32 bytes")
-    return LaunchBlock(
+    block = LaunchBlock(
         number=quantity(raw["number"]),
         block_hash=block_hash,
         timestamp=quantity(raw["timestamp"]),
         gas_limit=quantity(raw["gasLimit"]),
         base_fee_per_gas=quantity(raw["baseFeePerGas"]) if raw.get("baseFeePerGas") is not None else None,
     )
+    if isinstance(client, _LifecycleReadClient):
+        client.receipt_headers[block.number] = block
+    return block
 
 
 def assert_canonical(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, block: LaunchBlock) -> None:

@@ -48,7 +48,7 @@ def test_hmm_reserve_is_added_once_per_atomic_or_activation(monkeypatch, dynamic
     transaction = planned.transactions[0]
     reserve = 4_250_000 + 500_000 * (count - 1)
     assert transaction.gas_limit == provider.compute_gas + reserve
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [True]
 
 
 def test_hmm_reserve_is_not_added_to_begin_or_prepare(monkeypatch):
@@ -70,16 +70,16 @@ def test_non_hmm_plan_keeps_percentage_only_padding(monkeypatch, mode):
 
 
 @pytest.mark.parametrize("gross", [27_360_000, 31_000_000])
-def test_one_pool_hmm_atomic_uses_reserve_and_clamps_padding(monkeypatch, gross):
+def test_one_pool_hmm_atomic_uses_reserve_in_complete_envelope_budget(monkeypatch, gross):
     request = hmm_plan(1)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"compute_gas": gross})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert planned.admitted and planned.mode == "atomic"
-    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 32_000_000)
+    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 50_000_000)
     assert planned.transactions[0].gas_limit == expected
-    replay = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
-    assert int(replay["gas"], 16) == expected
+    measurement = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
+    assert int(measurement["gas"], 16) == 50_000_000
 
 
 def test_true_atomic_compute_overflow_still_refuses(monkeypatch):
@@ -125,7 +125,7 @@ def test_underestimated_packed_prepare_splits_at_near_ceiling_for_any_error(monk
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"] and error is not None:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1 and error is not None:
             for block, result in zip(params[0]["blockStateCalls"], response["result"]):
                 kind, args = provider.command(block["calls"][0])
                 if kind == "prepare" and args[2] > 1:
@@ -136,7 +136,7 @@ def test_underestimated_packed_prepare_splits_at_near_ceiling_for_any_error(monk
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
     assert planned.admitted
     assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [1, 1]
-    assert [payload["validation"] for payload in provider.simulations] == [False, False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [True, True]
 
 
 @pytest.mark.parametrize("cumulative_cap", [False, True])
@@ -148,7 +148,7 @@ def test_measurement_distinguishes_transport_exhaustion_from_semantic_failure(mo
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"]:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
             result = response["result"][-1]["calls"][0]
             result.update(status="0x0", returnData="0x" + keccak(text="SlippageExceeded()")[:4].hex(),
                           error={"code": 3, "message": "execution reverted"})
@@ -160,7 +160,7 @@ def test_measurement_distinguishes_transport_exhaustion_from_semantic_failure(mo
         assert planned.admitted
         assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
         assert planned.simulation.deferred_transaction_ids == ("activate",)
-        assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [3, 2]
+        assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [3]
     else:
         assert not planned.admitted
         assert planned.simulation.execution_proof == "failed"
@@ -178,7 +178,7 @@ def test_default_aggregate_cap_proves_prefix_and_defers_unpriced_suffix_then_rec
     assert planned.admitted and planned.limits.rpc_total_simulation_gas_limit == 50_000_000
     assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
     assert planned.simulation.deferred_transaction_ids == ("prepare:2:1", "activate")
-    assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [2, 2]
+    assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [2]
     assert planned.simulation.evidence.complete
     for transaction in (*planned.transactions, *planned.simulation.transactions):
         if transaction.step_id in planned.simulation.deferred_transaction_ids:
@@ -225,14 +225,14 @@ def test_no_prefix_refusal_prioritizes_compute_limit_over_rpc_budget(monkeypatch
     assert provider.simulations == []
 
 
-def test_owner_guard_collapses_planning_rpc_count(monkeypatch):
+def test_planning_pins_and_simulates_once(monkeypatch):
     request = hmm_plan(1)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert planned.admitted
-    assert provider.operations.count("eth_chainId") == 2
-    assert provider.operations.count("eth_getBlockByNumber") == 2
-    assert len(provider.operations) == 15  # Five invariant getters share one attested aggregate.
+    assert provider.operations.count("eth_chainId") == 1
+    assert provider.operations.count("eth_getBlockByNumber") == 1
+    assert provider.operations.count("eth_simulateV1") == 2
 
 
 def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
@@ -241,7 +241,7 @@ def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"]:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
             result = response["result"][-1]["calls"][0]
             result.update(status="0x0", gasUsed=hex(1_000_000), maxUsedGas=hex(1_000_000),
                 returnData="0x" + keccak(text="InvalidConfiguration()")[:4].hex(),
@@ -341,7 +341,7 @@ def test_exact_hmm_profile_estimates_are_global_but_unknown_profiles_get_no_rese
     assert _forwarding_reserve(unknown, "activate") == _forwarding_reserve(unknown, "atomic") == 0
 
 
-def test_unified_preparation_retains_only_owner_source_guards(monkeypatch):
+def test_unified_preparation_reuses_initial_pin_after_mining(monkeypatch):
     import asyncio
     from black_market_sdk.lifecycle import _known_bound_deployment, PoolBoundLifecycleDeployment
     from test_lifecycle import ORPHAN_HASH
@@ -358,7 +358,6 @@ def test_unified_preparation_retains_only_owner_source_guards(monkeypatch):
         provider.block_hash = ORPHAN_HASH
     planned = asyncio.run(lifecycle.prepare_and_plan_lifecycle_launch(client, request,
         account=request.creator, mode="atomic", on_progress=advance))
-    assert planned.admitted and planned.progress.head_block.number == 52
-    assert provider.operations.count("eth_chainId") == 2
-    assert provider.operations.count("eth_getBlockByNumber") == 3
-    assert len(provider.operations) == 17
+    assert planned.admitted and planned.progress.head_block.number == 51
+    assert provider.operations.count("eth_chainId") == 1
+    assert provider.operations.count("eth_getBlockByNumber") == 1

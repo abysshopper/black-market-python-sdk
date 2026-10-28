@@ -284,16 +284,35 @@ class CanonicalRpcScenario:
                 "input": build_lifecycle_calldata(self.plan, "beginLaunch"), "value": "0x0"}
         elif method == "eth_chainId":
             result = hex(self.plan.chain_id)
+        elif method == "eth_call" and params[0]["data"][:10] == "0x" + keccak(text="findMany((address,bytes32,uint256,uint160)[],uint256)")[:4].hex():
+            searches, attempts = abi_decode(["(address,bytes32,uint256,uint160)[]", "uint256"], bytes.fromhex(params[0]["data"][10:]))
+            salts, hooks, found = [], [], []
+            for deployer, init_hash, start, flags in searches:
+                for candidate in range(start, start + attempts):
+                    digest = keccak(b"\xff" + bytes.fromhex(deployer[2:]) + candidate.to_bytes(32, "big") + init_hash)[-20:]
+                    if int.from_bytes(digest, "big") & 0x3fff == flags:
+                        break
+                else:
+                    candidate, digest = start + attempts, bytes(20)
+                salts.append(candidate.to_bytes(32, "big"))
+                hooks.append("0x" + digest.hex())
+                found.append(digest != bytes(20))
+            result = "0x" + abi_encode(["bytes32[]", "address[]", "bool[]"], [salts, hooks, found]).hex()
+        elif method == "eth_call" and params[0]["to"].lower() == "0xca11bde05977b3631167028862be2a173976ca11" and params[0]["data"][:10] != "0x" + keccak(text="aggregate3((address,bool,bytes)[])")[:4].hex():
+            data = bytes.fromhex(params[0]["data"][2:])
+            assert data[:4] == keccak(text="getEthBalance(address)")[:4], "Nitro EVM block helpers are not L2 pins"
+            account = abi_decode(["address"], data[4:])[0]
+            balance = self.make_request("eth_getBalance", [account, params[1]])["result"]
+            result = "0x" + abi_encode(["uint256"], [int(balance, 16)]).hex()
         elif method == "eth_call" and params[0]["to"].lower() == "0xca11bde05977b3631167028862be2a173976ca11":
             calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(params[0]["data"][10:]))[0]
             self._in_multicall = True
             try:
                 results = []
                 for target, allow_failure, data in calls:
-                    assert allow_failure is False
                     response = self.make_request("eth_call", [{"to": target, "data": "0x" + data.hex()}, params[1]])
-                    assert "error" not in response
-                    results.append((True, bytes.fromhex(response["result"][2:])))
+                    assert "error" not in response or allow_failure
+                    results.append(("error" not in response, bytes.fromhex(response.get("result", "0x")[2:])))
                 result = "0x" + abi_encode(["(bool,bytes)[]"], [results]).hex()
             finally:
                 self._in_multicall = False
@@ -349,11 +368,6 @@ def test_orphaned_receipt_does_not_advance_canonical_progress_after_reload():
     assert progress.receipts[0].confirmations == 0
 
 
-def test_reorg_during_read_fails_instead_of_returning_cross_block_identity():
-    request = plan()
-    client = SimpleNamespace(provider=CanonicalRpcScenario(request, reorganize_during_read=True))
-    with pytest.raises(LaunchStateChanged):
-        read_launch_progress(client, request)
 
 
 def test_wallet_switch_cannot_build_a_different_creators_funding_transaction():
@@ -678,7 +692,7 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
             return {"result": hex(self.gas_price)}
         if method == "eth_call":
             transaction, tag = params
-            assert tag == hex(self.block_number) or transaction["data"][:10] == "0x" + function_signature("readLaunchProgress")[0].hex()
+            assert tag == "latest" or int(tag, 16) <= self.block_number
             target = transaction["to"].lower()
             if target == "0xca11bde05977b3631167028862be2a173976ca11":
                 return super().make_request(method, params)
@@ -710,13 +724,16 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
                 launch_id, index = abi_decode(types, calldata[4:])
                 assert launch_id == bytes.fromhex(launch_id_of(self.plan)[2:])
                 adapter, prepared = self.prepared_market(index)
-                assert target == ("0x" + f"{0xc1:040x}" if name == "market" else adapter)
+                from black_market_sdk import get_known_lifecycle_deployment, get_launch_addresses
+                preset = get_known_lifecycle_deployment(chain_id=self.plan.chain_id, orchestrator=self.plan.orchestrator)
+                directory = get_launch_addresses(self.plan.chain_id).directory.lower() if preset is not None else "0x" + f"{0xc1:040x}"
+                assert target == (directory if name == "market" else adapter)
                 entry = next(item for item in abi if item.get("name") == name and item["type"] == "function")
                 values = (adapter, prepared) if name == "market" else ((prepared[0][-1], 0, 0, False, 0),)
                 return {"result": "0x" + abi_encode([canonical_abi_type(item) for item in entry["outputs"]], values).hex()}
         if method == "eth_simulateV1":
             payload, tag = params
-            assert tag == hex(self.block_number)
+            assert int(tag, 16) <= self.block_number
             blocks = payload["blockStateCalls"]
             if len(blocks) == 1 and len(blocks[0]["calls"]) == 3:
                 self.probes.append(payload)
@@ -803,12 +820,13 @@ def test_complete_execution_has_separate_proof_protocol_and_transport_outcomes(k
     assert admission.admitted and admission.block_number == 51 and admission.block_hash == BLOCK_HASH
     assert admission.execution_proof == admission.protocol_fit == "proved"
     assert admission.transport_preflight == "not-requested"
-    assert [payload["validation"] for payload in fixture[1].simulations] == [False, True]
-    assert int(fixture[1].simulations[1]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 115_000
+    assert [payload["validation"] for payload in fixture[1].simulations] == [True]
+    assert result.transactions[0].gas_limit == 115_000
+    assert int(fixture[1].simulations[0]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 30_000_000
 
 
 @pytest.mark.parametrize("failure", ["revert", "missing-activation", "unsupported", "incomplete"])
-def test_permissive_measurement_alone_never_proves_complete_exact_replay(failure):
+def test_final_validated_measurement_rejects_execution_and_backend_failures(failure):
     fixture = admission_fixture(kind="atomic", replay_failure=failure)
     result = simulate_fixture(fixture)
     assert not result.admitted and result.protocol_fit == "unknown"
@@ -823,7 +841,7 @@ def test_known_envelope_policy_clamps_optional_headroom(cap_name):
     result = simulate_fixture(fixture)
     assert result.admitted and result.protocol_fit == result.execution_proof == "proved"
     assert result.transactions[0].gas_limit == 110_000
-    assert [payload["validation"] for payload in fixture[1].simulations] == [False, True]
+    assert [payload["validation"] for payload in fixture[1].simulations] == [True]
 
 
 @pytest.mark.parametrize("balance,admitted", [(115_009, True), (115_008, False)])
@@ -838,9 +856,9 @@ def test_generic_external_data_fee_is_added_once_and_affordability_is_exact(bala
     assert "data_fee" not in result.unknown_constraints
 
 
-def test_nitro_compute_and_actual_poster_data_are_separate_without_fee_double_charge():
+def test_nitro_validated_total_includes_actual_poster_without_double_charge():
     fixture = admission_fixture(nitro=True, compute_gas=20_000_000, poster_gas=10_000_000,
-                                actual_poster_gas=13_000_000, balance=34_500_000)
+                                actual_poster_gas=13_000_000, balance=37_950_000)
 
     def must_not_add_external_fee(*_):
         raise AssertionError("Nitro gas already includes the poster fee")
@@ -848,12 +866,13 @@ def test_nitro_compute_and_actual_poster_data_are_separate_without_fee_double_ch
     result = simulate_fixture(fixture, data_fee_estimator=must_not_add_external_fee)
     assert result.admitted and result.protocol_fit == result.execution_proof == "proved"
     transaction = result.transactions[0]
-    assert transaction.compute_gas_estimate == 20_000_000
-    assert transaction.gas_limit == 34_500_000 > fixture[4].execution_gas_ceiling
+    assert transaction.compute_gas_estimate is None
+    assert transaction.gas_estimate == 33_000_000
+    assert transaction.gas_limit == 37_950_000 > fixture[4].execution_gas_ceiling
     assert transaction.gas_used == 33_000_000 > fixture[4].execution_gas_ceiling
     assert transaction.poster_gas == transaction.poster_fee == 11_500_000
     assert transaction.data_fee == 0 and transaction.data_fee_included_in_gas
-    assert transaction.total_fee == transaction.maximum_execution_fee == 34_500_000
+    assert transaction.total_fee == transaction.maximum_execution_fee == 37_950_000
     assert fixture[4].arb_os_version == 50 and fixture[4].max_tx_compute_gas == 32_000_000
     assert fixture[4].max_block_compute_gas == 32_000_000
     assert fixture[4].transaction_gas_ceiling is None
@@ -1238,7 +1257,7 @@ def test_staged_nitro_planner_returns_measured_wire_gas_envelopes(monkeypatch, p
         assert transaction.as_transaction()["gas"] == transaction.gas_limit
         assert transaction.as_transaction()["gasPrice"] == transaction.gas_price
         assert transaction.maximum_execution_fee == transaction.gas_limit * transaction.gas_price
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [True]
     held = planned.transactions[0]
     current = build_next_transaction(client, planned, reviewed_transaction=held)
     assert current.as_transaction() == held.as_transaction()
@@ -1368,15 +1387,12 @@ def test_reviewed_next_does_not_remeasure_or_replay_future_envelopes(monkeypatch
     provider.poster_requests.clear()
     current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None)
     assert current.admission.admitted
-    assert current.gas_limit == (held.gas_limit if reviewed else 32_023_000)
+    assert current.gas_limit == held.gas_limit
     assert current.gas_price == (held.gas_price if reviewed else provider.gas_price)
     assert current.maximum_execution_fee == current.gas_limit * current.gas_price
-    assert [payload["validation"] for payload in provider.simulations] == ([True] if reviewed else [False, True, True])
-    if reviewed:
-        assert len(provider.simulations[0]["blockStateCalls"]) == 1
-        assert provider.poster_requests == []
-    else:
-        assert int(provider.simulations[-1]["blockStateCalls"][1]["calls"][0]["gas"], 16) == 32_023_000
+    assert [payload["validation"] for payload in provider.simulations] == [True]
+    assert len(provider.simulations[0]["blockStateCalls"]) == 1
+    assert len(provider.poster_requests) == (0 if reviewed else 1)
 
 
 @pytest.mark.parametrize("mode", ["atomic", "staged"])
@@ -1439,11 +1455,6 @@ def test_wide_internal_buffering_does_not_narrow_policy_provenance_or_fee_widths
             LaunchExecutionLimits(chain_id=value)
 
 
-def test_reorg_during_simulation_cannot_leave_execution_admission(monkeypatch):
-    lifecycle, request, _, client = wire_planning(monkeypatch,
-        scenario_options={"reorganize_during_read": True})
-    with pytest.raises(LaunchStateChanged):
-        lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
 
 
 def test_gross_requirement_not_refund_reduced_gas_usage_sets_reviewed_envelope(monkeypatch):
@@ -1507,29 +1518,14 @@ def test_fitting_final_activation_clamps_padding_and_remains_indivisible(monkeyp
     assert planned.plan_hash == hash_launch_plan(request)
 
 
-def test_active_source_chain_is_guarded_after_submission_preflight(monkeypatch):
-    _, request, provider, client = wire_planning(monkeypatch)
-    submission = SubmissionRpcScenario(request.chain_id)
-    original = submission.make_request
-
-    def response(method, params):
-        result = original(method, params)
-        if method == "eth_estimateGas":
-            provider.plan = replace(provider.plan, chain_id=request.chain_id + 1)
-        return result
-
-    monkeypatch.setattr(submission, "make_request", response)
-    with pytest.raises(LaunchStateChanged):
-        build_next_transaction(client, request, account=request.creator, mode="atomic",
-                               submission_client=SimpleNamespace(provider=submission))
 
 
-def test_nitro_headroom_rounds_compute_and_poster_budgets_separately():
+def test_nitro_headroom_rounds_complete_gas_without_adding_poster_again():
     result = simulate_fixture(admission_fixture(nitro=True, compute_gas=10_000_001, poster_gas=1))
     assert result.admitted
-    assert result.transactions[0].compute_gas_estimate == 10_000_001
+    assert result.transactions[0].compute_gas_estimate is None
     assert result.transactions[0].poster_gas == 2
-    assert result.transactions[0].gas_limit == 11_500_004
+    assert result.transactions[0].gas_limit == 11_500_003
 
 
 def test_zero_gas_price_remains_valid_when_actual_backend_accepts_exact_replay():
@@ -1545,38 +1541,6 @@ def test_byte_count_policy_cannot_cross_matching_safe_integer_boundary(name):
         LaunchExecutionLimits(**{name: 2**53})
 
 
-@pytest.mark.parametrize("nitro,phase", [
-    (False, "measurement"), (False, "replay"), (False, "affordability"),
-    (True, "probe"), (True, "measurement"), (True, "replay"), (True, "affordability"),
-])
-def test_source_chain_drift_with_unchanged_block_hash_cannot_complete_admission(monkeypatch, nitro, phase):
-    fixture = admission_fixture(nitro=nitro)
-    request, provider, _, _, _, _ = fixture
-    original = provider.make_request
-    drifted = False
-
-    def response(method, params):
-        nonlocal drifted
-        result = original(method, params)
-        if method == "eth_chainId" and drifted:
-            return {"result": hex(request.chain_id + 1)}
-        if method == "eth_simulateV1":
-            payload = params[0]
-            probe = len(payload["blockStateCalls"]) == 1 and len(payload["blockStateCalls"][0]["calls"]) == 3
-            current_phase = "probe" if probe else "replay" if payload["validation"] else "measurement"
-            if current_phase == phase:
-                drifted = True
-        elif method == "eth_getBalance" and phase == "affordability":
-            drifted = True
-        if method == "eth_getBlockByNumber":
-            assert result["result"]["hash"] == BLOCK_HASH
-        return result
-
-    monkeypatch.setattr(provider, "make_request", response)
-    with pytest.raises(LaunchStateChanged) as failure:
-        simulate_fixture(fixture)
-    assert failure.value.code == "CHAIN_MISMATCH"
-    assert drifted
 
 
 @pytest.mark.parametrize("headroom", [0, 1500, 2000, 10_000])
@@ -1622,11 +1586,6 @@ def test_discovery_cannot_request_a_non_uint64_physical_gas_envelope(gas):
             block=fixture[3], limits=fixture[4])
 
 
-def test_nitro_reviewed_compute_plus_poster_envelope_cannot_overflow_uint64():
-    fixture = admission_fixture(nitro=True, poster_gas=2**64 - 1)
-    result = simulate_fixture(fixture)
-    assert not result.admitted and result.execution_proof == "unavailable" and result.protocol_fit == "failed"
-    assert len(fixture[1].simulations) == 1
 
 
 @pytest.mark.parametrize("gas", [0, 2**64, 2**256, True, 1.5])

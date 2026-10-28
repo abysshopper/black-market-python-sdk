@@ -1,12 +1,12 @@
 # Launch guide
 
-Use SDK **0.13.0** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.14.0** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
 ## Choose an offering
 
-Run discovery before choosing a profile. These commands need neither funds nor a key:
+Use the shipped preset catalog below to choose a profile. These optional live audits need neither funds nor a key:
 
 ```sh
 python examples/quickstart.py
@@ -52,8 +52,9 @@ print(fixed.profile.id)
 
 Selectors return `None`/an empty tuple for an unknown deployment. A supported
 preset supplies construction fields, not current permission to execute.
-`read_lifecycle_profiles(client, orchestrator=addresses.orchestrator)` reads live
-eligibility; final planning checks the chosen profile again.
+`read_lifecycle_profiles(client, orchestrator=addresses.orchestrator)` is available
+for explicit live discovery. Normal known-profile planning uses release presets;
+on-chain enforcement and the final exact-calldata simulation determine execution.
 
 ## Price the launch
 
@@ -307,14 +308,19 @@ async def prepare_first_launch(client, draft):
 Use `asyncio.run(prepare_first_launch(client, draft))` from a synchronous program,
 or `await` it in an existing event loop. Keep the returned `launch.plan`, hash,
 mode, and confirmation policy: V4 salts and calibrated minima may change the draft.
-Preparation mines bound-hook salts locally, checks live admission/funding, and
-proves ordered execution. `plan_launch` is synchronous for an already-finalized plan.
+Preparation mines bound-hook salts with the preset's deployed miner, verifies the
+returned CREATE2 addresses locally, reads funding, and proves ordered execution.
+Without a configured miner it uses local mining. `plan_launch` is synchronous for
+an already-finalized plan.
 
 An admitted `launch.transactions[0]` includes its exact nonce, gas and gas price.
 Use it for review instead of running another unreviewed planning pass. Before signing,
 call `build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`
 once for fresh canonical progress and exact-envelope admission. Never use the stored
 planning result alone as fresh signing authority.
+Build-next retains receipt/nonce confirmation handling, but compiles the original
+preparation boundaries and simulates only the next command. It does not repeat
+profile discovery or simulate the remaining suffix.
 
 Atomic callers with an explicit signing gas policy may pass
 `fixed_final_envelope=LifecycleFinalEnvelope(gas=31_000_000)` to

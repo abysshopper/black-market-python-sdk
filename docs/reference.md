@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.13.0**.
+for SDK **0.14.0**.
 
 ## Resolve deployment addresses
 
@@ -19,7 +19,7 @@ be supplied explicitly in the plan; lookup does not rewrite a saved plan.
 | Fee-hub factory | `0xF14fD8D65D7833612A4bb909F1161731bb7039d3` |
 | Token factory | `0xd3cE64E49224a9a96075633f63761FE6BE22FE30` |
 | Funding escrow | `0x7bc77946CeF52A178583FCe1EEB7751983cEC703` |
-| Launch lens | `0xAce93e3910561aC67c6179c3a27F133F5Ef78F25` |
+| Existing launch inspection lens | `0xAce93e3910561aC67c6179c3a27F133F5Ef78F25` |
 | Fixed V4 adapter / deployer | `0xb334b44509a5237a39cE364c159913F14b6D1186` / `0x1Df787Cc099B047A606059Ac80A8296779266f9e` |
 | Dynamic V4 adapter / deployer | `0xDa8581E1241722154B44404a032C086708080519` / `0x59F83bC43A075C40c68dea444dcd9c639BE7F1E7` |
 | Collector factory | `0x43b394fE6865EE6797c60FCCcd33D7D765214b52` |
@@ -30,9 +30,10 @@ be supplied explicitly in the plan; lookup does not rewrite a saved plan.
 
 The core's deployment block is **82,880,313**. Start event scans there and chunk
 requests to the provider's block-range limit (the public RPC permits ≤10M).
-Read profiles with `read_lifecycle_profiles`; `get_known_lifecycle_deployment`,
-`get_known_lifecycle_profile`, and `list_known_lifecycle_profiles` supply local
-construction metadata. Live planning checks admission and dependencies again.
+Use `get_known_lifecycle_deployment`, `get_known_lifecycle_profile`, and
+`list_known_lifecycle_profiles` for release-owned construction metadata.
+`read_lifecycle_profiles` remains an explicit live audit, not a planning prerequisite.
+Final simulation and on-chain enforcement determine execution eligibility.
 
 ## Check plan limits
 
@@ -154,22 +155,25 @@ header gas field. Read failures stop admission.
 
 - `LaunchExecutionLimits.execution_gas_ceiling` caps compute;
   `transaction_gas_ceiling` is separate total-envelope policy.
-- Native `eth_simulateV1` measures gross compute using `maxUsedGas` when available,
-  otherwise `gasUsed`. `NodeInterface.gasEstimateL1Component()` at `0xc8` supplies
-  the exact-calldata poster budget. Both components receive integer headroom.
-- With gross requirement `G`, compute target is
+- Native `eth_simulateV1` runs the final calldata with `validation=True`. Its gross
+  `maxUsedGas` (or `gasUsed`) is the complete envelope, including native poster gas.
+  `compute_gas_estimate` is therefore unset rather than presenting total gas as compute.
+- `NodeInterface.gasEstimateL1Component()` at `0xc8` supplies one poster estimate
+  for the immediate final command. Calibration and later commands do not quote it.
+- With complete gross requirement `G`, the target is
   `max(G + R, ceil(G * (10000 + headroom_bps) / 10000))`. Default headroom: 1500 bps.
   For atomic/activation with HMM, `R = 4_250_000 + 500_000 * (hmm_markets - 1)`;
   other commands use zero. Reserve is applied once per transaction.
-- Optional targets clamp to real ceilings, then the exact envelope is replayed.
-  A hook can require free gas not visible in gas used; used-gas padding alone can fail.
+- Targets clamp to the available complete-envelope budget. The validated final
+  measurement is authoritative; no redundant replay or automatic rescue enlarges it.
+  Explicitly reviewed envelopes still receive one exact gas/price simulation.
 - Poster gas is already inside the envelope: `data_fee_included_in_gas=True`,
   `data_fee=0`, `total_fee=gas_limit * gas_price`. Do not add `poster_fee` again.
   Receipt/total gas can exceed the compute ceiling.
 - Initial legacy gas price is the larger of the fresh recommendation and twice the
   pinned base fee. Held reviewed envelopes retain their exact gas and gas price.
 - Native capability probing does not fund actual execution. Real affordability,
-  nonces, receipts, and exact replay use source state. Generic Anvil cannot prove
+  nonces, receipts, and final simulation use source state. Generic Anvil cannot prove
   Robinhood Nitro compute/poster enforcement.
 
 Preparation packing estimates **14.5M per HMM V2 market**, **16M otherwise**;
@@ -182,7 +186,7 @@ actual provider/account policy; its aggregate override is
 
 | Admission field | Values / meaning |
 | --- | --- |
-| `execution_proof` | `proved`, `failed`, `unavailable`: sequential proof and exact replay |
+| `execution_proof` | `proved`, `failed`, `unavailable`: validated sequential execution |
 | `protocol_fit` | `proved`, `failed`, `unknown`: protocol ceilings and supplied policy |
 | `transport_preflight` | `not-requested`, `passed`, `failed`: immediate submission-RPC estimate |
 
@@ -190,15 +194,24 @@ actual provider/account policy; its aggregate override is
 `LaunchSubmissionPreflightError` retains execution proof while marking transport
 failure. Do not treat a public RPC 429 as an economic revert or a gas-cap measurement.
 
-Lifecycle planning aggregates only the reviewed Robinhood deployment's
-caller-independent Nitro limits, factory token prediction and head progress.
-Multicall3 runtime is hash-attested at the same block. Poster quotes retain the
-exact caller/value and are never aggregated. Reads and fees reuse only within an
-open invocation and an exact canonical pin, except the reviewed immutable factory's
-deterministic token prediction, which survives the construction-to-execution pin
-transition inside that invocation. No cross-invocation proof or latest-state cache
-is introduced. The invocation checks every distinct proof/receipt block and the
-source chain once at its final boundary, after optional submission preflight.
+Lifecycle planning reads one authoritative L2 header, then batches independent
+progress, factory prediction, Nitro limits and funding balances/allowances at its
+explicit block number. Nitro's EVM `block.number`/`blockhash` and Multicall3's
+corresponding helpers expose L1 values, so they are never used as L2 pins.
+Prepared directory entries and dependent adapter reads are each one aggregate
+stage. Poster quotes preserve caller/value and are never aggregated.
+
+Successful Multicall3 runtime attestation, direct-EOA checks and Nitro capability
+proofs survive block changes for the same source transport session. Mutable reads
+and fees do not survive invocations. Planning does not re-pin after mining or add
+a final source-chain/canonical-header guard; actual receipt identity and
+confirmation reads remain.
+
+`LifecycleDeploymentPreset.hook_salt_miner` selects the deployed batched miner.
+The optional `launch_lens` selects the new `LAUNCH_LENS_ABI.snapshot` path inside
+the initial aggregate, including dependent prepared markets and hook candidates.
+It is unset until the owner deploys the new lens. This is not the older address
+returned by `get_launch_addresses().launch_lens` or `LAUNCH_LENS_V1_ABI`.
 
 `LifecycleFinalEnvelope(gas, gas_price=None)` is the optional exact atomic envelope
 for `prepare_and_plan_lifecycle_launch`. Unlike

@@ -74,7 +74,7 @@ See `references/audit-history.md`.
   **Dynamic Fee Hook** uses `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`, zero LP
   fee and zero developer bps with explicit config6 minimum/maximum/sensitivity.
   Copy its own graph and terms; the fixed profile remains the examples' selection.
-  Frozen metadata still requires fresh live eligibility and execution proof.
+  Frozen metadata is checked by final exact-calldata simulation and on-chain enforcement.
 - **HMM V2 Fixed** / **HMM V2 Dynamic** use `KnownLifecycleProfile.V4_HMM_FIXED_POOL`
   / `V4_HMM_DYNAMIC_POOL`, zero LP/developer fees and their own admitted V2 graph.
   Config6 must include `hmm_launch_config`; `default_hmm_launch_config` requires

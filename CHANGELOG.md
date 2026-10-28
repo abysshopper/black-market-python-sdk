@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.0
+
+- Pin each planning invocation once and batch same-block progress, prediction, Nitro limits, native balances, ERC20 balances and allowances through Multicall3 without a minimum batch size. Batch prepared-directory reads and dependent adapter reads in their respective stages.
+- Reuse successful Multicall3 runtime, direct-EOA and native-Nitro capability checks for the same transport session. Mutable balances, progress, allowances and limits remain invocation-local.
+- Use one validated final-calldata measurement instead of measurement followed by a second replay. Protected buys retain their separate calibration simulation. Quote Nitro poster gas once for the immediate final transaction only; validated total gas is not charged a second poster fee.
+- Build and simulate only the next canonical command after a receipt, preserving the original preparation boundaries and exact explicitly reviewed envelopes. Do not replan or reread profile metadata for the remaining launch.
+- Add `LifecycleDeploymentPreset.hook_salt_miner` and `.launch_lens`, `HOOK_SALT_MINER_ABI`, and the new `LAUNCH_LENS_ABI`. Robinhood uses the deployed batched miner and verifies its salts locally. The new dependent planning lens stays unset pending owner deployment; the existing inspection lens remains unchanged.
+- Use one authoritative L2 RPC header for the planning pin and issue the aggregate at its explicit block number. Nitro's EVM block-number/hash getters expose L1 values and are not used as L2 pins.
+
 ## 0.13.0
 
 - Aggregate the reviewed Robinhood Nitro getters, immutable factory prediction and head progress with pinned, runtime-attested Multicall3. Keep caller-sensitive poster estimates on their original direct path.
@@ -60,4 +69,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.13.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.14.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

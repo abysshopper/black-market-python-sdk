@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.13.0**, Python **3.10+**, import `black_market_sdk`.
+Package **0.14.0**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.13.0
+python -m pip install black-market-sdk==0.14.0
 ```
 
 For the runnable examples, install an editable checkout:
@@ -31,8 +31,9 @@ python examples/quickstart.py
 python examples/launch_matrix.py
 ```
 
-These commands read profile IDs, venues, admission, and refusal reasons. They do
-not need a key or send transactions. Select from live admission, not a fixed count.
+These optional audits read profile IDs, venues, admission, and refusal reasons.
+Use `list_known_lifecycle_profiles` for the shipped zero-RPC offering catalog;
+new registrations appear there when the SDK release is updated.
 
 ## Run your first launch
 
@@ -116,6 +117,10 @@ see [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
 Follow the [launch guide](docs/launch-guide.md) for pricing, signing, publication,
 recovery, and claims. Check **receipt confirmed → markets active → metadata
 published → API indexed** separately; an API timeout does not undo an open token.
+
+Version 0.14.0 batches planning reads, uses the deployed hook-salt miner, and proves
+only the immediate command in `build_next_transaction`. The optional planning-lens
+preset is not enabled until its separate deployment is configured.
 
 See [runner configuration](examples/README.md), [limits and codecs](docs/reference.md),
 [release changes](CHANGELOG.md), and the [MIT license](LICENSE).

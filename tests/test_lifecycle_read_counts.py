@@ -29,7 +29,6 @@ from black_market_sdk import (
     ROBINHOOD_MULTICALL3,
     UFG_DYNAMIC_PROFILE_ID,
     UFG_LAUNCH_PROXY_ADDRESS,
-    LaunchStateChanged,
     LifecycleAssetFunding,
     LifecycleFinalEnvelope,
     LifecycleInitialBuy,
@@ -116,20 +115,20 @@ def prepared():
 
 def assert_budget(client, *, calls, simulations, gas_prices=1, total):
     assert client.counts == Counter({
-        "eth_getBlockByNumber": 4, "eth_chainId": 2,
+        "eth_getBlockByNumber": 2, "eth_chainId": 1,
         "eth_getTransactionCount": 3, "eth_call": calls,
-        "eth_simulateV1": simulations, "eth_getCode": 2,
-        "eth_getBalance": 1, **({"eth_gasPrice": gas_prices} if gas_prices else {}),
+        "eth_simulateV1": simulations,
+        **({"eth_gasPrice": gas_prices} if gas_prices else {}),
     })
     assert len(client.calls) == total
 
 
-def test_protected_preparation_uses_one_fee_and_one_final_pin_guard(prepared):
+def test_protected_preparation_pins_once_and_keeps_calibration_separate(prepared):
     _, client, launch = prepared
-    assert client.counts == Counter({"eth_chainId": 2, "eth_getBlockByNumber": 5,
-        "eth_getTransactionCount": 3, "eth_call": 5, "eth_getBalance": 1,
-        "eth_gasPrice": 1, "eth_getCode": 2, "eth_simulateV1": 4})
-    assert len(client.calls) == 23
+    assert client.counts == Counter({"eth_chainId": 1, "eth_getBlockByNumber": 2,
+        "eth_getTransactionCount": 3, "eth_call": 4,
+        "eth_gasPrice": 1, "eth_getCode": 2, "eth_simulateV1": 3})
+    assert len(client.calls) == 16
     assert launch.transactions[0].nonce == launch.progress.pending_account_nonce
     config = decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config)
     assert len(config.positions) == 6 and config.ufg_launch_config == terms()
@@ -137,9 +136,9 @@ def test_protected_preparation_uses_one_fee_and_one_final_pin_guard(prepared):
 
 
 @pytest.mark.parametrize("entry,total,calls,simulations,prices", [
-    ("plan", 19, 3, 3, 1), ("simulate", 19, 3, 3, 1),
-    ("build", 19, 3, 3, 1), ("reviewed", 16, 2, 2, 0),
-    ("staged", 21, 5, 3, 1), ("staged-reviewed", 16, 2, 2, 0),
+    ("plan", 11, 3, 1, 1), ("simulate", 11, 3, 1, 1),
+    ("build", 11, 3, 1, 1), ("reviewed", 9, 2, 1, 0),
+    ("staged", 11, 3, 1, 1), ("staged-reviewed", 9, 2, 1, 0),
 ])
 def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations, prices):
     _, client, launch = prepared
@@ -165,13 +164,13 @@ def test_standalone_progress_retains_confirmation_and_pending_nonces(prepared):
     client.calls.clear()
     progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic")
     assert progress.confirmation_safe
-    assert client.counts == Counter({"eth_getBlockByNumber": 4, "eth_chainId": 2,
-        "eth_getTransactionCount": 3, "eth_call": 3})
-    assert len(client.calls) == 12
+    assert client.counts == Counter({"eth_getBlockByNumber": 2, "eth_chainId": 1,
+        "eth_getTransactionCount": 3, "eth_call": 2})
+    assert len(client.calls) == 8
     assert [call["params"][1] for call in client.calls if call["method"] == "eth_getTransactionCount"] == ["0x32", "0x33", "pending"]
 
 
-def test_submission_preflight_keeps_final_source_guard_without_duplicate_checkpoint(prepared):
+def test_submission_preflight_checks_its_provider_without_source_rechecks(prepared):
     _, client, launch = prepared
     client.calls.clear()
     original = client.provider.make_request
@@ -182,13 +181,13 @@ def test_submission_preflight_keeps_final_source_guard_without_duplicate_checkpo
     client.provider.make_request = respond
     result = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0], submission_client=client)
     assert result.admission.transport_preflight == "passed"
-    assert len(client.calls) == 19
-    assert client.counts["eth_chainId"] == 4
+    assert len(client.calls) == 12
+    assert client.counts["eth_chainId"] == 3
     estimate = next(index for index, call in enumerate(client.calls) if call["method"] == "eth_estimateGas")
-    assert [call["method"] for call in client.calls[estimate + 1:]] == ["eth_chainId", "eth_getBlockByNumber", "eth_getBlockByNumber", "eth_chainId"]
+    assert [call["method"] for call in client.calls[estimate + 1:]] == ["eth_chainId"]
 
 
-@pytest.mark.parametrize("price,expected_total", [(None, 21), (7, 20)])
+@pytest.mark.parametrize("price,expected_total", [(None, 15), (7, 14)])
 def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price, expected_total):
     draft = draft_plan()
     client = CountingTransport(NativeBuyScenario(draft))
@@ -203,7 +202,7 @@ def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price, ex
     assert [payload["validation"] for payload in executions] == [False, True]
     assert int(executions[-1]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 31_000_000
     poster_calls = [call for call in client.calls if call["method"] == "eth_call" and call["params"][0]["to"].lower().endswith("00c8")]
-    assert len(poster_calls) == 1  # Diagnostic only, never the fixed final calldata.
+    assert poster_calls == []  # Neither calibration nor an explicitly fixed envelope needs a quote.
 
 
 @pytest.mark.parametrize("envelope,mode", [
@@ -228,26 +227,12 @@ def test_held_fixed_envelope_failure_is_not_resized_or_remeasured(prepared):
         account=PRINCIPAL, mode="atomic", confirmations=2, ufg=terms(),
         fixed_final_envelope=LifecycleFinalEnvelope(31_000_000, 7)))
     assert not result.admitted
-    assert client.counts["eth_simulateV1"] == 2  # Capability + exact replay.
+    assert client.counts["eth_simulateV1"] == 1  # Successful session capability is reused.
     assert len(client.provider.simulations) == 1 and client.provider.simulations[0]["validation"]
     assert all(call["params"][0]["to"].lower() != "0x00000000000000000000000000000000000000c8"
         for call in client.calls if call["method"] == "eth_call")
 
 
-@pytest.mark.parametrize("pin", [50, 51])
-def test_finalizer_still_detects_reorg_at_both_used_proof_pins(prepared, pin):
-    _, client, launch = prepared
-    replayed = False
-    def reorganize(args, response):
-        nonlocal replayed
-        if args["method"] == "eth_simulateV1" and args["params"][0]["validation"]:
-            replayed = True
-        if replayed and args["method"] == "eth_getBlockByNumber" and args["params"][0] == hex(pin):
-            response["result"]["hash"] = ORPHAN_HASH
-    client.after_response = reorganize
-    with pytest.raises(LaunchStateChanged) as failure:
-        build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
-    assert failure.value.code == "STATE_REORGED"
 
 
 def test_multicall_attestation_rejects_changed_runtime_before_execution():
@@ -265,9 +250,9 @@ def test_multicall_attestation_rejects_changed_runtime_before_execution():
 def test_multicall_contains_no_caller_sensitive_poster_quote(prepared):
     _, client, _ = prepared
     aggregates = [call for call in client.calls if call["method"] == "eth_call" and call["params"][0]["to"].lower() == ROBINHOOD_MULTICALL3.lower()]
-    assert len(aggregates) == 1
-    subcalls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(aggregates[0]["params"][0]["data"][10:]))[0]
-    assert len(subcalls) == 4  # Preparation already observed the immutable prediction.
+    assert len(aggregates) == 2  # Head and the explicit two-confirmation observation.
+    subcalls = [entry for aggregate in aggregates for entry in abi_decode(
+        ["(address,bool,bytes)[]"], bytes.fromhex(aggregate["params"][0]["data"][10:]))[0]]
     assert not any(target.lower().endswith("00c8") for target, _, _ in subcalls)
     code = bytes.fromhex((Path(__file__).parent / "fixtures/multicall3-robinhood-runtime.hex").read_text().strip()[2:])
     assert "0x" + keccak(code).hex() == _LIFECYCLE_MULTICALL_CODE_HASH
@@ -304,8 +289,8 @@ def test_equal_receipt_blocks_share_headers_but_are_checked_after_identity_reads
     client.calls.clear()
     progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic", receipts=references)
     assert [receipt.status for receipt in progress.receipts] == ["confirmed", "confirmed"]
-    assert len(client.calls) == 18
-    assert len([call for call in client.calls if call["method"] == "eth_getBlockByNumber" and call["params"][0] == "0x31"]) == 2
+    assert len(client.calls) == 13
+    assert len([call for call in client.calls if call["method"] == "eth_getBlockByNumber" and call["params"][0] == "0x31"]) == 1
 
 
 def test_reviewed_nonce_cannot_be_rewritten_when_account_history_advances(prepared):
