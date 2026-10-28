@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.14.0** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.14.1** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 

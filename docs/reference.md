@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.14.0**.
+for SDK **0.14.1**.
 
 ## Resolve deployment addresses
 
@@ -234,8 +234,11 @@ confirmation reads remain.
 `LifecycleDeploymentPreset.hook_salt_miner` selects the deployed batched miner.
 The optional `launch_lens` selects the new `LAUNCH_LENS_ABI.snapshot` path inside
 the initial aggregate, including dependent prepared markets and hook candidates.
-It is unset until the owner deploys the new lens. This is not the older address
-returned by `get_launch_addresses().launch_lens` or `LAUNCH_LENS_V1_ABI`.
+Robinhood's release preset enables `0xcb4bb3caca71fe52eace8170cf83e901418646f8`
+automatically; callers supply no lens address. This is not the older inspection
+lens returned by `get_launch_addresses(4663).lens` or `LAUNCH_LENS_V1_ABI`.
+`launch_lens_code_hash` records the frozen runtime identity as deployment
+metadata; it does not add a guard-only RPC read.
 
 `LifecycleFinalEnvelope(gas, gas_price=None)` is the optional exact atomic envelope
 for `prepare_and_plan_lifecycle_launch`. Unlike

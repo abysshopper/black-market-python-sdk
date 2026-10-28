@@ -126,9 +126,9 @@ def assert_budget(client, *, calls, simulations, gas_prices=1, total):
 def test_protected_preparation_pins_once_and_keeps_calibration_separate(prepared):
     _, client, launch = prepared
     assert client.counts == Counter({"eth_chainId": 1, "eth_getBlockByNumber": 2,
-        "eth_getTransactionCount": 3, "eth_call": 4,
+        "eth_getTransactionCount": 3, "eth_call": 3,
         "eth_gasPrice": 1, "eth_getCode": 2, "eth_simulateV1": 3})
-    assert len(client.calls) == 16
+    assert len(client.calls) == 15
     assert launch.transactions[0].nonce == launch.progress.pending_account_nonce
     config = decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config)
     assert len(config.positions) == 6 and config.ufg_launch_config == terms()
@@ -187,7 +187,7 @@ def test_submission_preflight_checks_its_provider_without_source_rechecks(prepar
     assert [call["method"] for call in client.calls[estimate + 1:]] == ["eth_chainId"]
 
 
-@pytest.mark.parametrize("price,expected_total", [(None, 15), (7, 14)])
+@pytest.mark.parametrize("price,expected_total", [(None, 14), (7, 13)])
 def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price, expected_total):
     draft = draft_plan()
     client = CountingTransport(NativeBuyScenario(draft))

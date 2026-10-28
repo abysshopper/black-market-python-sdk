@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.14.0**, Python **3.10+**, import `black_market_sdk`.
+Package **0.14.1**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.14.0
+python -m pip install black-market-sdk==0.14.1
 ```
 
 For the runnable examples, install an editable checkout:
@@ -118,9 +118,9 @@ Follow the [launch guide](docs/launch-guide.md) for pricing, signing, publicatio
 recovery, and claims. Check **receipt confirmed → markets active → metadata
 published → API indexed** separately; an API timeout does not undo an open token.
 
-Version 0.14.0 batches planning reads, uses the deployed hook-salt miner, and proves
-only the immediate command in `build_next_transaction`. The optional planning-lens
-preset is not enabled until its separate deployment is configured.
+Version 0.14.1 enables Robinhood's deployed planning lens through the lifecycle
+preset automatically. Planning batches dependent reads and hook mining, and
+`build_next_transaction` proves only the immediate command.
 
 See [runner configuration](examples/README.md), [limits and codecs](docs/reference.md),
 [release changes](CHANGELOG.md), and the [MIT license](LICENSE).
