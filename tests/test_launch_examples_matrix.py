@@ -355,7 +355,7 @@ def test_executor_reorg_barrier_never_replays_orphaned_work(tmp_path, monkeypatc
         return receipt
     monkeypatch.setattr(example, "read_launch_progress", progress)
     monkeypatch.setattr(example, "build_next_transaction", next_transaction)
-    monkeypatch.setattr(example, "validate_envelope", lambda *_args: None)
+    monkeypatch.setattr(example, "validate_envelope", lambda *_args, **_options: None)
     monkeypatch.setattr(example, "wait_receipt", wait)
     wallet = SimpleNamespace(client=client, account=SimpleNamespace(address=CREATOR), send_transaction=send)
     api = SimpleNamespace(get_launch_upload_session=lambda *_args: metadata_session())

@@ -2770,7 +2770,15 @@ def _resolve_limits(client: Web3, source: LaunchExecutionLimits | LifecycleLimit
     preset = get_known_lifecycle_deployment(chain_id=chain_id, orchestrator=orchestrator)
     native_ceiling = (preset.native_transaction_gas_limit if preset is not None
                       and preset.native_transaction_gas_limit is not None else ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT)
-    raw_version = _read_nitro_uint(client, block, NITRO_ARB_SYS_ADDRESS, NITRO_ARB_SYS_ABI, "arbOSVersion", 256)
+    try:
+        raw_version = _read_nitro_uint(client, block, NITRO_ARB_SYS_ADDRESS, NITRO_ARB_SYS_ABI, "arbOSVersion", 256)
+        if raw_version < 105:
+            raise ValueError("ArbOS version 50 or newer is required (ArbSys raw version >= 105)")
+    except LaunchStateChanged:
+        raise
+    except Exception as error:
+        raise LifecyclePlanningError("NITRO_LIMITS_UNAVAILABLE",
+            f"Pinned Nitro version could not be established: {failure_reason(error)}") from None
     assert_policy()
     return replace(limits, protocol="nitro", execution_gas_ceiling=native_ceiling,
                    transaction_gas_ceiling=min(supplied_caps) if supplied_caps else None,
@@ -3392,7 +3400,8 @@ def _plan_launch(
         if isinstance(client, _LifecycleReadClient):
             client.completion_checks.append(assert_current)
         check_lifecycle_source(client, plan.chain_id, progress.block, block)
-        admitted = {transaction.step_id: transaction for transaction in simulation.transactions if transaction.admission is not None}
+        admitted = {transaction.step_id: transaction for transaction in simulation.transactions
+            if transaction.estimate is not None or transaction.kind in {"approve", "approve-reset"} and transaction.admission is not None}
         admission = LifecycleAdmission(simulation.admitted, simulation.confidence, resolved_limits,
             block.number, block.block_hash, account, plan.chain_id, simulation.execution_proof,
             simulation.protocol_fit, "; ".join(simulation.reasons) or None)

@@ -981,11 +981,17 @@ def test_nitro_version_read_failure_cannot_fabricate_native_context(override):
     assert provider.simulations == [] and provider.probes == []
 
 
-@pytest.mark.parametrize("raw,epoch", [(104, 49), (105, 50), (116, 61)])
+@pytest.mark.parametrize("raw,epoch", [(105, 50), (116, 61), (117, 62)])
 def test_native_preset_ceiling_is_independent_of_removed_dynamic_cap_getters(raw, epoch):
     fixture = admission_fixture(nitro=True, raw_version=raw, tx_cap=0, block_cap=0)
     assert fixture[4].arb_os_version == epoch
     assert fixture[4].execution_gas_ceiling == 32_000_000
+
+
+def test_pre_arbos50_native_context_refuses_with_the_parallel_sdk_error():
+    with pytest.raises(ValueError) as failure:
+        admission_fixture(nitro=True, raw_version=104)
+    assert failure.value.code == "NITRO_LIMITS_UNAVAILABLE"
 
 
 def test_nitro_generic_controlled_fork_cannot_claim_native_compute_proof():

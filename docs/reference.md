@@ -149,7 +149,9 @@ its selected profile's fee bounds, mode, oracle, and external-liquidity policy.
 
 On chain4663, the deployment preset supplies the fixed **32M total-gas ceiling**,
 including poster gas. `ArbSys.arbOSVersion()` at `0x64` selects the capacity epoch;
-subtract its returned version offset **55**. `ArbGasInfo.getPricesInWei()` at
+subtract its returned version offset **55**; ArbOS 50 or newer is required.
+An unavailable version or a raw value below 105 refuses with `NITRO_LIMITS_UNAVAILABLE`.
+`ArbGasInfo.getPricesInWei()` at
 `0x6c` supplies the same-block fee context. Dynamic max-transaction/max-block
 getters are not planning guards.
 

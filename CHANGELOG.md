@@ -14,8 +14,9 @@
 - Migrate example economic review artifacts to schema v2 and `openingBuys`, distinguishing local exact-curve quotes from actual simulated receipts.
 - Remove `submission_client`, `transport_preflight` and the dedicated submission-preflight error rather than replaying chain/gas-estimate guards after SDK admission. The wallet owns submission.
 - Use the preset's fixed native ceiling for every launch command (32M total gas on Robinhood, including poster gas), with generic chains retaining their resolved ceiling. Remove profile-sized signing gas, affordable-envelope resizing and `LifecycleFinalEnvelope`/`fixed_final_envelope`; reviewed gas must match the native ceiling. Approvals leave gas preparation to the wallet.
-- Profiles classify mode, not signing gas: atomic is a preference that can select staged, while explicitly staged remains staged. Proven-impossible activation refuses; uncertain activation requires exact full-sequence admission before begin.
+- Profiles classify mode, not signing gas: atomic is a preference that can select staged, while explicitly staged remains staged. Verify and publish with the returned mode without mutating shared example templates. Proven-impossible activation refuses; uncertain activation requires exact full-sequence admission before begin.
 - Refuse held prices below `max(ArbGasInfo.getPricesInWei()[5], block.baseFeePerGas)` without a bump, and refuse a fixed envelope above a real current caller ceiling. Retain explicit aggregate simulation policy without inventing a default cap.
+- Preserve the pinned ArbOS50 minimum: raw versions below105 or unavailable observations refuse with the parallel `NITRO_LIMITS_UNAVAILABLE` error.
 
 ## 0.14.1
 

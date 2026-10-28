@@ -1404,7 +1404,7 @@ def run(case, artifacts, cancellation, *, broadcast=False):
     artifacts.result["execution"] = "executed"
     artifacts.result["chain"]["status"] = "executing"
     receipt, hashes, references = execute_plan(client, launch, plan, artifacts, cancellation, wallet=wallet, api=api, recovery=recovery)
-    verify_chain(client, plan, case, predicted, receipt, hashes, references, artifacts, cancellation)
+    verify_chain(client, plan, {**case, "mode": launch.mode}, predicted, receipt, hashes, references, artifacts, cancellation)
     publish_activation(client, api, recovery, plan, predicted, receipt, references, 90, artifacts, cancellation)
     artifacts.enter("end-to-end-complete")
     return "Token launch and real API publication verified end-to-end"
@@ -1537,11 +1537,11 @@ def resume_launch_example(recovery_dir, cancellation):
             recovery["lastSession"] = verified
             artifacts.save("recovery.private.json", recovery, private=True)
             artifacts.event("image-verified", session=verified)
-        verify_chain(client, launch.plan, case, predicted, receipt, [], tuple(references), artifacts, cancellation)
+        verify_chain(client, launch.plan, {**case, "mode": launch.mode}, predicted, receipt, [], tuple(references), artifacts, cancellation)
         publish_activation(client, api, recovery, launch.plan, predicted, receipt, tuple(references), 90, artifacts, cancellation)
         return "Active token launch publication verified end-to-end (resumed)"
     receipt, hashes, references = execute_plan(client, launch, launch.plan, artifacts, cancellation, wallet=wallet, api=api, recovery=recovery)
-    verify_chain(client, launch.plan, case, predicted, receipt, hashes, references, artifacts, cancellation)
+    verify_chain(client, launch.plan, {**case, "mode": launch.mode}, predicted, receipt, hashes, references, artifacts, cancellation)
     publish_activation(client, api, recovery, launch.plan, predicted, receipt, references, 90, artifacts, cancellation)
     return "Token launch resumed and real API publication verified end-to-end"
 
