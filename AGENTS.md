@@ -18,8 +18,9 @@ Read the relevant skill before working on those paths.
 - Consumer code imports `black_market_sdk`; source lives in `black_market_sdk/`.
 - Use SDK address/ABI/client helpers; do not copy deployment addresses into apps.
 - Select the intended chain explicitly. Use integer token units, never floats.
-- Use release lifecycle presets for profiles and deployment wiring; final simulation and on-chain enforcement replace repeated guard-only reads.
+- Use release lifecycle presets for profiles and deployment wiring. Known internal steps use explicit gas profiles; Kyber-funded execution and consuming activation retain exact simulation. On-chain enforcement and the wallet remain authorities.
 - On Nitro, pin reads to one L2 RPC header. EVM block-number/hash helpers expose L1 values, not L2 pins.
+- Observe chain identity at most once per client session. Planning/building never reads EOA transaction counts or assigns wallet nonces; launch/domain nonces and UFG namespace identity are unchanged.
 - Keep launch cases independently runnable with one command and no arguments.
 - Load secrets from the environment or an existing `.env`; never overwrite it.
 - Keep package and `black_market_sdk.__version__` versions consistent.

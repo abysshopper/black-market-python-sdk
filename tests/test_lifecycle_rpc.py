@@ -15,6 +15,7 @@ from black_market_sdk.lifecycle_rpc import (
     create_controlled_launch_fork,
     pinned_rpc,
     read_block,
+    read_chain_id,
     read_invocation,
     rpc,
     simulate_transactions,
@@ -30,7 +31,6 @@ PINNED = {
         "number": "0x7", "hash": "0x" + "aa" * 32,
         "timestamp": "0x100", "gasLimit": "0x1c9c380", "baseFeePerGas": "0x1",
     },
-    "nonces": {CREATOR: 2, OTHER_CREATOR: 3},
 }
 
 
@@ -42,8 +42,6 @@ def mismatched(field):
         state["header"]["number"] = "0x8"
     elif field == "block hash":
         state["header"]["hash"] = "0x" + "bb" * 32
-    elif field == "creator nonce":
-        state["nonces"][OTHER_CREATOR] += 1
     return state
 
 
@@ -62,8 +60,6 @@ class ForkStateRpc:
             result = hex(self.state["chain"])
         elif method == "eth_getBlockByNumber":
             result = self.state["header"]
-        elif method == "eth_getTransactionCount":
-            result = hex(self.state["nonces"][params[0]])
         elif method in {"anvil_reset", "hardhat_reset"}:
             self.resets += 1
             self.state = deepcopy(self.reset_state)
@@ -98,12 +94,12 @@ def scenario(*, fork_state=PINNED, reset_state=PINNED, cleanup=True, **fork_opti
         client=SimpleNamespace(provider=provider), isolated=True,
         source_rpc_url=SOURCE_URL, **fork_options,
     )
-    transactions = [{"from": creator, "to": CREATOR, "gas": 30000} for creator in PINNED["nonces"]]
+    transactions = [{"from": creator, "to": CREATOR, "gas": 30000} for creator in (CREATOR, OTHER_CREATOR)]
     return source, fork, read_block(source), transactions
 
 
 @pytest.mark.parametrize("validation", [False, True])
-@pytest.mark.parametrize("field", ["chain ID", "block number", "block hash", "creator nonce"])
+@pytest.mark.parametrize("field", ["chain ID", "block number", "block hash"])
 def test_reset_result_must_match_every_pinned_state_dimension(field, validation):
     source, fork, block, transactions = scenario(
         fork_state=mismatched("block hash"), reset_state=mismatched(field),
@@ -115,16 +111,6 @@ def test_reset_result_must_match_every_pinned_state_dimension(field, validation)
     assert fork.client.provider.execution_operations == []
     reset = next(params for method, params in fork.client.provider.calls if method == "anvil_reset")
     assert reset == [{"forking": {"jsonRpcUrl": SOURCE_URL, "blockNumber": block.number}}]
-
-
-@pytest.mark.parametrize("validation", [False, True])
-def test_later_creator_nonce_mismatch_is_refused_before_snapshot(validation):
-    source, fork, block, transactions = scenario(fork_state=mismatched("creator nonce"))
-    with pytest.raises(LaunchStateChanged):
-        simulate_transactions(source, transactions, block=block, limits=LaunchExecutionLimits(),
-            fork=fork, validation=validation, force_owned_fork=True)
-    assert fork.client.provider.resets == 0
-    assert fork.client.provider.execution_operations == []
 
 
 @pytest.mark.parametrize("options", [
@@ -227,6 +213,31 @@ def test_exact_pinned_wire_reads_reuse_only_within_one_invocation():
     assert failure.value.code == "READ_SCOPE_CLOSED"
     repeated_reads(client, block)
     assert len(client.calls) == 12
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_chain_identity_is_observed_once_per_client_across_invocations(wrapped):
+    transport = ReadRpc()
+    client = SimpleNamespace(request=transport.request) if wrapped else transport
+
+    @read_invocation("plan")
+    def observe(scoped):
+        return read_chain_id(scoped)
+
+    assert observe(client) == observe(client) == read_chain_id(client) == 0x1234
+    assert transport.calls == [{"method": "eth_chainId", "params": []}]
+    other = ReadRpc()
+    assert observe(other) == 0x1234
+    assert other.calls == [{"method": "eth_chainId", "params": []}]
+
+
+def test_failed_session_chain_observation_can_recover():
+    client = ReadRpc()
+    client.failure = RuntimeError("chain observation unavailable")
+    with pytest.raises(LaunchRpcError, match="eth_chainId failed"):
+        read_chain_id(client)
+    assert read_chain_id(client) == read_chain_id(client) == 0x1234
+    assert client.calls == [{"method": "eth_chainId", "params": []}] * 2
 
 
 @pytest.mark.parametrize("method,params", [
@@ -377,3 +388,42 @@ def test_execution_errors_and_exhausted_throttling_are_not_retried_forever(monke
     with pytest.raises(LaunchRpcError):
         rpc(SimpleNamespace(provider=throttled), "eth_blockNumber", [])
     assert throttled.calls == 4
+
+
+def test_value_equal_clients_do_not_share_a_chain_identity():
+    class EqualRpc(ReadRpc):
+        def __init__(self, chain):
+            super().__init__()
+            self.chain = chain
+        def __eq__(self, other):
+            return isinstance(other, EqualRpc)
+        def __hash__(self):
+            return 1
+        def request(self, args):
+            self.calls.append(deepcopy(args))
+            return hex(self.chain)
+
+    first, second = EqualRpc(4663), EqualRpc(31337)
+    assert first == second
+    assert read_chain_id(first) == read_chain_id(first) == 4663
+    assert read_chain_id(second) == read_chain_id(second) == 31337
+    assert len(first.calls) == len(second.calls) == 1
+
+
+def test_account_code_fact_is_shared_across_pins_but_not_accounts():
+    from black_market_sdk.lifecycle_rpc import _read_lifecycle_account_code
+    client = ReadRpc()
+    block = read_block(SimpleNamespace(provider=ForkStateRpc(SOURCE_URL, PINNED)))
+
+    @read_invocation("plan")
+    def observe(scoped, account, pinned):
+        return _read_lifecycle_account_code(scoped, account, 31337, pinned)
+
+    assert observe(client, CREATOR, block) == "0x1234"
+    later = replace(block, number=block.number + 1, block_hash="0x" + "bb" * 32)
+    assert observe(client, CREATOR, later) == "0x1234"
+    assert observe(client, OTHER_CREATOR, later) == "0x1234"
+    assert client.calls == [
+        {"method": "eth_getCode", "params": [CREATOR, block.tag]},
+        {"method": "eth_getCode", "params": [OTHER_CREATOR, later.tag]},
+    ]

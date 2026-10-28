@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.0
+
+- Remove EOA nonce reads from lifecycle planning, progress, simulation and next-command construction. Unsigned envelopes omit nonce; optional receipt-reference/status nonce records actual submitted transaction evidence. Launch/domain nonces and UFG namespace identity are unchanged.
+- Cache successful chain identity once per underlying client session, evict failed observations, and remove final chain rereads and nonce-based global-mempool quietness gates.
+- Batch `ArbGasInfo.getPricesInWei` at the same L2 pin. Its total L2 price supplies Robinhood's recommendation; a conservative EOA/Brotli data bound replaces per-transaction NodeInterface poster calls. Held reviewed gas prices remain exact.
+- Add `compute_lifecycle_opening_buys` and ordered `LifecycleOpeningBuyQuote` results for release-owned unopened curves, including overlap, bitmap-word rounding, dynamic opening minimum fees, dust and uint256 overflow branches. These mathematical quotes are not live-pool or execution proof.
+- Extend admission with explicit `profiled` confidence/protocol fit and `not-run` execution proof. Profile estimates have no invented `gas_used`; `LaunchSimulation.gas_profile` carries versioned estimates and opening quotes.
+- Prove conversion-funded stages through activation in one validated native request, including zero-buy activation. Opaque-router begin/atomic sizing uses the native compute ceiling, not a small static router allowance. Explicit simulation still executes covered templates; no incomplete prefix is admitted.
+- Require an admitted `PlannedLaunch` before starting approvals/begin. Retire the Python-only raw unstarted build-next path without implicit whole-sequence replanning or new RPC guards. Raw already-started recovery, terminal reads and cancellation remain available.
+- Remove UFG principal/config-hash mapping guard reads. Original submitted begin/atomic calldata still binds the treasury config during receipt reconciliation; Python progress callers supply `ufg=config` for that context.
+- Migrate example economic review artifacts to schema v2 and `openingBuys`, distinguishing local exact-curve quotes from actual simulated receipts.
+- Remove `submission_client`, `transport_preflight` and the dedicated submission-preflight error rather than replaying chain/gas-estimate guards after SDK admission. The wallet owns submission.
+- Remove the invented default aggregate simulation cap; explicit caller policy remains. A conservative profile crossing a real envelope/budget boundary selects one capped exact native proof, not a false static refusal.
+
 ## 0.14.1
 
 - Enable the deployed Robinhood (4663) planning lens in `LifecycleDeploymentPreset.launch_lens`, without caller configuration or API changes. The existing inspection lens is unchanged.
@@ -78,4 +92,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.14.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.15.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

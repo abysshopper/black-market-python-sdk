@@ -596,7 +596,7 @@ def test_unified_admission_retains_actual_final_planned_launch(construct_case, m
     progress = lifecycle.LaunchProgress(
         **fields, mode=case["mode"], block=block, head_block=block, awaiting_confirmations=False,
         canonical=canonical, head=canonical, confirmation_depth=1,
-        confirmed_account_nonce=0, head_account_nonce=0, pending_account_nonce=0, confirmation_safe=True,
+        confirmation_safe=True,
     )
     simulation = lifecycle.LaunchSimulation(
         "stateful", True, block, "eth_simulateV1", (), (), LaunchRpcSimulation("stateful", "eth_simulateV1", block, ()),
@@ -756,8 +756,7 @@ def test_executor_refuses_changed_held_envelope_before_signing(tmp_path, monkeyp
     plan = token_draft()
     client = object()
     artifacts = Artifacts(tmp_path / "held", "boundary-case")
-    held = lifecycle.LifecycleTransaction("atomic", "atomic", 4663, CREATOR, plan.orchestrator, "0x01", 0, 0, (), (),
-                                          gas_limit=100000, gas_price=1)
+    held = lifecycle.LifecycleTransaction("atomic", "atomic", 4663, CREATOR, plan.orchestrator, "0x01", 0, (), (), gas_limit=100000, gas_price=1)
     changed = held.as_transaction()
     changed[field] = value
     calls = []
@@ -1052,7 +1051,7 @@ def proved_review_launch(plan):
               tuple(350 * 10**18 * b.quote_amount_in // 10**15 for b in plan.buys))
     call = SimpleNamespace(success=True, return_data="0x" + encode([abi_type], [values]).hex())
     return SimpleNamespace(plan=plan, plan_hash=example.hash_launch_plan(plan), mode="atomic",
-                           simulation=SimpleNamespace(transactions=[SimpleNamespace(kind="atomic")],
+                           simulation=SimpleNamespace(confidence="stateful", transactions=[SimpleNamespace(kind="atomic")],
                                                       evidence=SimpleNamespace(calls=[call])))
 
 
@@ -1065,10 +1064,10 @@ def test_economic_review_retains_hash_as_provenance_and_reports_proved_all_in_pr
     review, digest = example.review_economics(launch, artifacts, example.Cancellation())
     saved = json.loads((artifacts.directory / "economic-review.json").read_text())
     assert not (artifacts.directory / "economic-admission.json").exists()
-    output = int(saved["review"]["simulatedBuys"][0]["tokenOut"])
-    assert saved["review"]["simulatedBuys"][0]["allInExecutionUnitPriceUsdX18"] == str(
+    output = int(saved["review"]["openingBuys"][0]["tokenOut"])
+    assert saved["review"]["openingBuys"][0]["allInExecutionUnitPriceUsdX18"] == str(
         plan.buys[0].quote_amount_in * 2486280000000000000000 // output)
-    assert int(saved["review"]["simulatedBuys"][0]["feesAndPriceImpactPremiumBps"]) > 0
+    assert int(saved["review"]["openingBuys"][0]["feesAndPriceImpactPremiumBps"]) > 0
     assert saved["review"]["quotes"][0]["apiOrigin"] == API_ORIGIN
     assert saved["review"]["quotes"][0]["sourceTimestamp"] == "1791552898"
     assert saved["review"]["quotes"][0]["retrievedAt"] == str(PRICE_RETRIEVED_AT)
@@ -1256,3 +1255,25 @@ def test_visible_api_origin_never_exposes_endpoint_credentials_paths_or_queries(
     redactor.remember_url(API_ORIGIN)
     assert redactor({"apiOrigin": API_ORIGIN}) == {"apiOrigin": API_ORIGIN}
     assert redactor({"apiOrigin": unsafe}) == {"apiOrigin": support.REDACTED}
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(construct_case, complete):
+    _, plan, predicted, artifacts = construct_case("launch_erc20_abyss.py")
+    quotes = tuple(lifecycle.LifecycleOpeningBuyQuote(index, buy.market_index,
+        buy.quote_amount_in, buy.quote_amount_in, 10**18, 1 << 96)
+        for index, buy in enumerate(plan.buys)) if complete else ()
+    launch = SimpleNamespace(plan=plan, predicted_token=predicted,
+        simulation=SimpleNamespace(confidence="profiled",
+            gas_profile=lifecycle.LifecycleGasProfile("test-profile", {}, quotes),
+            transactions=(), evidence=SimpleNamespace(calls=())))
+    if complete:
+        rows = example.opening_buy_review(launch, artifacts.economic_pricing)
+        assert len(rows) == len(plan.buys)
+        assert all(row["quoteEvidence"] == "local-exact-curve" and row["tokenOut"] == str(10**18)
+            for row in rows)
+    else:
+        with pytest.raises(ExampleFailure) as failure:
+            example.opening_buy_review(launch, artifacts.economic_pricing)
+        assert failure.value.code == "INVALID_ECONOMIC_PROOF"
+    artifacts.finish()

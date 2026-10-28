@@ -10,7 +10,7 @@ from black_market_sdk import (
     build_launch_transactions, build_next_transaction,
     encode_lifecycle_pool_bound_v4_market_config, get_known_lifecycle_profile,
 )
-from black_market_sdk.lifecycle import _groups, _protect_ordered_buy_minimums
+from black_market_sdk.lifecycle import _groups
 from test_hmm import CORE, hmm_config
 from test_lifecycle import plan, topology_plan, wire_planning
 
@@ -81,7 +81,7 @@ def test_one_pool_hmm_atomic_uses_reserve_in_complete_envelope_budget(monkeypatc
         scenario_options={"compute_gas": gross})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert planned.admitted and planned.mode == "atomic"
-    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 50_000_000)
+    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 32_000_000)
     assert planned.transactions[0].gas_limit == expected
     measurement = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
     assert int(measurement["gas"], 16) == 32_000_000
@@ -155,17 +155,19 @@ def test_measurement_distinguishes_transport_exhaustion_from_semantic_failure(mo
         response = original(method, params)
         if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1 and provider.command(params[0]["blockStateCalls"][-1]["calls"][0])[0] == "activate":
             result = response["result"][-1]["calls"][0]
-            result.update(status="0x0", returnData="0x" + keccak(text="SlippageExceeded()")[:4].hex(),
-                          error={"code": 3, "message": "execution reverted"})
+            result.update(status="0x0",
+                returnData="0x" if cumulative_cap else "0x" + keccak(text="SlippageExceeded()")[:4].hex(),
+                error={"code": -32000 if cumulative_cap else 3,
+                    "message": "out of gas" if cumulative_cap else "execution reverted"})
         return response
     monkeypatch.setattr(provider, "make_request", respond)
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
         limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=35_000_000 if cumulative_cap else 50_000_000))
     if cumulative_cap:
-        assert planned.admitted
-        assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
-        assert planned.simulation.deferred_transaction_ids == ("activate",)
-        assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [3, 2]
+        assert not planned.admitted
+        assert planned.simulation.execution_proof == "unavailable"
+        assert planned.simulation.capacity_constraint == "simulation-gas"
+        assert planned.simulation.failure_category == "source"
     else:
         assert not planned.admitted
         assert planned.simulation.execution_proof == "failed"
@@ -175,25 +177,20 @@ def test_measurement_distinguishes_transport_exhaustion_from_semantic_failure(mo
         assert len(provider.simulations) == 1
 
 
-def test_default_aggregate_cap_proves_prefix_and_defers_unpriced_suffix_then_recovers(monkeypatch):
+def test_no_default_aggregate_cap_proves_whole_sequence_and_retains_unsigned_suffix(monkeypatch):
     request = hmm_plan(3)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"prepare_gas_per_market": 14_000_000, "compute_gas_by_kind": {"begin": 8_500_000, "activate": 18_000_000}})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert planned.admitted and planned.limits.rpc_total_simulation_gas_limit == 50_000_000
+    assert planned.admitted and planned.limits.rpc_total_simulation_gas_limit is None
     assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
-    assert planned.simulation.deferred_transaction_ids == ("prepare:2:1", "activate")
-    assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [2, 2]
+    assert planned.simulation.deferred_transaction_ids == ()
+    assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [4, 4]
     assert planned.simulation.evidence.complete
-    for index, transaction in enumerate(planned.transactions):
-        if index == 0:
-            assert transaction.admission.admitted and transaction.gas_limit is not None
-        else:
-            assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
-    assert planned.simulation.steps[1].provisional
-    with pytest.raises(ValueError, match="activation outputs beyond the proven simulation prefix") as error:
-        _protect_ordered_buy_minimums(planned, 500)
-    assert error.value.code == "LAUNCH_DIAGNOSTIC_FAILED"
+    assert planned.transactions[0].admission.admitted
+    for transaction in planned.transactions[1:]:
+        assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
+    assert all(step.provisional for step in planned.simulation.steps[1:])
     provider.latest_phase = provider.confirmed_phase = LifecyclePhase.READY
     immediate = build_next_transaction(client, planned)
     assert immediate.kind == "activate" and immediate.admission.admitted
@@ -211,26 +208,19 @@ def test_explicit_aggregate_override_can_prove_whole_sequence(monkeypatch):
     assert all(step.success and step.provisional for step in planned.simulation.steps[1:])
 
 
-@pytest.mark.parametrize("count,compute_cap,rpc_cap,constraint,reason", [
-    (2, 32_000_000, 50_000_000, "compute",
-     "Atomic launch needs about 55.3M gas, above the 32.0M per-transaction limit; use staged"),
-    (1, 64_000_000, 30_000_000, "simulation-gas",
-     "RPC aggregate simulation gas cap cannot fit the immediate transaction estimate"),
+@pytest.mark.parametrize("count,compute_cap,rpc_cap", [
+    (2, 32_000_000, 50_000_000), (1, 64_000_000, 30_000_000),
 ])
-def test_no_prefix_refusal_prioritizes_compute_limit_over_rpc_budget(monkeypatch, count, compute_cap, rpc_cap, constraint, reason):
+def test_static_forecasts_do_not_refuse_actual_atomic_execution(monkeypatch, count, compute_cap, rpc_cap):
     request = hmm_plan(count)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"tx_cap": compute_cap, "block_cap": compute_cap})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
         limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=rpc_cap))
-    assert not planned.admitted and planned.simulation.execution_proof == "unavailable"
-    assert planned.simulation.deferred_transaction_ids == ("atomic",)
-    assert planned.simulation.failure_category == "capacity"
-    assert planned.simulation.capacity_constraint == constraint
-    assert planned.simulation.reasons[0] == reason
-    if constraint == "compute":
-        assert planned.simulation.reasons == (reason,)
-    assert provider.simulations == []
+    assert planned.admitted and planned.mode == "atomic"
+    assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
+    assert planned.simulation.deferred_transaction_ids == ()
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
 
 
 def test_plain_planning_pins_once_then_sizes_and_exactly_validates(monkeypatch):
@@ -251,10 +241,11 @@ def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
     def respond(method, params):
         response = original(method, params)
         if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
-            result = response["result"][-1]["calls"][0]
-            result.update(status="0x0", gasUsed=hex(1_000_000), maxUsedGas=hex(1_000_000),
-                returnData="0x" + keccak(text="InvalidConfiguration()")[:4].hex(),
-                error={"code": 3, "message": "execution reverted"})
+            for block, output in zip(params[0]["blockStateCalls"], response["result"]):
+                if provider.command(block["calls"][0])[0] == "prepare":
+                    output["calls"][0].update(status="0x0", gasUsed=hex(1_000_000), maxUsedGas=hex(1_000_000),
+                        returnData="0x" + keccak(text="InvalidConfiguration()")[:4].hex(),
+                        error={"code": 3, "message": "execution reverted"})
         return response
     monkeypatch.setattr(provider, "make_request", respond)
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")

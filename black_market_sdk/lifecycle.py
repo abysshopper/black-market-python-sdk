@@ -23,6 +23,7 @@ from web3 import Web3
 
 from .addresses import ROBINHOOD_MAINNET_CHAIN_ID, ROBINHOOD_MULTICALL3
 from .abyss import ABYSS_FEE_TIERS
+from .auction import AUCTION_QUOTE_OPTIONS as _AUCTION_QUOTE_OPTIONS
 from .launch import assert_launch_topology_coverage, get_tick_at_sqrt_ratio
 from .hmm import (
     HMM_FIXED_PROFILE_ID, HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail,
@@ -55,7 +56,7 @@ from .lifecycle_abis import (
     MARKET_CONFIG_COMPONENTS_V1,
     SHARED_HOOK_DEPLOYER_V1_ABI, LIFECYCLE_ORACLE_FACTORY_ABI,
     LIFECYCLE_V4_HOOK_ABI, V4_FEE_LIQUIDITY_LOCKER_V2_ABI,
-    NITRO_ARB_SYS_ABI, NITRO_ARB_GAS_INFO_ABI, NITRO_NODE_INTERFACE_ABI,
+    NITRO_ARB_SYS_ABI, NITRO_ARB_GAS_INFO_ABI,
 )
 from .lifecycle_abis import (
     HOOK_SALT_MINER_ABI, LAUNCH_LENS_ABI, LAUNCH_LENS_SNAPSHOT_COMPONENTS,
@@ -65,11 +66,14 @@ from .lifecycle_rpc import (
     LaunchStateChanged, assert_canonical, assert_chain, create_controlled_launch_fork, hex_bytes, quantity, read_block, rpc, rpc_transaction, simulate_transactions,
     LaunchSimulationCall, execution_failure, lifecycle_stage, pinned_rpc, read_invocation, async_read_invocation,
     read_chain_id, read_gas_price, check_lifecycle_source, failure_reason,
-    _LifecycleReadClient, _capability_facts,
+    _LifecycleReadClient, _capability_facts, _read_lifecycle_account_code,
 )
 
 ZERO_ADDRESS = "0x" + "00" * 20
 ZERO_HASH = "0x" + "00" * 32
+# Snapshot release identities; editing the display catalog cannot grant coverage.
+_PROFILED_QUOTE_IDENTITIES = frozenset(
+    quote.address.lower() for quote in _AUCTION_QUOTE_OPTIONS if quote.address != ZERO_ADDRESS)
 LIFECYCLE_PLAN_DOMAIN = keccak(text="BLACK_MARKET_LAUNCH_PLAN_V1")
 NITRO_ARB_SYS_ADDRESS = "0x0000000000000000000000000000000000000064"
 NITRO_ARB_GAS_INFO_ADDRESS = "0x000000000000000000000000000000000000006c"
@@ -1773,7 +1777,7 @@ async def prepare_and_plan_lifecycle_launch(
     ufg: UfgLaunchConfig | None = None,
     fixed_final_envelope: LifecycleFinalEnvelope | None = None,
 ) -> PlannedLaunch:
-    """Mine exact bound salts, protect actual buys, then prove only the final plan."""
+    """Mine exact salts, protect ordered buys, then admit the final commitment."""
     commitment = _validate_planning_intent(plan, account, mode, cancel_event, ufg)
     ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
     fixed = _read_final_envelope(fixed_final_envelope, mode)
@@ -1815,11 +1819,24 @@ async def prepare_and_plan_lifecycle_launch(
         markets[index] = replace(market, config=encode_lifecycle_pool_bound_v4_market_config(replace(config, hook_salt=deployment.salt)))
     execution_block = initial
     if fixed is not None and fixed.gas_price is None:
-        fixed = replace(fixed, gas_price=await asyncio.to_thread(read_gas_price, client, execution_block))
+        fixed = replace(fixed, gas_price=await asyncio.to_thread(
+            _read_lifecycle_gas_price, client, execution_block, draft.chain_id))
     finalized = replace(draft, markets=tuple(markets))
     owned_progress = None
     sizing_hints = None
-    if protection:
+    opening_buys = None
+    from .lifecycle_buy_math import has_profiled_opening_math
+    if protection and has_profiled_opening_math(finalized):
+        predicted = await asyncio.to_thread(read_lifecycle_token_at_block, client, finalized, execution_block)
+        opening_buys = compute_lifecycle_opening_buys(finalized, predicted_token=predicted)
+        protected = []
+        for buy, quote in zip(finalized.buys, opening_buys):
+            minimum = quote.token_out * (10000 - buy_slippage_bps) // 10000
+            if minimum <= 0:
+                raise LifecyclePlanningError("INVALID_BUY_OUTPUT", "Each opening buy must produce a positive protected minimum")
+            protected.append(replace(buy, min_token_out=minimum))
+        finalized = replace(finalized, buys=tuple(protected))
+    elif protection:
         diagnostic_plan = replace(finalized, buys=tuple(replace(buy, min_token_out=1) for buy in finalized.buys))
         diagnostic = await asyncio.to_thread(_plan_launch, client, diagnostic_plan, **options,
                                              block=execution_block, diagnostic=True,
@@ -1829,11 +1846,12 @@ async def prepare_and_plan_lifecycle_launch(
             raise LifecyclePlanningError("LAUNCH_ALREADY_STARTED", "Buy protection cannot rewrite a committed launch")
         finalized = _protect_ordered_buy_minimums(diagnostic, buy_slippage_bps)
         owned_progress = replace(diagnostic.progress, plan_hash=hash_launch_plan(finalized))
-        sizing_hints = {step.transaction_id: step.compute_gas_required for step in diagnostic.simulation.steps
-            if step.compute_gas_required is not None}
+        sizing_hints = _GasSizingHints("measured", {step.transaction_id: step.compute_gas_required
+            for step in diagnostic.simulation.steps if step.compute_gas_required is not None})
     planned = await asyncio.to_thread(_plan_launch, client, finalized, **options,
                                       block=execution_block, owned_progress=owned_progress,
-                                      fixed_final_envelope=fixed, sizing_hints=sizing_hints)
+                                      fixed_final_envelope=fixed, sizing_hints=sizing_hints,
+                                      opening_buys=opening_buys)
     assert_draft()
     _assert_planned_identity(planned)
     if planned.progress.phase not in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
@@ -1958,6 +1976,7 @@ class LifecycleReceiptReference:
     confirmations: int = 1
     observed_block_number: int | None = None
     observed_block_hash: str | None = None
+    nonce: int | None = None
 
     def __post_init__(self) -> None:
         for value in (self.transaction_hash, self.replacement_hash, self.observed_block_hash):
@@ -1967,6 +1986,8 @@ class LifecycleReceiptReference:
             raise LifecyclePlanningError("INVALID_CONFIRMATIONS", "Receipt confirmations must be a positive exact integer")
         if self.observed_block_number is not None:
             _uint(self.observed_block_number, 256, "observed receipt block")
+        if self.nonce is not None:
+            _uint(self.nonce, 64, "observed transaction nonce")
 
 
 @dataclass(frozen=True)
@@ -1978,6 +1999,7 @@ class LifecycleReceiptStatus:
     block_number: int | None = None
     block_hash: str | None = None
     confirmations: int | None = None
+    nonce: int | None = None
 
 
 @dataclass(frozen=True)
@@ -2065,9 +2087,6 @@ class LaunchProgress:
     canonical: LifecycleCanonicalProgress
     head: LifecycleCanonicalProgress
     confirmation_depth: int
-    confirmed_account_nonce: int
-    head_account_nonce: int
-    pending_account_nonce: int
     confirmation_safe: bool
     receipts: tuple[LifecycleReceiptStatus, ...] = ()
     markets: tuple[LifecycleMarketProgress, ...] = ()
@@ -2103,9 +2122,7 @@ def _check_client_identity(client: Web3, plan: LaunchPlanV1, account: str | None
         raise LifecyclePlanningError("ACCOUNT_MISMATCH", "Execution account must be the committed creator/payer/refund account")
 
 
-
-
-def _transaction_matches_receipt(client: Web3, plan: LaunchPlanV1, transaction: Mapping[str, Any], block: LaunchBlock) -> bool:
+def _transaction_matches_receipt(client: Web3, plan: LaunchPlanV1, transaction: Mapping[str, Any], block: LaunchBlock, ufg_hash: str | None = None) -> bool:
     if str(transaction.get("from", "")).lower() != _execution_account(plan).lower():
         raise LifecyclePlanningError("RECEIPT_ACCOUNT", "Receipt transaction belongs to a different account")
     if transaction.get("chainId") is not None and quantity(transaction["chainId"]) != plan.chain_id:
@@ -2122,6 +2139,10 @@ def _transaction_matches_receipt(client: Web3, plan: LaunchPlanV1, transaction: 
                 continue
             try:
                 values = abi_decode(types, calldata[4:])
+                if proxy and ufg_hash is not None and command in {"launchAtomic", "beginLaunch"}:
+                    config = values[1 if command == "launchAtomic" else 2]
+                    if hash_ufg_launch_config(UfgLaunchConfig(config[0], config[1], tuple(config[2]))) != ufg_hash:
+                        return False
                 return hex_bytes(keccak(abi_encode(["bytes32", LAUNCH_PLAN_V1_ABI_TYPE], [LIFECYCLE_PLAN_DOMAIN, values[0]]))) == hash_launch_plan(plan)
             except Exception:
                 return False
@@ -2151,18 +2172,21 @@ def _receipt_header(client: Web3, plan: LaunchPlanV1, number: int) -> LaunchBloc
     return block
 
 
-def _receipt_status(client: Web3, plan: LaunchPlanV1, reference: LifecycleReceiptReference, head: LaunchBlock, confirmations: int) -> LifecycleReceiptStatus:
+def _receipt_status(client: Web3, plan: LaunchPlanV1, reference: LifecycleReceiptReference, head: LaunchBlock, confirmations: int, ufg_hash: str | None = None) -> LifecycleReceiptStatus:
     original = hex_bytes(reference.transaction_hash)
     effective = hex_bytes(reference.replacement_hash or original)
     replaced = effective != original
+    observed_nonce = reference.nonce
     def status(value: str, number: int | None = None, block_hash: str | None = None, depth: int = 0) -> LifecycleReceiptStatus:
-        return LifecycleReceiptStatus(original, effective, value, replaced, number, block_hash, depth)
+        return LifecycleReceiptStatus(original, effective, value, replaced, number, block_hash, depth, observed_nonce)
     if reference.observed_block_number is not None and reference.observed_block_hash is not None:
         observed = _receipt_header(client, plan, reference.observed_block_number)
         if observed is None or observed.block_hash != reference.observed_block_hash.lower():
             return status("reorged", reference.observed_block_number, reference.observed_block_hash)
     raw = rpc(client, "eth_getTransactionReceipt", [effective])
     transaction = rpc(client, "eth_getTransactionByHash", [effective])
+    if transaction is not None and transaction.get("nonce") is not None:
+        observed_nonce = quantity(transaction["nonce"])
     if raw is None:
         return status("pending", reference.observed_block_number, reference.observed_block_hash)
     if transaction is None:
@@ -2171,7 +2195,7 @@ def _receipt_status(client: Web3, plan: LaunchPlanV1, reference: LifecycleReceip
     receipt_block = _receipt_header(client, plan, number)
     if receipt_block is None or receipt_block.block_hash != block_hash:
         return status("reorged", number, block_hash)
-    matches = _transaction_matches_receipt(client, plan, transaction, receipt_block)
+    matches = _transaction_matches_receipt(client, plan, transaction, receipt_block, ufg_hash)
     if not matches and not replaced:
         raise LifecyclePlanningError("RECEIPT_IDENTITY", "Receipt calldata does not belong to the exact committed launch")
     depth = max(0, head.number - number + 1)
@@ -2187,18 +2211,20 @@ def read_launch_progress(
     client: Web3, plan: LaunchPlanV1, *, confirmations: int = 1,
     receipts: Sequence[LifecycleReceiptReference] = (), block: LaunchBlock | None = None,
     mode: LaunchExecutionMode | None = None, cancel_event: asyncio.Event | None = None,
+    ufg: UfgLaunchConfig | None = None,
 ) -> LaunchProgress:
-    """Recover actual confirmed/head state, nonces, replacements and market reads."""
+    """Recover confirmed/head state, submitted receipts, replacements and markets."""
     commitment = hash_launch_plan(plan)
+    ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
     _check_client_identity(client, plan)
     head = _prime_lifecycle_reads(client, plan, block)
     progress = _read_launch_progress_at_block(client, plan, confirmations=confirmations,
-        receipts=receipts, block=head, mode=mode, cancel_event=cancel_event, include_markets=True)
+        receipts=receipts, block=head, mode=mode, cancel_event=cancel_event, include_markets=True, ufg_hash=ufg_hash)
     check_lifecycle_source(client, plan.chain_id, progress.block, head)
     def assert_current() -> None:
         _check_mining_cancelled(cancel_event)
-        if hash_launch_plan(plan) != commitment:
-            raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during canonical progress reads")
+        if hash_launch_plan(plan) != commitment or (None if ufg is None else hash_ufg_launch_config(ufg)) != ufg_hash:
+            raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan or UFG config changed during canonical progress reads")
     assert_current()
     if isinstance(client, _LifecycleReadClient):
         client.completion_checks.append(assert_current)
@@ -2257,6 +2283,7 @@ def _read_launch_progress_at_block(
     client: Web3, plan: LaunchPlanV1, *, block: LaunchBlock, confirmations: int = 1,
     receipts: Sequence[LifecycleReceiptReference] = (), mode: LaunchExecutionMode | None = None,
     cancel_event: asyncio.Event | None = None, include_markets: bool = False,
+    ufg_hash: str | None = None,
 ) -> LaunchProgress:
     commitment = hash_launch_plan(plan)
     _check_mining_cancelled(cancel_event)
@@ -2272,12 +2299,8 @@ def _read_launch_progress_at_block(
         if observation[5] != 0 and mode is not None and observation[4] != (0 if _mode(mode) == "atomic" else 1):
             raise LifecyclePlanningError("MODE_MISMATCH", "Execution mode differs from the recorded launch")
     token = read_lifecycle_token_at_block(client, plan, head)
-    account = _execution_account(plan)
-    confirmed_nonce = quantity(rpc(client, "eth_getTransactionCount", [account, confirmed.tag]))
-    head_nonce = confirmed_nonce if confirmed.number == head.number else quantity(rpc(client, "eth_getTransactionCount", [account, head.tag]))
-    pending_nonce = quantity(rpc(client, "eth_getTransactionCount", [account, "pending"]))
-    safe = values == current and confirmed_nonce == head_nonce == pending_nonce
-    statuses = tuple(_receipt_status(client, plan, reference, head, confirmations) for reference in receipts)
+    statuses = tuple(_receipt_status(client, plan, reference, head, confirmations, ufg_hash) for reference in receipts)
+    safe = values == current and not any(status.status in {"unconfirmed", "pending"} for status in statuses)
     markets = _read_prepared_market_progress(client, plan, confirmed, token, values[9]) if include_markets and values[9] > 0 else ()
     _check_mining_cancelled(cancel_event)
     if hash_launch_plan(plan) != commitment:
@@ -2289,9 +2312,8 @@ def _read_launch_progress_at_block(
         mode=None if values[5] == 0 else ("atomic" if values[4] == 0 else "staged"), phase=LifecyclePhase(values[5]),
         token=token, fee_hub=to_checksum_address(values[7]), rewards=to_checksum_address(values[8]),
         prepared_markets=values[9], market_count=values[10], buy_count=values[11], position_count=values[12], deadline=values[13],
-        block=confirmed, head_block=head, awaiting_confirmations=not safe or any(status.status in {"unconfirmed", "pending"} for status in statuses),
+        block=confirmed, head_block=head, awaiting_confirmations=not safe,
         receipts=statuses, canonical=progress_tuple(values), head=progress_tuple(current), confirmation_depth=confirmations,
-        confirmed_account_nonce=confirmed_nonce, head_account_nonce=head_nonce, pending_account_nonce=pending_nonce,
         confirmation_safe=safe, markets=tuple(markets),
     )
 
@@ -2341,23 +2363,51 @@ LifecycleCapacityConstraint = Literal["compute", "gas-envelope", "calldata", "si
 
 @dataclass(frozen=True)
 class LifecycleProofOutcomes:
-    execution_proof: Literal["proved", "failed", "unavailable"]
-    protocol_fit: Literal["proved", "failed", "unknown"]
-    transport_preflight: Literal["not-requested", "passed", "failed"]
+    execution_proof: Literal["proved", "failed", "unavailable", "not-run"]
+    protocol_fit: Literal["proved", "failed", "unknown", "profiled"]
 
 
 @dataclass(frozen=True)
 class LifecycleTransactionEstimate:
-    gas_used: int
     gas_limit: int
     gas_price: int
     execution_fee: int
     data_fee_included_in_gas: bool
-    fee_confidence: Literal["execution-and-data", "execution-only"]
+    fee_confidence: Literal["execution-and-data", "execution-only", "profiled-execution-and-data"]
+    gas_used: int | None = None
     data_fee: int | None = None
     total_fee: int | None = None
     poster_gas: int | None = None
     poster_fee: int | None = None
+
+
+@dataclass(frozen=True)
+class LifecycleOpeningBuyQuote:
+    buy_index: int
+    market_index: int
+    quote_amount_in: int
+    quote_spent: int
+    token_out: int
+    sqrt_price_after_x96: int
+
+
+@dataclass(frozen=True)
+class LifecycleGasProfile:
+    version: str
+    estimates: Mapping[str, LifecycleTransactionEstimate]
+    initial_buys: tuple[LifecycleOpeningBuyQuote, ...]
+
+
+def compute_lifecycle_opening_buys(
+    plan: LaunchPlanV1, *, predicted_token: str,
+) -> tuple[LifecycleOpeningBuyQuote, ...]:
+    """Quote ordered unopened release curves exactly, without execution proof.
+
+    Funding, token callbacks, current registry admission and wallet execution
+    remain separate authorities. This is not a live-pool quote.
+    """
+    from .lifecycle_buy_math import compute_opening_buys
+    return compute_opening_buys(plan, predicted_token)
 
 
 @dataclass(frozen=True)
@@ -2384,23 +2434,22 @@ class LifecycleSimulationStep:
 
 @dataclass(frozen=True)
 class LifecycleAdmission:
-    """Exact execution admission, distinct from wallet transport acceptance."""
+    """Execution evidence or explicit profile coverage, separate from submission."""
 
     admitted: bool
-    confidence: Literal["stateful", "provisional"]
+    confidence: Literal["stateful", "provisional", "profiled"]
     limits: LaunchExecutionLimits
     block_number: int
     block_hash: str
     account: str
     chain_id: int
-    execution_proof: Literal["proved", "failed", "unavailable"]
-    protocol_fit: Literal["proved", "failed", "unknown"]
-    transport_preflight: Literal["not-requested", "passed", "failed"] = "not-requested"
+    execution_proof: Literal["proved", "failed", "unavailable", "not-run"]
+    protocol_fit: Literal["proved", "failed", "unknown", "profiled"]
     reason: str | None = None
 
     @property
     def outcomes(self) -> LifecycleProofOutcomes:
-        return LifecycleProofOutcomes(self.execution_proof, self.protocol_fit, self.transport_preflight)
+        return LifecycleProofOutcomes(self.execution_proof, self.protocol_fit)
 
 
 @dataclass(frozen=True)
@@ -2427,7 +2476,7 @@ def _read_final_envelope(envelope: LifecycleFinalEnvelope | None, mode: str) -> 
 
 @dataclass(frozen=True)
 class LifecycleTransaction:
-    """Only the immediate proved transaction carries signing gas and admission."""
+    """An unsigned envelope; the wallet assigns its EOA transaction nonce."""
     step_id: str
     kind: LifecycleTransactionKind
     chain_id: int
@@ -2435,7 +2484,6 @@ class LifecycleTransaction:
     to: str
     data: str
     value: int
-    nonce: int | None
     dependencies: tuple[str, ...]
     postconditions: tuple[LifecyclePostcondition, ...]
     first_market: int | None = None
@@ -2457,11 +2505,14 @@ class LifecycleTransaction:
 
     @property
     def estimate(self) -> LifecycleTransactionEstimate | None:
-        if self.gas_used is None or self.gas_limit is None or self.gas_price is None or self.execution_fee is None:
+        if self.gas_limit is None or self.gas_price is None or self.execution_fee is None:
             return None
-        return LifecycleTransactionEstimate(self.gas_used, self.gas_limit, self.gas_price, self.execution_fee,
-            self.data_fee_included_in_gas, "execution-only" if self.total_fee is None else "execution-and-data",
-            self.data_fee, self.total_fee, self.poster_gas, self.poster_fee)
+        confidence = "profiled-execution-and-data" if self.confidence == "profiled" else (
+            "execution-only" if self.total_fee is None else "execution-and-data")
+        return LifecycleTransactionEstimate(gas_limit=self.gas_limit, gas_price=self.gas_price,
+            execution_fee=self.execution_fee, data_fee_included_in_gas=self.data_fee_included_in_gas,
+            fee_confidence=confidence, gas_used=self.gas_used, data_fee=self.data_fee,
+            total_fee=self.total_fee, poster_gas=self.poster_gas, poster_fee=self.poster_fee)
 
     @property
     def calldata_bytes(self) -> int:
@@ -2469,8 +2520,6 @@ class LifecycleTransaction:
 
     def as_transaction(self) -> dict[str, Any]:
         result: dict[str, Any] = {"chainId": self.chain_id, "from": self.from_address, "to": self.to, "data": self.data, "value": self.value}
-        if self.nonce is not None:
-            result["nonce"] = self.nonce
         if self.gas_limit is not None:
             result["gas"] = self.gas_limit
         if self.gas_price is not None:
@@ -2480,17 +2529,16 @@ class LifecycleTransaction:
 
 @dataclass(frozen=True)
 class LaunchSimulation:
-    confidence: Literal["stateful", "provisional"]
+    confidence: Literal["stateful", "provisional", "profiled"]
     admitted: bool
     block: LaunchBlock
-    backend: Literal["eth_simulateV1", "controlled-fork"] | None
+    backend: Literal["eth_simulateV1", "controlled-fork", "profiled"] | None
     transactions: tuple[LifecycleTransaction, ...]
     reasons: tuple[str, ...]
     evidence: LaunchRpcSimulation
     unknown_constraints: tuple[str, ...] = ()
-    execution_proof: Literal["proved", "failed", "unavailable"] = "unavailable"
-    protocol_fit: Literal["proved", "failed", "unknown"] = "unknown"
-    transport_preflight: Literal["not-requested", "passed", "failed"] = "not-requested"
+    execution_proof: Literal["proved", "failed", "unavailable", "not-run"] = "unavailable"
+    protocol_fit: Literal["proved", "failed", "unknown", "profiled"] = "unknown"
     chain_id: int | None = None
     account: str | None = None
     failure_category: LifecycleFailureCategory | None = None
@@ -2498,10 +2546,11 @@ class LaunchSimulation:
     failed_transaction_id: str | None = None
     limits: LaunchExecutionLimits | None = None
     deferred_transaction_ids: tuple[str, ...] = ()
+    gas_profile: LifecycleGasProfile | None = None
 
     @property
     def outcomes(self) -> LifecycleProofOutcomes:
-        return LifecycleProofOutcomes(self.execution_proof, self.protocol_fit, self.transport_preflight)
+        return LifecycleProofOutcomes(self.execution_proof, self.protocol_fit)
 
     @property
     def steps(self) -> tuple[LifecycleSimulationStep, ...]:
@@ -2511,16 +2560,6 @@ class LaunchSimulation:
             call.native_error_code, call.native_error_kind, call.native_error_data_bytes, call.native_gas_capped,
             provisional=index > 0, compute_gas_required=transaction.compute_gas_estimate)
             for index, (transaction, call) in enumerate(zip(self.transactions, self.evidence.calls)))
-
-
-class LaunchSubmissionPreflightError(ValueError):
-    """Read-only submission RPC refusal; no signature or write was requested."""
-
-    code = "SUBMISSION_PREFLIGHT_FAILED"
-
-    def __init__(self, reason: str, simulation: LaunchSimulation) -> None:
-        self.simulation = replace(simulation, transport_preflight="failed", reasons=(*simulation.reasons, reason))
-        super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -2646,6 +2685,7 @@ def _prime_lifecycle_reads(client: Web3, plan: LaunchPlanV1, block: LaunchBlock 
         (NITRO_ARB_SYS_ADDRESS, NITRO_ARB_SYS_ABI, "arbOSVersion"),
         (NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxTxGasLimit"),
         (NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getMaxBlockGasLimit"),
+        (NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI, "getPricesInWei"),
     ):
         add(target, abi, name)
     account = _execution_account(plan)
@@ -2693,6 +2733,17 @@ def _read_nitro_uint(client: Web3, block: LaunchBlock, target: str, abi: Sequenc
     return _uint(abi_decode([f"uint{bits}"], bytes.fromhex(raw[2:]))[0], bits, f"Nitro {name}")
 
 
+def _read_nitro_prices(client: Web3, block: LaunchBlock) -> tuple[int, ...]:
+    return tuple(_call(client, NITRO_ARB_GAS_INFO_ADDRESS, NITRO_ARB_GAS_INFO_ABI,
+        "getPricesInWei", [], block))
+
+
+def _read_lifecycle_gas_price(client: Web3, block: LaunchBlock, chain_id: int) -> int:
+    if chain_id != 4663:
+        return read_gas_price(client, block)
+    return max(_read_nitro_prices(client, block)[5], (block.base_fee_per_gas or 0) * 2)
+
+
 def _resolve_limits(client: Web3, source: LaunchExecutionLimits | LifecycleLimitResolver | None, block: LaunchBlock, account: str, chain_id: int, orchestrator: str, *, policy_guards: list[Callable[[], None]] | None = None) -> LaunchExecutionLimits:
     raw_client = getattr(client, "source", client)
     context = LaunchLimitContext(block, chain_id, _address(orchestrator, "orchestrator"),
@@ -2737,10 +2788,8 @@ def _resolve_limits(client: Web3, source: LaunchExecutionLimits | LifecycleLimit
     if tx_cap == 0 or block_cap == 0:
         raise ValueError("Nitro compute ceilings must be positive")
     assert_policy()
-    from .lifecycle_presets import ROBINHOOD_RPC_SIMULATION_GAS_LIMIT
     return replace(limits, protocol="nitro", execution_gas_ceiling=min(tx_cap, block_cap),
                    transaction_gas_ceiling=min(supplied_caps) if supplied_caps else None,
-                   rpc_total_simulation_gas_limit=limits.rpc_total_simulation_gas_limit or ROBINHOOD_RPC_SIMULATION_GAS_LIMIT,
                    arb_os_version=raw_version - 55, max_tx_compute_gas=tx_cap, max_block_compute_gas=block_cap)
 
 
@@ -2769,9 +2818,7 @@ def build_launch_transactions(plan: LaunchPlanV1, *, mode: LaunchExecutionMode, 
     def add(kind: str, command: str, value: int, phase: str, prepared: int, first: int | None = None, count: int | None = None) -> None:
         identity = f"prepare:{first}:{count}" if kind == "prepare" else kind
         data = build_lifecycle_calldata(plan, command, first_market=first or 0, count=count or 0)
-        result.append(LifecycleTransaction(identity, kind, plan.chain_id, plan.creator, plan.orchestrator,
-            data, value, None, () if not result else (result[-1].step_id,),
-            (LifecycleLaunchPostcondition(phase, prepared),), first, count))
+        result.append(LifecycleTransaction(identity, kind, plan.chain_id, plan.creator, plan.orchestrator, data, value, () if not result else (result[-1].step_id,), (LifecycleLaunchPostcondition(phase, prepared),), first, count))
     if mode == "atomic":
         add("atomic", "launchAtomic", _native_value(plan), "Active", len(plan.markets))
     else:
@@ -2844,14 +2891,12 @@ def _market_tuple(plan: LaunchPlanV1, index: int) -> tuple[Any, ...]:
     return to_launch_plan_tuple(plan)[7][index]
 
 
-def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, approvals: Sequence[LifecycleApproval], groups: Sequence[tuple[int, int]], *, nonce: int, gas_cap: int, gas_price: int, cancel: bool = False, ufg: UfgLaunchConfig | None = None) -> tuple[LifecycleTransaction, ...]:
+def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, approvals: Sequence[LifecycleApproval], groups: Sequence[tuple[int, int]], *, gas_cap: int, gas_price: int, cancel: bool = False, ufg: UfgLaunchConfig | None = None) -> tuple[LifecycleTransaction, ...]:
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         return ()
     result: list[LifecycleTransaction] = []
     if cancel:
-        transaction = build_ufg_cancel_transaction(plan) if ufg is not None else LifecycleTransaction(
-            "cancel", "cancel", plan.chain_id, plan.creator, plan.orchestrator,
-            build_lifecycle_calldata(plan, "cancelLaunch"), 0, None, (), ())
+        transaction = build_ufg_cancel_transaction(plan) if ufg is not None else LifecycleTransaction("cancel", "cancel", plan.chain_id, plan.creator, plan.orchestrator, build_lifecycle_calldata(plan, "cancelLaunch"), 0, (), ())
         result.append(replace(transaction, postconditions=(LifecycleLaunchPostcondition("Cancelled", progress.prepared_markets),)))
     else:
         if progress.phase == LifecyclePhase.NONE:
@@ -2860,9 +2905,7 @@ def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, 
                     continue
                 for kind, amount in (("approve-reset", 0), ("approve", approval.required_amount)) if approval.allowance else (("approve", approval.required_amount),):
                     condition = LifecycleAllowancePostcondition(approval.asset, approval.spender, amount, 0 if kind == "approve-reset" else None)
-                    result.append(LifecycleTransaction(f"{kind}:{approval.asset}", kind, plan.chain_id, _execution_account(plan),
-                        approval.asset, _encode_function(_ERC20_READ_ABI, "approve", [approval.spender, amount]),
-                        0, None, (), (condition,)))
+                    result.append(LifecycleTransaction(f"{kind}:{approval.asset}", kind, plan.chain_id, _execution_account(plan), approval.asset, _encode_function(_ERC20_READ_ABI, "approve", [approval.spender, amount]), 0, (), (condition,)))
         batches = ([progress.prepared_markets] if progress.prepared_markets else []) + [count for _, count in groups]
         commands = (build_launch_transactions(plan, mode=mode, preparation_batches=batches if mode == "staged" else None)
             if ufg is None else build_ufg_launch_transactions(plan, config=ufg, mode=mode,
@@ -2870,7 +2913,7 @@ def _make_transactions(plan: LaunchPlanV1, mode: str, progress: LaunchProgress, 
         result.extend(transaction for transaction in commands
                       if (transaction.kind not in {"begin", "atomic"} or progress.phase == LifecyclePhase.NONE)
                       and (transaction.kind != "prepare" or transaction.first_market >= progress.prepared_markets))
-    return tuple(replace(transaction, nonce=nonce + index, gas_limit=gas_cap, gas_price=gas_price,
+    return tuple(replace(transaction, gas_limit=gas_cap, gas_price=gas_price,
                          dependencies=() if index == 0 else (result[index - 1].step_id,))
                  for index, transaction in enumerate(result))
 
@@ -2965,8 +3008,6 @@ def _prove_postconditions(plan: LaunchPlanV1, transactions: Sequence[LifecycleTr
     return replace(simulation, calls=tuple(calls))
 
 
-
-
 def _refused_overlimit(kind: str) -> tuple[str, ...]:
     indivisible = kind in {"activate", "atomic"}
     reason = "a measured transaction exceeds the current execution ceiling and cannot be split"
@@ -2976,11 +3017,12 @@ def _refused_overlimit(kind: str) -> tuple[str, ...]:
 def _launch_simulation(
     plan: LaunchPlanV1, limits: LaunchExecutionLimits, evidence: LaunchRpcSimulation,
     transactions: Sequence[LifecycleTransaction], reasons: Sequence[str] = (), *,
-    admitted: bool = False, execution_proof: Literal["proved", "failed", "unavailable"] = "unavailable",
-    protocol_fit: Literal["proved", "failed", "unknown"] = "unknown", unknown: tuple[str, ...] = (),
+    admitted: bool = False, execution_proof: Literal["proved", "failed", "unavailable", "not-run"] = "unavailable",
+    protocol_fit: Literal["proved", "failed", "unknown", "profiled"] = "unknown", unknown: tuple[str, ...] = (),
     failure_category: str | None = None, capacity_constraint: str | None = None,
     failed_transaction_id: str | None = None,
     deferred: Sequence[LifecycleTransaction] = (),
+    gas_profile: LifecycleGasProfile | None = None,
 ) -> LaunchSimulation:
     admission = LifecycleAdmission(
         admitted, evidence.confidence, limits, evidence.block.number, evidence.block.block_hash,
@@ -2996,6 +3038,7 @@ def _launch_simulation(
         failure_category=failure_category, capacity_constraint=capacity_constraint,
         failed_transaction_id=failed_transaction_id, limits=limits,
         deferred_transaction_ids=tuple(transaction.step_id for transaction in deferred),
+        gas_profile=gas_profile,
     )
 
 
@@ -3044,24 +3087,26 @@ def _verify_nitro_backend(client: Web3, plan: LaunchPlanV1, block: LaunchBlock, 
             raise ValueError(f"the simulation backend Nitro {name} differs from the pinned protocol context")
 
 
-def _nitro_poster_budget(client: Web3, transaction: LifecycleTransaction, block: LaunchBlock) -> tuple[int, int]:
-    request = {"from": transaction.from_address, "to": NITRO_NODE_INTERFACE_ADDRESS,
-        "value": hex(transaction.value), "data": _encode_function(
-            NITRO_NODE_INTERFACE_ABI, "gasEstimateL1Component",
-            [transaction.to, False, bytes.fromhex(hex_bytes(transaction.data)[2:])])}
-    raw = hex_bytes(pinned_rpc(client, "eth_call", [request, block.tag], block))
-    if len(raw) != 194:
-        raise ValueError("Nitro poster estimation must return exactly three ABI words")
-    poster_gas, base_fee, _ = abi_decode(["uint64", "uint256", "uint256"], bytes.fromhex(raw[2:]))
-    if base_fee == 0:
-        raise ValueError("Nitro poster estimation returned a zero L2 base fee")
-    return poster_gas, _uint(poster_gas * base_fee, 256, "Nitro poster fee")
+def _nitro_poster_gas_bound(transaction: LifecycleTransaction, prices: Sequence[int]) -> tuple[int, int]:
+    # Nitro's Brotli allocation bound, including an empty-access-list EOA envelope.
+    serialized_bytes = transaction.calldata_bytes + 384
+    compressed_bound = serialized_bytes + 8 * (serialized_bytes // 1024) + 64
+    fee_bound = compressed_bound * prices[1]
+    if fee_bound == 0:
+        return 0, 0
+    if prices[5] == 0:
+        raise LifecyclePlanningError("NITRO_PRICES_UNAVAILABLE", "Positive poster fees cannot be converted at a zero L2 gas price")
+    poster_gas = 2 * ((fee_bound + prices[5] - 1) // prices[5])
+    return poster_gas, _uint(fee_bound, 256, "Nitro poster fee bound")
 
 
-_GasSizingHints = Mapping[str, int]
+@dataclass(frozen=True)
+class _GasSizingHints:
+    kind: Literal["profiled", "measured"]
+    values: Mapping[str, int]
 
 
-def _simulate_sequence(client: Web3, plan: LaunchPlanV1, transactions: Sequence[LifecycleTransaction], *, block: LaunchBlock, predicted: str, limits: LaunchExecutionLimits, fork: ControlledLaunchFork | None, data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None, reviewed_envelope: tuple[int, int] | None = None, diagnostic: bool = False, policy_guard: Callable[[], None] | None = None, sizing_hints: _GasSizingHints | None = None) -> LaunchSimulation:
+def _simulate_sequence(client: Web3, plan: LaunchPlanV1, transactions: Sequence[LifecycleTransaction], *, block: LaunchBlock, predicted: str, limits: LaunchExecutionLimits, fork: ControlledLaunchFork | None, data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None, reviewed_envelope: tuple[int, int] | None = None, diagnostic: bool = False, policy_guard: Callable[[], None] | None = None, sizing_hints: _GasSizingHints | None = None, opening_buys: Sequence[LifecycleOpeningBuyQuote] | None = None, force_simulation: bool = False) -> LaunchSimulation:
     """Size proposals, then prove this exact sequence under one read context."""
     commitment = hash_launch_plan(plan)
     block_fields, limit_fields = tuple(vars(block).items()), tuple(vars(limits).items())
@@ -3080,10 +3125,17 @@ def _simulate_sequence(client: Web3, plan: LaunchPlanV1, transactions: Sequence[
             guard()
     assert_current()
     try:
-        return _simulate_sequence_at_block(client, plan, transactions, block=block, predicted=predicted,
+        from .lifecycle_gas_profile import profile_lifecycle_transactions
+        profile = None if diagnostic else profile_lifecycle_transactions(client, plan, transactions,
+            block=block, predicted=predicted, limits=limits, reviewed_envelope=reviewed_envelope,
+            opening_buys=opening_buys)
+        if not force_simulation and profile is not None and profile.profile_only:
+            return profile.simulation
+        proof = _simulate_sequence_at_block(client, plan, transactions, block=block, predicted=predicted,
             limits=limits, fork=fork, data_fee_estimator=data_fee_estimator,
             reviewed_envelope=reviewed_envelope, diagnostic=diagnostic, assert_current=assert_current,
-            sizing_hints=sizing_hints)
+            sizing_hints=profile.sizing if profile is not None else sizing_hints)
+        return proof if profile is None else replace(proof, gas_profile=profile.simulation.gas_profile)
     finally:
         assert_current()
 
@@ -3095,12 +3147,9 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         unknown = (*unknown, "data_fee")
     empty = LaunchRpcSimulation("provisional", None, block, ())
     capabilities = client.capabilities if isinstance(client, _LifecycleReadClient) else _capability_facts(client)
-    account_key = ("eoa", plan.chain_id, _execution_account(plan).lower())
-    if account_key not in capabilities:
-        if hex_bytes(pinned_rpc(client, "eth_getCode", [_execution_account(plan), block.tag], block)) != "0x":
-            return _launch_simulation(plan, limits, empty, (),
-                ("Direct EOA simulation cannot prove smart-account execution",), unknown=unknown)
-        capabilities.add(account_key)
+    if _read_lifecycle_account_code(client, _execution_account(plan), plan.chain_id, block) != "0x":
+        return _launch_simulation(plan, limits, empty, (),
+            ("Direct EOA simulation cannot prove smart-account execution",), unknown=unknown)
     if not transactions:
         return _launch_simulation(plan, limits, replace(empty, confidence="stateful"), (),
             admitted=True, execution_proof="proved", protocol_fit="proved", unknown=unknown)
@@ -3117,30 +3166,6 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     aggregate_cap = limits.rpc_total_simulation_gas_limit
     if reviewed_envelope is not None:
         transactions = transactions[:1]
-    elif aggregate_cap is not None:
-        cost, count = 0, 0
-        for transaction in transactions:
-            estimate = _transaction_gas_estimate(plan, transaction)
-            if cost + estimate > aggregate_cap:
-                break
-            cost += estimate
-            count += 1
-        deferred = tuple(transactions[count:])
-        transactions = transactions[:count]
-        if not transactions:
-            immediate = deferred[0]
-            estimate = _transaction_gas_estimate(plan, immediate)
-            if estimate > compute_cap:
-                needed = (estimate + 50_000) // 100_000
-                ceiling = (compute_cap + 50_000) // 100_000
-                label = "Atomic launch" if immediate.kind == "atomic" else "Immediate transaction"
-                suggestion = "; use staged" if immediate.kind == "atomic" else ""
-                reason = f"{label} needs about {needed // 10}.{needed % 10}M gas, above the {ceiling // 10}.{ceiling % 10}M per-transaction limit{suggestion}"
-                return _launch_simulation(plan, limits, empty, (), (reason,),
-                    unknown=unknown, failure_category="capacity", capacity_constraint="compute", deferred=deferred)
-            return _launch_simulation(plan, limits, empty, (),
-                ("RPC aggregate simulation gas cap cannot fit the immediate transaction estimate",),
-                unknown=unknown, failure_category="capacity", capacity_constraint="simulation-gas", deferred=deferred)
     def finish(evidence: LaunchRpcSimulation, sequence: Sequence[LifecycleTransaction], reasons: Sequence[str] = (), **outcomes: Any) -> LaunchSimulation:
         return _launch_simulation(plan, limits, evidence, sequence, reasons, unknown=unknown, deferred=deferred, **outcomes)
     price = reviewed_envelope[1] if reviewed_envelope is not None else _uint(transactions[0].gas_price, 256, "gas price")
@@ -3161,15 +3186,17 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
                 capabilities.add(key)
             if reviewed_envelope is None and not diagnostic:
                 with lifecycle_stage(client, "simulation.poster"):
-                    poster_budgets[0] = limits.buffered_gas(_nitro_poster_budget(client, transactions[0], block)[0])
+                    prices = _read_nitro_prices(client, block)
+                    poster_budgets = [_nitro_poster_gas_bound(transaction, prices)[0] for transaction in transactions]
             assert_current()
         except LaunchStateChanged:
             raise
         except Exception as error:
             reason = f"Native Nitro compute/poster proof unavailable: {failure_reason(error)}"
             return finish(replace(empty, reason=reason), transactions, (reason,))
-    total_cap = min(envelope_cap, aggregate_cap or block.gas_limit) if nitro else compute_cap
-    discovery = (_uint(total_cap, 64, "complete discovery gas"),) * len(transactions)
+    discovery_cap = min(envelope_cap, aggregate_cap) if aggregate_cap is not None else envelope_cap
+    discovery = tuple(_uint(min(discovery_cap, compute_cap + poster), 64, "complete discovery gas")
+        for poster in poster_budgets)
     balance = quantity(pinned_rpc(client, "eth_getBalance", [_execution_account(plan), block.tag], block))
     def run(sequence: Sequence[LifecycleTransaction], validation: bool, *, selected_fork: ControlledLaunchFork | None = fork, owned_replay: bool = False) -> LaunchRpcSimulation:
         assert_current()
@@ -3183,15 +3210,15 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         assert_current()
         return _prove_postconditions(plan, sequence, evidence, predicted)
     measured = empty
-    has_sizing = not diagnostic and sizing_hints is not None and all(transaction.step_id in sizing_hints for transaction in transactions)
+    has_sizing = not diagnostic and sizing_hints is not None and all(transaction.step_id in sizing_hints.values for transaction in transactions)
+    profiled_sizing = has_sizing and sizing_hints.kind == "profiled"
     replay_fork = fork if not nitro and (reviewed_envelope is not None or has_sizing) else None
     if reviewed_envelope is None and not has_sizing:
         # Unused per-call reservations are refunded before the next command.
         # Bound each sizing call by pinned spendable funds, not an equal share.
         value = sum(transaction.value for transaction in transactions)
         available = balance - value
-        sizing_gas = tuple(min(total_cap, compute_cap + poster, available // price if price else total_cap)
-            for poster in poster_budgets)
+        sizing_gas = tuple(min(ceiling, available // price if price else ceiling) for ceiling in discovery)
         if balance < value or any(gas <= 0 for gas in sizing_gas):
             return finish(empty, transactions, ("Creator native balance cannot fund transaction value and sizing fee budgets",),
                 failure_category="affordability")
@@ -3226,15 +3253,11 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         if failed is not None and aggregate_cap is not None:
             index, call = failed
             consumed = sum(item.gas_used or 0 for item in measured.calls[:index + 1])
-            if consumed * 10_000 >= aggregate_cap * NEAR_GAS_CEILING_BPS:
-                deferred = tuple(transactions[index:]) + deferred
-                transactions, measuring = transactions[:index], measuring[:index]
-                discovery, poster_budgets = discovery[:index], poster_budgets[:index]
-                measured = replace(measured, calls=measured.calls[:index], expected=index)
-                if index == 0:
-                    return finish(measured, (), ("RPC aggregate simulation gas cap exhausted before proving an immediate transaction",),
-                        failure_category="capacity", capacity_constraint="simulation-gas")
-                failed = None
+            if call.failure_category == "capacity" and consumed * 10_000 >= aggregate_cap * NEAR_GAS_CEILING_BPS:
+                deferred = tuple(transactions[index:])
+                return finish(measured, measuring, ("RPC aggregate simulation gas cap prevented a complete launch proof",),
+                    failure_category="source", capacity_constraint="simulation-gas",
+                    failed_transaction_id=transactions[index].step_id)
         if failed is not None:
             index, call = failed
             transaction = measuring[index]
@@ -3253,25 +3276,38 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     minima = []
     gas_limits = []
     for index, transaction in enumerate(transactions):
-        gross = 0 if reviewed_envelope is not None else sizing_hints[transaction.step_id] if has_sizing else (
+        gross = 0 if reviewed_envelope is not None else sizing_hints.values[transaction.step_id] if has_sizing else (
             measured.calls[index].gas_required if measured.calls[index].gas_required is not None else measured.calls[index].gas_used)
+        if profiled_sizing:
+            gross = min(gross, compute_cap)
         minima.append(gross)
         if reviewed_envelope is not None:
             gas_limits.append(reviewed_envelope[0])
         elif index > 0:
-            # These complete ceilings prove suffix feasibility, not signing fees.
-            gas_limits.append(discovery[index])
+            # Profile bounds already include headroom; suffixes remain provisional.
+            desired = gross + poster_budgets[index] if profiled_sizing else discovery[index]
+            gas_limits.append(min(desired, discovery[index]))
         else:
-            target = max(gross + _forwarding_reserve(plan, transaction.kind), limits.buffered_gas(gross))
+            target = gross if profiled_sizing else max(gross + _forwarding_reserve(plan, transaction.kind), limits.buffered_gas(gross))
             target += poster_budgets[0]
             gas_limits.append(min(target, discovery[index]))
+    profile_budget_limited = False
     if reviewed_envelope is None:
         value = sum(transaction.value for transaction in transactions)
         available = balance - value
-        suffix_minimum = sum(minima[1:])
         if price:
             available //= price
+        if profiled_sizing and price and sum(gas_limits) > available:
+            profile_budget_limited = True
+            for index in range(len(gas_limits)):
+                share = available // (len(gas_limits) - index)
+                gas_limits[index] = min(gas_limits[index], share)
+                available -= gas_limits[index]
+        else:
+            suffix_minimum = sum(minima[1:])
             for index, minimum in enumerate(minima):
+                if not price:
+                    break
                 if index > 0:
                     suffix_minimum -= minimum
                 budget = available - suffix_minimum if index == 0 else minimum + (available - minimum - suffix_minimum) // (len(gas_limits) - index)
@@ -3285,12 +3321,19 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
             return finish(measured, transactions, _refused_overlimit(transaction.kind),
                 protocol_fit="failed", failure_category="capacity", capacity_constraint="gas-envelope",
                 failed_transaction_id=transaction.step_id)
-    buffered = tuple(replace(transaction, gas_limit=gas, gas_estimate=minimum or None,
-        compute_gas_estimate=minimum if reviewed_envelope is None else None)
+    buffered = tuple(replace(transaction, gas_limit=gas, gas_estimate=None if profiled_sizing else minimum or None,
+        compute_gas_estimate=minimum if reviewed_envelope is None and not profiled_sizing else None)
         for transaction, gas, minimum in zip(transactions, gas_limits, minima))
     with lifecycle_stage(client, "simulation.replay" if reviewed_envelope is not None else "simulation.measure"):
         proof = run(buffered, True, selected_fork=replay_fork, owned_replay=replay_fork is not None)
     failed = next(((index, call) for index, call in enumerate(proof.calls) if not call.success), None)
+    if profile_budget_limited and failed is not None:
+        index, call = failed
+        if call.failure_category == "capacity" and buffered[index].gas_limit < compute_cap:
+            call = replace(call, failure_category="affordability",
+                error="Native balance does not provide the profiled sequence margin; an exact affordable envelope was not proved")
+            proof = replace(proof, calls=tuple(call if offset == index else item for offset, item in enumerate(proof.calls)))
+            failed = index, call
     if proof.confidence != "stateful" or not proof.complete and failed is None:
         return finish(proof, buffered, (proof.reason or "Exact validated execution unavailable",),
             failure_category=proof.failure_category or "opaque")
@@ -3300,7 +3343,8 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         if not call.success:
             estimated.append(transaction)
             continue
-        gross = minima[index] or (call.gas_required if call.gas_required is not None else call.gas_used)
+        observed_gas = call.gas_required if call.gas_required is not None else call.gas_used
+        gross = observed_gas if profiled_sizing else minima[index] or observed_gas
         if index > 0:
             estimated.append(replace(transaction, gas_limit=None, gas_price=None, gas_estimate=gross,
                 gas_used=call.gas_used, confidence="provisional", admission=None))
@@ -3315,7 +3359,7 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
             gas_used=call.gas_used, execution_fee=execution_fee, maximum_execution_fee=execution_fee,
             data_fee=data_fee, total_fee=total, poster_gas=poster,
             poster_fee=poster * price if poster is not None else None, data_fee_included_in_gas=nitro,
-            compute_gas_estimate=minima[index] if reviewed_envelope is None else None,
+            compute_gas_estimate=minima[index] if reviewed_envelope is None and not profiled_sizing else None,
             confidence="stateful"))
     if failed is not None:
         index, call = failed
@@ -3339,20 +3383,6 @@ def _forwarding_reserve(plan: LaunchPlanV1, kind: str) -> int:
         return 0
     count = sum(is_hmm_profile(market.profile_id) for market in plan.markets)
     return HMM_V2_FORWARDING_RESERVE + HMM_V2_ADDITIONAL_MARKET_RESERVE * (count - 1) if count else 0
-
-
-def _transaction_gas_estimate(plan: LaunchPlanV1, transaction: LifecycleTransaction) -> int:
-    from .lifecycle_presets import ACTIVATE_MARKET_GAS_ESTIMATE, BEGIN_GAS_ESTIMATE
-    if transaction.kind == "begin":
-        return BEGIN_GAS_ESTIMATE
-    if transaction.kind == "prepare":
-        return sum(_prepare_gas_estimate(plan, index) for index in range(transaction.first_market, transaction.first_market + transaction.market_count))
-    activation = ACTIVATE_MARKET_GAS_ESTIMATE * len(plan.markets) + _forwarding_reserve(plan, transaction.kind)
-    if transaction.kind == "activate":
-        return activation
-    if transaction.kind == "atomic":
-        return BEGIN_GAS_ESTIMATE + sum(_prepare_gas_estimate(plan, index) for index in range(len(plan.markets))) + activation
-    return transaction.gas_used if transaction.gas_used is not None else 100_000
 
 
 def _groups(plan: LaunchPlanV1, first: int, compute_cap: int) -> list[tuple[int, int]]:
@@ -3396,7 +3426,6 @@ class _ReviewedTransaction:
     value: int
     gas_limit: int
     gas_price: int
-    nonce: int | None = None
 
 
 def _read_reviewed_transaction(transaction: LifecycleTransaction | Mapping[str, Any] | None) -> _ReviewedTransaction | None:
@@ -3407,7 +3436,7 @@ def _read_reviewed_transaction(transaction: LifecycleTransaction | Mapping[str, 
     try:
         reviewed = _ReviewedTransaction(value("step_id", "id"), value("kind", "kind"), value("chain_id", "chainId"),
             value("from_address", "from"), value("to", "to"), value("data", "data"), value("value", "value"),
-            value("gas_limit", "gas"), value("gas_price", "gasPrice"), value("nonce", "nonce"))
+            value("gas_limit", "gas"), value("gas_price", "gasPrice"))
         if not isinstance(reviewed.step_id, str) or reviewed.kind not in {"approve-reset", "approve", "atomic", "begin", "prepare", "activate", "cancel"} or isinstance(reviewed.chain_id, bool) or not isinstance(reviewed.chain_id, int) or not 0 < reviewed.chain_id <= (1 << 53) - 1:
             raise ValueError("Malformed reviewed identity")
         _address(reviewed.from_address, "reviewed from")
@@ -3419,15 +3448,13 @@ def _read_reviewed_transaction(transaction: LifecycleTransaction | Mapping[str, 
         if _uint(reviewed.gas_limit, 64, "reviewed gas") == 0:
             raise ValueError("Reviewed gas must be positive")
         _uint(reviewed.gas_price, 256, "reviewed gas price")
-        if reviewed.nonce is not None:
-            _uint(reviewed.nonce, 64, "reviewed nonce")
         return reviewed
     except (ValueError, TypeError, AttributeError):
         raise LifecyclePlanningError("INVALID_REVIEWED_TRANSACTION", "Reviewed transaction requires exact chain/account/target/calldata/value and uint64 gas/uint256 price") from None
 
 
 def _matches_reviewed(transaction: LifecycleTransaction | _ReviewedTransaction | None, reviewed: _ReviewedTransaction) -> bool:
-    return transaction is not None and transaction.step_id == reviewed.step_id and transaction.kind == reviewed.kind and transaction.chain_id == reviewed.chain_id and transaction.from_address.lower() == reviewed.from_address.lower() and transaction.to.lower() == reviewed.to.lower() and transaction.data.lower() == reviewed.data.lower() and transaction.value == reviewed.value and (reviewed.nonce is None or transaction.nonce == reviewed.nonce)
+    return transaction is not None and transaction.step_id == reviewed.step_id and transaction.kind == reviewed.kind and transaction.chain_id == reviewed.chain_id and transaction.from_address.lower() == reviewed.from_address.lower() and transaction.to.lower() == reviewed.to.lower() and transaction.data.lower() == reviewed.data.lower() and transaction.value == reviewed.value
 
 
 def _assert_reviewed_unchanged(supplied: LifecycleTransaction | Mapping[str, Any] | None, snapshot: _ReviewedTransaction | None, next_transaction: LifecycleTransaction) -> None:
@@ -3435,8 +3462,8 @@ def _assert_reviewed_unchanged(supplied: LifecycleTransaction | Mapping[str, Any
     if snapshot is None:
         if current is not None:
             raise LifecyclePlanningError("REVIEWED_TRANSACTION_CHANGED", "Reviewed transaction changed during fresh proof")
-    elif current is None or not _matches_reviewed(current, snapshot) or current.nonce != snapshot.nonce or current.gas_limit != snapshot.gas_limit or current.gas_price != snapshot.gas_price or not _matches_reviewed(next_transaction, snapshot) or next_transaction.gas_limit != snapshot.gas_limit or next_transaction.gas_price != snapshot.gas_price:
-        raise LifecyclePlanningError("REVIEWED_TRANSACTION_CHANGED", "Reviewed wire transaction changed during fresh execution or submission proof")
+    elif current is None or not _matches_reviewed(current, snapshot) or current.gas_limit != snapshot.gas_limit or current.gas_price != snapshot.gas_price or not _matches_reviewed(next_transaction, snapshot) or next_transaction.gas_limit != snapshot.gas_limit or next_transaction.gas_price != snapshot.gas_price:
+        raise LifecyclePlanningError("REVIEWED_TRANSACTION_CHANGED", "Reviewed wire transaction changed during fresh admission")
 
 
 @read_invocation("plan")
@@ -3449,23 +3476,12 @@ def plan_launch(
     allow_topology_gaps: bool = False, allow_missing_permanent_tail: bool = False,
     ufg: UfgLaunchConfig | None = None,
 ) -> PlannedLaunch:
-    """Prove only the explicitly selected mode from fresh canonical state."""
+    """Admit the explicitly selected mode from fresh canonical state."""
     return _plan_launch(client, plan, account=account, mode=mode, limits=limits,
         confirmations=confirmations, receipts=receipts,
         fork=fork, cancel_event=cancel_event, data_fee_estimator=data_fee_estimator,
         allow_topology_gaps=allow_topology_gaps, allow_missing_permanent_tail=allow_missing_permanent_tail,
         ufg=ufg)
-
-
-def _assert_ufg_binding(client: Web3, plan: LaunchPlanV1, config: UfgLaunchConfig | None, progress: LaunchProgress, block: LaunchBlock) -> None:
-    if config is None or progress.phase == LifecyclePhase.NONE:
-        return
-    from .ufg_abis import UFG_LAUNCH_PROXY_V1_ABI
-    identity = bytes.fromhex(launch_id_of(plan)[2:])
-    bound_hash = _call(client, UFG_LAUNCH_PROXY_ADDRESS, UFG_LAUNCH_PROXY_V1_ABI, "launchConfigHash", [identity], block)
-    principal = _call(client, UFG_LAUNCH_PROXY_ADDRESS, UFG_LAUNCH_PROXY_V1_ABI, "principalOf", [identity], block)
-    if hex_bytes(bound_hash) != hash_ufg_launch_config(config) or principal.lower() != _execution_account(plan).lower():
-        raise LifecyclePlanningError("INVALID_UFG_PLAN", "Proxy treasury config/principal binding differs from the supplied recovery commitment")
 
 
 def _plan_launch(
@@ -3480,6 +3496,8 @@ def _plan_launch(
     ufg: UfgLaunchConfig | None = None,
     fixed_final_envelope: LifecycleFinalEnvelope | None = None, gas_price: int | None = None,
     sizing_hints: _GasSizingHints | None = None,
+    opening_buys: Sequence[LifecycleOpeningBuyQuote] | None = None,
+    force_simulation: bool = False,
 ) -> PlannedLaunch:
     commitment = _validate_planning_intent(plan, account, mode, cancel_event, ufg)
     ufg_hash = None if ufg is None else hash_ufg_launch_config(ufg)
@@ -3499,8 +3517,7 @@ def _plan_launch(
         if ufg is not None:
             validate_ufg_launch_plan(plan, ufg, predicted)
         progress = owned_progress or _read_launch_progress_at_block(client, plan, confirmations=confirmations,
-            receipts=receipts, block=block, mode=mode, cancel_event=cancel_event)
-        _assert_ufg_binding(client, plan, ufg, progress, block)
+            receipts=receipts, block=block, mode=mode, cancel_event=cancel_event, ufg_hash=ufg_hash)
     if owned_progress is not None and (progress.plan_hash != commitment or progress.launch_id != launch_id_of(plan) or progress.head_block != block or progress.confirmation_depth != confirmations or progress.token.lower() != predicted.lower()):
         raise LifecyclePlanningError("INVALID_READ_CONTEXT", "Owned canonical progress differs from the active planning snapshot")
     def assert_current() -> None:
@@ -3521,7 +3538,7 @@ def _plan_launch(
         estimates = {transaction.step_id: transaction for transaction in simulation.transactions if transaction.estimate is not None}
         admission = LifecycleAdmission(simulation.admitted, simulation.confidence, resolved_limits,
             block.number, block.block_hash, account, plan.chain_id, simulation.execution_proof,
-            simulation.protocol_fit, simulation.transport_preflight, "; ".join(simulation.reasons) or None)
+            simulation.protocol_fit, "; ".join(simulation.reasons) or None)
         attached = tuple(replace(estimates[transaction.step_id], admission=admission) if transaction.step_id in estimates
             else replace(transaction, gas_limit=None, gas_price=None,
                 admission=None) for transaction in transactions)
@@ -3543,7 +3560,7 @@ def _plan_launch(
             if is_pool_bound_v4_config_version(market.config_version):
                 deployment = _read_pool_bound_deployment(client, plan, index, block)[0]
                 hooks.append(PoolBoundLifecycleDeployment(deployment.deployer, deployment.init_code_hash, deployment.salt, deployment.predicted_hook, index))
-        waiting = _launch_simulation(plan, resolved_limits, empty, (), ("Wait for canonical progress/account nonces and receipt confirmations",), unknown=resolved_limits.unknown_constraints())
+        waiting = _launch_simulation(plan, resolved_limits, empty, (), ("Wait for canonical launch progress and receipt confirmations",), unknown=resolved_limits.unknown_constraints())
         return finish(waiting, hooks=hooks)
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         terminal = _launch_simulation(plan, resolved_limits, empty, (), admitted=True, execution_proof="proved", protocol_fit="proved")
@@ -3557,12 +3574,12 @@ def _plan_launch(
     assert_current()
     gas_price = (fixed_final_envelope.gas_price
         if fixed_final_envelope is not None and fixed_final_envelope.gas_price is not None
-        else _uint(read_gas_price(client, block) if gas_price is None else gas_price, 256, "gas price"))
+        else _uint(_read_lifecycle_gas_price(client, block, plan.chain_id) if gas_price is None else gas_price, 256, "gas price"))
     cap = min(resolved_limits.compute_cap(block), resolved_limits.gas_cap(block))
     groups = _groups(plan, progress.prepared_markets, cap)
     while True:
         transactions = _make_transactions(plan, mode, progress, approvals, groups,
-            nonce=progress.head_account_nonce, gas_cap=cap, gas_price=gas_price, ufg=ufg)
+            gas_cap=cap, gas_price=gas_price, ufg=ufg)
         if reasons:
             refusal = _launch_simulation(plan, resolved_limits, empty, (), reasons, failure_category="semantic")
             return finish(refusal, transactions, approvals, profiles, hooks, prerequisites)
@@ -3573,7 +3590,8 @@ def _plan_launch(
             envelope = (fixed_final_envelope.gas, gas_price)
         simulation = _simulate_sequence(client, plan, transactions, block=block, predicted=predicted, limits=resolved_limits,
             fork=fork, data_fee_estimator=data_fee_estimator, reviewed_envelope=envelope, diagnostic=diagnostic,
-            policy_guard=assert_current, sizing_hints=sizing_hints)
+            policy_guard=assert_current, sizing_hints=sizing_hints,
+            opening_buys=opening_buys, force_simulation=force_simulation)
         assert_current()
         failed = next((transaction for transaction in simulation.transactions if transaction.step_id == simulation.failed_transaction_id), None)
         from .lifecycle_presets import NEAR_GAS_CEILING_BPS
@@ -3648,33 +3666,10 @@ def simulate_launch_plan(
         data_fee_estimator=data_fee_estimator,
         allow_topology_gaps=launch.allow_topology_gaps if isinstance(launch, PlannedLaunch) else False,
         allow_missing_permanent_tail=launch.allow_missing_permanent_tail if isinstance(launch, PlannedLaunch) else False,
-        ufg=ufg)
+        ufg=ufg, force_simulation=True)
     if isinstance(launch, PlannedLaunch):
         _assert_hook_deployments(launch, current)
     return current.simulation
-
-
-def _submission_preflight(submission_client: Web3, transaction: LifecycleTransaction, simulation: LaunchSimulation) -> LifecycleTransaction:
-    try:
-        if quantity(rpc(submission_client, "eth_chainId", [])) != transaction.chain_id:
-            raise ValueError("the submission RPC is connected to a different chain")
-        if transaction.gas_limit is None:
-            raise ValueError("the reviewed next transaction has no exact gas envelope")
-        if _uint(transaction.gas_limit, 64, "reviewed gas envelope") == 0:
-            raise ValueError("the reviewed next transaction gas must be a positive uint64")
-        envelope = rpc_transaction(transaction.as_transaction())
-        request = {key: envelope[key] for key in ("from", "to", "data", "value", "gas", "gasPrice", "nonce") if key in envelope}
-        estimate = quantity(rpc(submission_client, "eth_estimateGas", [request, "latest"]))
-        if quantity(rpc(submission_client, "eth_chainId", [])) != transaction.chain_id:
-            raise ValueError("the submission RPC chain changed during preflight")
-        if not 0 < estimate <= transaction.gas_limit:
-            raise ValueError("the submission RPC estimate exceeds the exact reviewed gas envelope")
-    except Exception as error:
-        reason = failure_reason(error)
-        raise LaunchSubmissionPreflightError(f"Submission RPC preflight failed: {reason}", simulation) from None
-    if transaction.admission is None:
-        raise LaunchSubmissionPreflightError("the next transaction has no bound execution admission", simulation)
-    return replace(transaction, admission=replace(transaction.admission, transport_preflight="passed"))
 
 
 @read_invocation("plan")
@@ -3685,7 +3680,7 @@ def build_next_transaction(
     confirmations: int | None = None,
     receipts: Sequence[LifecycleReceiptReference] | None = None, fork: ControlledLaunchFork | None = None,
     data_fee_estimator: Callable[[Web3, Mapping[str, Any], LaunchBlock], int] | None = None,
-    submission_client: Web3 | None = None, cancel_event: asyncio.Event | None = None,
+    cancel_event: asyncio.Event | None = None,
     reviewed_transaction: LifecycleTransaction | Mapping[str, Any] | None = None,
     ufg: UfgLaunchConfig | None = None,
 ) -> LifecycleTransaction | None:
@@ -3696,7 +3691,9 @@ def build_next_transaction(
     reviewed = _read_reviewed_transaction(reviewed_transaction)  # Validate before any RPC.
     if action not in {"continue", "cancel"}:
         raise ValueError("action must be 'continue' or 'cancel'")
+    full_review_admitted = False
     if isinstance(launch, PlannedLaunch):
+        full_review_admitted = launch.simulation.admitted is True
         _assert_planned_identity(launch)
         plan = launch.plan
         selected = launch.mode if mode is None else _mode(mode)
@@ -3727,18 +3724,20 @@ def build_next_transaction(
             raise LifecyclePlanningError("PLAN_MUTATED", "UFG treasury config changed during build-next proof")
     block = _prime_lifecycle_reads(client, plan)
     progress = _read_launch_progress_at_block(client, plan, confirmations=confirmations, receipts=receipts,
-        block=block, mode=selected, cancel_event=cancel_event)
-    _assert_ufg_binding(client, plan, ufg, progress, block)
+        block=block, mode=selected, cancel_event=cancel_event, ufg_hash=ufg_hash)
     if progress.phase in {LifecyclePhase.ACTIVE, LifecyclePhase.CANCELLED}:
         check_lifecycle_source(client, plan.chain_id, progress.block, block)
         return None
     if not progress.confirmation_safe:
-        raise LifecyclePlanningError("UNCONFIRMED_STATE", "Wait for confirmed canonical progress and head/pending account nonces")
+        raise LifecyclePlanningError("UNCONFIRMED_STATE", "Wait for confirmed canonical launch progress")
     if any(receipt.status in {"pending", "unconfirmed"} for receipt in progress.receipts):
         raise LifecyclePlanningError("RECEIPT_PENDING", "Wait for canonical receipt confirmations or resolve replacement")
+    if action != "cancel" and progress.phase == LifecyclePhase.NONE and not full_review_admitted:
+        raise LifecyclePlanningError("PLAN_NOT_ADMITTED",
+            "Complete an admitted full launch review before starting or approving funding; next-only construction does not replan the remaining sequence")
     resolved = _resolve_limits(client, limits, block, _address(account, "account"),
         plan.chain_id, plan.orchestrator, policy_guards=policy_guards)
-    price = reviewed.gas_price if reviewed is not None else _uint(read_gas_price(client, block), 256, "gas price")
+    price = reviewed.gas_price if reviewed is not None else _uint(_read_lifecycle_gas_price(client, block, plan.chain_id), 256, "gas price")
     cap = min(resolved.compute_cap(block), resolved.gas_cap(block))
     approvals = ()
     groups = ()
@@ -3769,7 +3768,7 @@ def build_next_transaction(
             except Exception:
                 raise LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation differs from canonical unfinished markets") from None
     transactions = _make_transactions(plan, selected, progress, approvals, groups,
-        nonce=progress.pending_account_nonce, gas_cap=cap, gas_price=price, cancel=action == "cancel", ufg=ufg)[:1]
+        gas_cap=cap, gas_price=price, cancel=action == "cancel", ufg=ufg)[:1]
     if reviewed is not None and not _matches_reviewed(transactions[0] if transactions else None, reviewed):
         raise LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed wire transaction differs from canonical unfinished work")
     sizing_hints = None
@@ -3778,7 +3777,7 @@ def build_next_transaction(
         observed = next((step for step in launch.simulation.steps
             if step.transaction_id == candidate.step_id and step.success), None) if launch.simulation.execution_proof == "proved" else None
         if observed is not None and observed.compute_gas_required is not None:
-            sizing_hints = {candidate.step_id: observed.compute_gas_required}
+            sizing_hints = _GasSizingHints("measured", {candidate.step_id: observed.compute_gas_required})
     proof = _simulate_sequence(client, plan, transactions, block=block, predicted=progress.token, limits=resolved,
         fork=fork, data_fee_estimator=data_fee_estimator,
         reviewed_envelope=None if reviewed is None else (reviewed.gas_limit, reviewed.gas_price),
@@ -3789,15 +3788,15 @@ def build_next_transaction(
     next_transaction = proof.transactions[0] if proof.transactions else None
     if next_transaction is None:
         return None
-    if next_transaction.gas_limit is None or next_transaction.gas_price is None or next_transaction.maximum_execution_fee is None or proof.execution_proof != "proved" or proof.protocol_fit != "proved" or next_transaction.admission is None:
-        raise LifecyclePlanningError("MISSING_GAS_PROOF", "Next transaction lacks exact current gas/headroom and fee proof", proof)
+    admitted_outcome = ((proof.execution_proof, proof.protocol_fit) == ("proved", "proved")
+        or proof.confidence == "profiled" and (proof.execution_proof, proof.protocol_fit) == ("not-run", "profiled"))
+    if next_transaction.gas_limit is None or next_transaction.gas_price is None or next_transaction.maximum_execution_fee is None or not admitted_outcome or next_transaction.admission is None:
+        raise LifecyclePlanningError("MISSING_GAS_PROOF", "Next transaction lacks current envelope and fee admission", proof)
     _assert_reviewed_unchanged(reviewed_transaction, reviewed, next_transaction)
     _check_mining_cancelled(cancel_event)
-    if submission_client is not None:
-        next_transaction = _submission_preflight(submission_client, next_transaction, proof)
     def assert_current() -> None:
         if hash_launch_plan(plan) != commitment:
-            raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during execution or submission proof")
+            raise LifecyclePlanningError("PLAN_MUTATED", "Economic plan changed during execution proof")
         _check_mining_cancelled(cancel_event)
         assert_policy()
         _assert_reviewed_unchanged(reviewed_transaction, reviewed, next_transaction)
@@ -4151,7 +4150,8 @@ __all__ = [
     "LifecycleApproval", "LifecycleTransaction", "LifecycleTransactionKind", "LifecycleEvent",
     "LifecyclePostcondition", "LifecycleLaunchPostcondition", "LifecycleAllowancePostcondition",
     "LifecycleAdmission", "LifecycleProofOutcomes", "LifecycleTransactionEstimate", "LifecycleSimulationStep",
-    "LifecycleFailureCategory", "LifecycleCapacityConstraint", "LaunchSubmissionPreflightError",
+    "LifecycleOpeningBuyQuote", "LifecycleGasProfile",
+    "LifecycleFailureCategory", "LifecycleCapacityConstraint",
     "launch_plan_from_dict", "launch_plan_to_dict", "serialize_launch_plan", "parse_launch_plan",
     "to_launch_plan_tuple", "encode_launch_plan", "hash_launch_plan", "hash_launch_identity", "launch_id_of",
     "encode_launch_bounds", "decode_launch_bounds", "hash_launch_bounds", "encode_launch_envelope", "decode_launch_envelope",
@@ -4159,6 +4159,7 @@ __all__ = [
     "encode_lifecycle_v4_market_config", "decode_lifecycle_v4_market_config",
     "encode_lifecycle_abyss_market_config", "decode_lifecycle_abyss_market_config", "build_lifecycle_calldata",
     "build_launch_transactions", "predict_launch_token", "read_lifecycle_token_at_block",
+    "compute_lifecycle_opening_buys",
     "decode_lifecycle_events", "decode_lifecycle_launch_receipt",
     "plan_launch", "simulate_launch_plan", "build_next_transaction",
     "read_launch_progress", "read_launch_markets", "preview_lifecycle_fees",

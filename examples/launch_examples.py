@@ -683,7 +683,7 @@ def construct_plan(client, configuration, case, nonce, token_salt, artifacts, ca
     require(read_block(client, block.number).block_hash.lower() == block.block_hash.lower(),
             "plan construction block was reorganized", code="PRICE_SOURCE_CHANGED")
     artifacts.economic_pricing = {
-        "schema": "black-market.launch-economic-review.v1", "targetMarketCapUsdX18": str(target),
+        "schema": "black-market.launch-economic-review.v2", "targetMarketCapUsdX18": str(target),
         "metadata": portable(metadata), "image": portable(image[1]) if image is not None else None,
         "conversions": conversions, "nativeBuyInputWei": str(buy_amount), "totalNativeBuyInputWei": str(native_required),
         "quotes": [quote["price"] for quote in quotes.values()], "actualMintedSupply": str(draft.token.supply), "tokenDecimals": 18,
@@ -702,21 +702,34 @@ def economic_review_hash(review):
     return "0x" + hashlib.sha256(json.dumps(review, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def simulated_buy_review(launch, pricing):
-    """Use the final proved activation receipt, not an approximate swap formula."""
-    activation = [(transaction, call) for transaction, call in
-                  zip(launch.simulation.transactions, launch.simulation.evidence.calls)
-                  if transaction.kind in {"atomic", "activate"}]
-    require(len(activation) == 1 and activation[0][1].success,
-            "final proof omitted the complete opening-buy receipt", code="INVALID_ECONOMIC_PROOF")
-    receipt = decode_lifecycle_launch_receipt(activation[0][1].return_data, launch.plan)
-    require(address_equal(receipt.token, pricing["predictedToken"]),
-            "simulated buys belong to a different token", code="INVALID_ECONOMIC_PROOF")
+def opening_buy_review(launch, pricing):
+    """Use exact local opening curves or the actual activation simulation."""
+    if not launch.plan.buys:
+        return []
+    if launch.simulation.confidence == "profiled":
+        profile = launch.simulation.gas_profile
+        require(profile is not None and len(profile.initial_buys) == len(launch.plan.buys),
+                "profile omitted the ordered opening-buy quotes", code="INVALID_ECONOMIC_PROOF")
+        require(address_equal(launch.predicted_token, pricing["predictedToken"]),
+                "opening quotes belong to a different token", code="INVALID_ECONOMIC_PROOF")
+        amounts = ((quote.quote_spent, quote.token_out) for quote in profile.initial_buys)
+        evidence = "local-exact-curve"
+    else:
+        activation = [(transaction, call) for transaction, call in
+                      zip(launch.simulation.transactions, launch.simulation.evidence.calls)
+                      if transaction.kind in {"atomic", "activate"}]
+        require(len(activation) == 1 and activation[0][1].success,
+                "final proof omitted the complete opening-buy receipt", code="INVALID_ECONOMIC_PROOF")
+        receipt = decode_lifecycle_launch_receipt(activation[0][1].return_data, launch.plan)
+        require(address_equal(receipt.token, pricing["predictedToken"]),
+                "simulated buys belong to a different token", code="INVALID_ECONOMIC_PROOF")
+        amounts = zip(receipt.quote_spent, receipt.token_out)
+        evidence = "simulation-receipt"
     retained = int(pricing["expectedRetainedSupply"])
     results = []
-    for index, (buy, spent, output) in enumerate(zip(launch.plan.buys, receipt.quote_spent, receipt.token_out)):
+    for index, (buy, (spent, output)) in enumerate(zip(launch.plan.buys, amounts)):
         require(0 < spent <= buy.quote_amount_in and output >= buy.min_token_out > 0,
-                "simulated opening buy violates the reviewed budget or floor", code="INVALID_ECONOMIC_PROOF")
+                "opening buy violates the reviewed budget or floor", code="INVALID_ECONOMIC_PROOF")
         market = pricing["markets"][buy.market_index]
         usd = int(market["quote"]["priceUsdX18"])
         scale = 10**market["quoteDecimals"]
@@ -727,6 +740,7 @@ def simulated_buy_review(launch, pricing):
         premium = ((spend_numerator * opening_denominator - spend_denominator * opening_numerator) * 10000
                    // (spend_denominator * opening_numerator))
         results.append({"buyIndex": index, "marketIndex": buy.market_index,
+                        "quoteEvidence": evidence,
                         "quoteAsset": market["quoteAsset"], "quoteSymbol": market["quoteSymbol"],
                         "quoteDecimals": market["quoteDecimals"], "quoteSpent": str(spent),
                         "tokenOut": str(output), "minimumTokenOut": str(buy.min_token_out),
@@ -743,9 +757,9 @@ def review_economics(launch, artifacts, cancellation):
               "mode": launch.mode, "confirmations": CONFIRMATIONS,
               "feePolicies": document["feeAssets"], "funding": document["funding"],
               "protectedBuys": document["buys"], "executorFeeBps": plan.executor_fee_bps,
-              "simulatedBuys": simulated_buy_review(launch, artifacts.economic_pricing),
+              "openingBuys": opening_buy_review(launch, artifacts.economic_pricing),
               "valuationBasis": "Minted and expected retained supply at aligned opening price before buys",
-              "buyPriceBasis": "Proved all-in average execution price includes fees and price impact, not final marginal spot",
+              "buyPriceBasis": "All-in average opening-buy quote includes fees and price impact, not final marginal spot",
               "postBuySpotBasis": "Actual post-buy spot and retained supply are read after the confirmed receipt in chain.json"}
     digest = economic_review_hash(review)
     artifacts.save("economic-review.json", {"reviewHash": digest, "review": review})
@@ -888,8 +902,6 @@ def validate_envelope(client, transaction, plan, limits):
     require(quantity(rpc(client, "eth_chainId", [])) == plan.chain_id and transaction["chainId"] == plan.chain_id,
             "transaction chain differs from configured chain", code="TRANSACTION_IDENTITY_MISMATCH")
     require(address_equal(transaction["from"], plan.creator), "transaction sender differs from committed creator", code="TRANSACTION_IDENTITY_MISMATCH")
-    require(quantity(rpc(client, "eth_getTransactionCount", [plan.creator, "pending"])) == transaction["nonce"],
-            "transaction nonce differs from settled account state", code="TRANSACTION_IDENTITY_MISMATCH")
     require(0 < transaction.get("gas", 0) <= limits.gas_cap(read_block(client)), "proven envelope exceeds known gas constraints", code="TRANSACTION_LIMIT_MISMATCH")
     cap = limits.calldata_cap()
     require(cap is None or len(bytes.fromhex(transaction["data"][2:])) <= cap,
@@ -1041,12 +1053,12 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
         complete_held = held if getattr(held, "gas_limit", None) is not None and getattr(held, "gas_price", None) is not None else None
         step = build_next_transaction(client, launch, account=plan.creator, receipts=references,
                                       confirmations=CONFIRMATIONS,
-                                      reviewed_transaction=complete_held, submission_client=client)
+                                      reviewed_transaction=complete_held)
         require(step is not None and step.kind == held.kind and step.step_id == held.step_id
                 and (complete_held is None or step.as_transaction() == reviewed_envelope),
                 "fresh proof changed the held transaction envelope", code="TRANSACTION_IDENTITY_MISMATCH")
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
-        artifacts.event("next-transaction-proven", transaction=step)
+        artifacts.event("next-transaction-admitted", transaction=step)
         transaction = step.as_transaction()
         require(step.admission is not None and step.admission.admitted,
                 "SDK step lacks current bound admission", code="TRANSACTION_LIMIT_MISMATCH")
@@ -1064,7 +1076,8 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
         receipt = wait_receipt(client, row, artifacts, cancellation)
         reference = LifecycleReceiptReference(transaction_hash, confirmations=CONFIRMATIONS,
                                              observed_block_number=quantity(receipt["blockNumber"]),
-                                             observed_block_hash=hex_bytes(receipt["blockHash"]))
+                                             observed_block_hash=hex_bytes(receipt["blockHash"]),
+                                             nonce=quantity(row["transaction"]["nonce"]))
         references.append(reference)
         row["reference"] = portable(reference)
         artifacts.save("receipts.json", artifacts.receipts)
@@ -1452,6 +1465,7 @@ def resume_launch_example(recovery_dir, cancellation):
         confirmations=int(r.get("confirmations", CONFIRMATIONS)),
         observed_block_number=int(r["observed_block_number"]),
         observed_block_hash=hex_bytes(r["observed_block_hash"]) if r.get("observed_block_hash") else None,
+        nonce=r.get("nonce"),
     ) for r in recovery.get("receipts", [])]
     # Re-admit the committed plan against current canonical state. plan_launch (not
     # prepare_and_plan) is the recovery path: it revalidates existing economics and

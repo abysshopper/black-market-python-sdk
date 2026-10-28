@@ -144,12 +144,12 @@ def test_default_case_dry_run_saves_final_review_without_wallet_or_writes(runner
     assert json.loads((output / "admission.json").read_text())["admitted"] is True
     assert review["reviewHash"] == example.economic_review_hash(review["review"])
     assert review["review"]["image"] == example.portable(runner_context.image)
-    assert len(review["review"]["simulatedBuys"]) == len(launch.plan.buys)
+    assert len(review["review"]["openingBuys"]) == len(launch.plan.buys)
     assert review["review"]["funding"] == review["review"]["plan"]["funding"]
     text = capsys.readouterr()
     assert text.err == ""
     assert text.out.splitlines()[0] == "DRY RUN — no transactions signed or broadcast."
-    assert review["reviewHash"] in text.out and '"simulatedBuys"' in text.out
+    assert review["reviewHash"] in text.out and '"openingBuys"' in text.out
     assert text.out.splitlines()[-1] == shlex.join([sys.executable, script, "--broadcast"])
 
 

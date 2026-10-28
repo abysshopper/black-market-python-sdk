@@ -264,6 +264,8 @@ from .lifecycle import (
     LifecycleProofOutcomes,
     LifecycleSimulationStep,
     LifecycleTransactionEstimate,
+    LifecycleOpeningBuyQuote,
+    LifecycleGasProfile,
     LaunchBlock,
     LaunchExecutionLimits,
     LaunchLimitContext,
@@ -271,7 +273,6 @@ from .lifecycle import (
     LaunchProgress,
     LaunchSimulation,
     LifecycleAdmission,
-    LaunchSubmissionPreflightError,
     LaunchStateChanged,
     LifecycleAbyssMarketConfig,
     LifecycleAbyssPosition,
@@ -348,6 +349,7 @@ from .lifecycle import (
     validate_v4_lifecycle_market,
     validate_v4_lifecycle_oracle,
     build_launch_transactions,
+    compute_lifecycle_opening_buys,
     build_pool_bound_hook_parameters,
     encode_launch_plan,
     encode_lifecycle_abyss_market_config,
@@ -427,4 +429,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"

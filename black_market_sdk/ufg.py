@@ -146,7 +146,7 @@ def _validate_ufg_markets(plan: LaunchPlanV1, config: UfgLaunchConfig) -> None:
 
 
 def validate_ufg_launch_plan(plan: LaunchPlanV1, config: UfgLaunchConfig, predicted_token: str) -> None:
-    """Mirror proxy-specific admission offline; live eligibility still needs simulation."""
+    """Validate proxy-specific intent offline; on-chain execution remains authoritative."""
     from .lifecycle import LifecyclePlanningError, to_launch_plan_tuple
     try:
         to_launch_plan_tuple(plan)
@@ -189,8 +189,7 @@ def build_ufg_launch_transactions(plan: LaunchPlanV1, *, config: UfgLaunchConfig
 def build_ufg_cancel_transaction(plan: LaunchPlanV1) -> LifecycleTransaction:
     from .lifecycle import LifecycleTransaction
     _validate_ufg_identity(plan)
-    return LifecycleTransaction("cancel", "cancel", plan.chain_id, _ufg_principal(plan), UFG_LAUNCH_PROXY_ADDRESS,
-        _build_ufg_calldata(plan, "cancelLaunch"), 0, None, (), ())
+    return LifecycleTransaction("cancel", "cancel", plan.chain_id, _ufg_principal(plan), UFG_LAUNCH_PROXY_ADDRESS, _build_ufg_calldata(plan, "cancelLaunch"), 0, (), ())
 
 
 def build_ufg_approvals(plan: LaunchPlanV1) -> tuple[LifecycleTransaction, ...]:
@@ -204,9 +203,7 @@ def build_ufg_approvals(plan: LaunchPlanV1) -> tuple[LifecycleTransaction, ...]:
         asset = _address(funding.asset if funding.kind == 0 else funding.input_asset)
         amount = funding.amount if funding.kind == 0 else funding.input_amount
         totals[asset] = totals.get(asset, 0) + amount
-    return tuple(LifecycleTransaction(f"approve:{asset}", "approve", plan.chain_id, _ufg_principal(plan), asset,
-        _encode_function(_ERC20_READ_ABI, "approve", [UFG_LAUNCH_PROXY_ADDRESS, amount]), 0, None, (),
-        (LifecycleAllowancePostcondition(asset, UFG_LAUNCH_PROXY_ADDRESS, amount),))
+    return tuple(LifecycleTransaction(f"approve:{asset}", "approve", plan.chain_id, _ufg_principal(plan), asset, _encode_function(_ERC20_READ_ABI, "approve", [UFG_LAUNCH_PROXY_ADDRESS, amount]), 0, (), (LifecycleAllowancePostcondition(asset, UFG_LAUNCH_PROXY_ADDRESS, amount),))
         for asset, amount in sorted(totals.items(), key=lambda item: int(item[0], 16)))
 
 

@@ -214,7 +214,7 @@ def test_lens_path_seeds_progress_balances_and_mining_in_first_aggregate(lens_pr
     draft = draft_plan()
     client = CountingTransport(LensScenario(draft))
     launch = prepare(client, draft, ufg=terms(), buy_slippage_bps=50)
-    assert launch.admitted and launch.plan.buys[0].min_token_out == 995
+    assert launch.admitted and launch.plan.buys[0].min_token_out > draft.buys[0].min_token_out
     assert len(aggregate_calls(client)) == 1
     calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(aggregate_calls(client)[0]["params"][0]["data"][10:]))[0]
     assert sum(target.lower() == LENS.lower() for target, _, _ in calls) == 1
@@ -350,7 +350,6 @@ class ResumeScenario(OrdinaryScenario):
     def __init__(self, draft, **options):
         super().__init__(draft, **options)
         self.prepared = 0
-        self.account_nonce = 0
 
     def progress(self, phase):
         values = list(super().progress(phase))
@@ -358,10 +357,6 @@ class ResumeScenario(OrdinaryScenario):
             values[9] = self.prepared
         return tuple(values)
 
-    def make_request(self, method, params):
-        if method == "eth_getTransactionCount":
-            return {"result": hex(self.account_nonce + (self.pending_nonce if params[1] == "pending" else 0))}
-        return super().make_request(method, params)
 
 
 def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeypatch):
@@ -373,14 +368,15 @@ def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeyp
     assert [(transaction.first_market, transaction.market_count) for transaction in launch.transactions
         if transaction.kind == "prepare"] == [(0, 2), (2, 1)]
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 1, 2
+    provider.prepared = 1
     provider.simulations.clear()
     def forbidden(*_, **__):
         raise AssertionError("Canonical next work must not replan the suffix")
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "prepare"
-    assert (transaction.first_market, transaction.market_count, transaction.nonce) == (1, 1, 2)
+    assert (transaction.first_market, transaction.market_count) == (1, 1)
+    assert "nonce" not in transaction.as_transaction()
     assert [payload["validation"] for payload in provider.simulations] == [False, True]
     assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
 
@@ -388,21 +384,24 @@ def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeyp
 def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch):
     import black_market_sdk.lifecycle as lifecycle
     draft = ordinary_bound_draft(3)
-    provider = ResumeScenario(draft, pending_nonce=1)
+    provider = ResumeScenario(draft)
     client = CountingTransport(provider)
-    waiting = prepare(client, draft)
+    original = prepare(client, draft)
+    provider.plan = original.plan
+    provider.latest_phase, provider.confirmed_phase = 1, 0
+    waiting = prepare(client, original.plan, confirmations=2)
     assert waiting.transactions == () and not waiting.admitted
     provider.plan = waiting.plan
-    provider.pending_nonce = 0
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 1, 2
+    provider.prepared = 1
     provider.simulations.clear()
     def forbidden(*_, **__):
         raise AssertionError("A missing stored suffix must not trigger whole-plan simulation")
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     transaction = build_next_transaction(client, waiting)
     assert transaction.kind == "prepare"
-    assert (transaction.first_market, transaction.market_count, transaction.nonce) == (1, 2, 2)
+    assert (transaction.first_market, transaction.market_count) == (1, 2)
+    assert "nonce" not in transaction.as_transaction()
     assert [payload["validation"] for payload in provider.simulations] == [False, True]
     assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
 
@@ -530,12 +529,14 @@ def test_staged_suffix_retains_compute_for_fresh_next_poster_quote(poster):
         assert step.provisional and step.estimate is None
         assert step.compute_gas_required in {100_000, 500_000}
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 0, 1
+    provider.prepared = 0
     provider.poster_gas = provider.actual_poster_gas = poster
     provider.simulations.clear()
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "prepare"
-    assert transaction.gas_limit == 575_000 + (poster * 11_500 + 9_999) // 10_000
+    expected_poster = 77_224 if poster == 75_000 else 209_608
+    assert transaction.poster_gas == expected_poster
+    assert transaction.gas_limit == 575_000 + expected_poster
     assert [payload["validation"] for payload in provider.simulations] == [True]
     final = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
     assert int(final["gas"], 16) == transaction.gas_limit
@@ -548,7 +549,7 @@ def test_tightly_funded_staged_sizing_uses_one_shared_budget_retry():
     launch = prepare(CountingTransport(provider), draft)
     assert launch.admitted
     assert [payload["validation"] for payload in provider.simulations] == [False, False, True]
-    assert launch.transactions[0].gas_limit == 201_250
+    assert launch.transactions[0].gas_limit == 194_464
     assert all(step.success for step in launch.simulation.steps)
 
 
@@ -597,3 +598,26 @@ def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
     assert all(int(block["calls"][0]["gasPrice"], 16) == 2
         for payload in provider.simulations for block in payload["blockStateCalls"])
     assert all(transaction.gas_limit is transaction.admission is None for transaction in launch.transactions)
+
+
+@pytest.mark.parametrize("calldata_bytes,expected_gas,expected_fee", [
+    (0, 2988, 4480), (1, 2994, 4490), (639, 7248, 10870),
+    (640, 7308, 10960), (1024, 9868, 14800),
+])
+def test_local_nitro_poster_bound_covers_eoa_and_brotli_word_edges(calldata_bytes, expected_gas, expected_fee):
+    from black_market_sdk.lifecycle import _nitro_poster_gas_bound, _read_lifecycle_gas_price
+    request, provider, client, block, _, transaction = admission_fixture(nitro=True, l1_price_per_byte=10)
+    provider.gas_price = 3
+    transaction = replace(transaction, data="0x" + "ab" * calldata_bytes)
+    assert _nitro_poster_gas_bound(transaction, (0, 10, 0, 3, 0, 3)) == (expected_gas, expected_fee)
+    assert _read_lifecycle_gas_price(client, block, request.chain_id) == 3
+    assert provider.poster_requests == []
+    assert "eth_gasPrice" not in provider.operations
+
+
+def test_local_nitro_poster_bound_handles_free_data_but_refuses_unknown_base_fee():
+    from black_market_sdk.lifecycle import _nitro_poster_gas_bound
+    _, _, _, _, _, transaction = admission_fixture(nitro=True)
+    assert _nitro_poster_gas_bound(transaction, (0, 0, 0, 0, 0, 0)) == (0, 0)
+    with pytest.raises(LifecyclePlanningError, match="zero L2 gas price"):
+        _nitro_poster_gas_bound(transaction, (0, 1, 0, 0, 0, 0))

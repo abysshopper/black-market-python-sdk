@@ -20,7 +20,7 @@ from typing import Callable, Protocol
 import asyncio
 import inspect
 import re
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref
 
 from eth_utils import keccak
 from urllib.parse import urlsplit
@@ -139,6 +139,9 @@ def _transport_identity(client: Any) -> tuple[Any, ...]:
 
 _session_lock = RLock()
 _session_facts: WeakKeyDictionary = WeakKeyDictionary()
+# Identity keys mirror a JS WeakMap even for value-equal/unhashable clients.
+# A client that cannot be weak-referenced retains its session identity.
+_client_facts: dict[int, tuple[Callable[[], Any], dict[tuple[Any, ...], Future]]] = {}
 
 
 def _capability_facts(source: Any) -> set[tuple[Any, ...]]:
@@ -182,7 +185,6 @@ class _LifecycleReadClient:
         self._lock = RLock()
         self._reads: dict[str, Any] = {}
         self._pending: dict[str, Future] = {}
-        self._chain_id: Future | None = None
         self._sequence = 0
         self.closed = False
         self.capabilities = _capability_facts(source)
@@ -230,27 +232,6 @@ class _LifecycleReadClient:
             self.assert_open()
             return result
 
-    def observe_chain_id(self) -> int:
-        self.assert_open()
-        with self._lock:
-            pending = self._chain_id
-            owner = pending is None
-            if owner:
-                pending = Future()
-                self._chain_id = pending
-        if not owner:
-            result = pending.result()
-            self.assert_open()
-            return result
-        try:
-            result = quantity(self.run("eth_chainId", []))
-            with self._lock:
-                self.assert_open()
-                pending.set_result(result)
-                return result
-        except BaseException as error:
-            pending.set_exception(error)
-            raise
 
     def pinned_key(self, method: str, params: Sequence[Any], block: LaunchBlock) -> str:
         return json.dumps([block.number, block.block_hash.lower(), method, params], separators=(",", ":"))
@@ -336,7 +317,6 @@ class _LifecycleReadClient:
             self.closed = True
             self._reads.clear()
             self._pending.clear()
-            self._chain_id = None
             self.immutable_predictions.clear()
             self._gas_prices.clear()
             self._canonical_pins.clear()
@@ -469,9 +449,53 @@ def rpc(client: Any, method: str, params: Sequence[Any]) -> Any:
     return client.run(method, params) if isinstance(client, _LifecycleReadClient) else _request(client, method, params)
 
 
+def _client_fact(client: Any, key: tuple[Any, ...], load: Callable[[], Any]) -> Any:
+    """Share only immutable chain/account-code observations for a client session."""
+    if isinstance(client, _LifecycleReadClient):
+        client.assert_open()
+    source = client.source if isinstance(client, _LifecycleReadClient) else client
+    identity = id(source)
+    with _session_lock:
+        saved = _client_facts.get(identity)
+        if saved is None or saved[0]() is not source:
+            def forget(dead) -> None:
+                with _session_lock:
+                    current = _client_facts.get(identity)
+                    if current is not None and current[0] is dead:
+                        del _client_facts[identity]
+            try:
+                lookup = ref(source, forget)
+            except TypeError:
+                lookup = lambda: source
+            saved = (lookup, {})
+            _client_facts[identity] = saved
+        pending = saved[1].get(key)
+        owner = pending is None
+        if owner:
+            pending = Future()
+            saved[1][key] = pending
+    if not owner:
+        return pending.result()
+    try:
+        result = load()
+        pending.set_result(result)
+        return result
+    except BaseException as error:
+        with _session_lock:
+            if saved[1].get(key) is pending:
+                del saved[1][key]
+        pending.set_exception(error)
+        raise
+
+
 def read_chain_id(client: Any) -> int:
-    """Observe identity once per invocation; canonical/submission guards stay live."""
-    return client.observe_chain_id() if isinstance(client, _LifecycleReadClient) else quantity(rpc(client, "eth_chainId", []))
+    """Observe the domain once per underlying client, not once per invocation."""
+    return _client_fact(client, ("chain-id",), lambda: quantity(rpc(client, "eth_chainId", [])))
+
+
+def _read_lifecycle_account_code(client: Any, account: str, chain_id: int, block: LaunchBlock) -> str:
+    return _client_fact(client, ("account-code", chain_id, account.lower()),
+        lambda: hex_bytes(pinned_rpc(client, "eth_getCode", [account, block.tag], block)))
 
 
 def read_gas_price(client: Any, block: LaunchBlock) -> int:
@@ -574,7 +598,7 @@ def assert_canonical(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, b
 
 
 def assert_chain(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, chain_id: int) -> None:
-    if quantity(rpc(client, "eth_chainId", [])) != chain_id:
+    if read_chain_id(client) != chain_id:
         error = LaunchStateChanged("the simulation source chain changed; read and simulate again")
         error.code = "CHAIN_MISMATCH"
         raise error
@@ -964,25 +988,21 @@ def _simulate_fork(
         raise ValueError("Controlled fork transport differs from its configured loopback RPC")
     if client is original or _same_rpc_endpoint(source_endpoint, fork_endpoint):
         raise ValueError("Controlled fork must be separate from the simulation source")
-    source_chain = quantity(rpc(source, "eth_chainId", []))
+    source_chain = read_chain_id(source)
     head = read_block(client)
     if head.number != block.number or head.block_hash != block.block_hash:
         if block.number > (1 << 53) - 1:
             raise ValueError("Pinned block is not exactly representable by the fork reset API")
         rpc(client, fork.reset_method, [{"forking": {"jsonRpcUrl": fork.source_rpc_url, "blockNumber": block.number}}])
         head = read_block(client)
-    if quantity(rpc(client, "eth_chainId", [])) != source_chain or (fork.expected_chain_id is not None and source_chain != fork.expected_chain_id) or head.number != block.number or head.block_hash != block.block_hash or (fork.expected_block_hash is not None and head.block_hash != fork.expected_block_hash.lower()):
+    if read_chain_id(client) != source_chain or (fork.expected_chain_id is not None and source_chain != fork.expected_chain_id) or head.number != block.number or head.block_hash != block.block_hash or (fork.expected_block_hash is not None and head.block_hash != fork.expected_block_hash.lower()):
         raise LaunchStateChanged("Controlled fork differs from the exact source chain and pinned block")
-    creators = tuple(dict.fromkeys(transaction["from"] for transaction in transactions))
-    nonces = {creator: quantity(rpc(source, "eth_getTransactionCount", [creator, block.tag])) for creator in creators}
-    if any(quantity(rpc(client, "eth_getTransactionCount", [creator, head.tag])) != nonce for creator, nonce in nonces.items()):
-        raise LaunchStateChanged("Controlled fork does not have the exact source creator nonce")
     snapshot = rpc(client, "evm_snapshot", [])
     calls: list[LaunchSimulationCall] = []
     impersonated: list[str] = []
     try:
         if fork.impersonation != "none":
-            for creator in creators:
+            for creator in dict.fromkeys(transaction["from"] for transaction in transactions):
                 rpc(client, f"{fork.impersonation}_impersonateAccount", [creator])
                 impersonated.append(creator)
         for index, transaction in enumerate(transactions):
@@ -1059,7 +1079,7 @@ def simulate_transactions(
     owns_source = source_chain is None
     if owns_source:
         assert_canonical(client, block)
-        source_chain = quantity(rpc(client, "eth_chainId", []))
+        source_chain = read_chain_id(client)
     try:
         for transaction in transactions:
             if "chainId" in transaction and quantity(transaction["chainId"]) != source_chain:

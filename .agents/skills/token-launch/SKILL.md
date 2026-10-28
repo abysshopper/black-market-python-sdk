@@ -74,7 +74,7 @@ See `references/audit-history.md`.
   **Dynamic Fee Hook** uses `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`, zero LP
   fee and zero developer bps with explicit config6 minimum/maximum/sensitivity.
   Copy its own graph and terms; the fixed profile remains the examples' selection.
-  Frozen metadata is checked by final exact-calldata simulation and on-chain enforcement.
+  Frozen metadata supplies profile coverage; retained exact simulation, the wallet and on-chain enforcement determine execution, not repeated guard-only reads.
 - **HMM V2 Fixed** / **HMM V2 Dynamic** use `KnownLifecycleProfile.V4_HMM_FIXED_POOL`
   / `V4_HMM_DYNAMIC_POOL`, zero LP/developer fees and their own admitted V2 graph.
   Config6 must include `hmm_launch_config`; `default_hmm_launch_config` requires
@@ -107,7 +107,7 @@ See `references/audit-history.md`.
 4. Freeze economics and ordered buys, then await
    `prepare_and_plan_lifecycle_launch` with explicit mode and optional
    `buy_slippage_bps` for an unstarted launch. Review its final plan/hash,
-   stateful proof and immediate envelope.
+   explicit admission outcomes and immediate envelope. Profiled admission is not stateful execution proof.
 5. Require explicit authorization for real chain/API writes. Never overwrite
    `.env`, print secrets or provide a default development key.
 6. Sign only the exact immediate reviewed command. Save its signed hash before

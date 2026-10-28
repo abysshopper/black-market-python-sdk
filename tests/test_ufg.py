@@ -243,7 +243,7 @@ def test_unsigned_transactions_have_proxy_target_principal_value_and_exact_abi(m
         assert values["plan"]["nonce"] == plan.nonce
         if tx.kind in {"atomic", "begin"}:
             assert values["config"]["reserveAssets"] == [QUOTE]
-        assert tx.nonce is None and tx.gas_limit is None
+        assert "nonce" not in tx.as_transaction() and tx.gas_limit is None
     assert proxy.decode_function_input(build_ufg_cancel_transaction(plan).data)[0].fn_name == "cancelLaunch"
 
 
@@ -358,16 +358,29 @@ def test_public_ufg_native_planner_simulation_and_build_next_preserve_principal_
     assert failure.value.code == "PLAN_MUTATED"
 
 
-@pytest.mark.parametrize("change", ["hash", "principal"])
-def test_started_ufg_recovery_rejects_different_proxy_binding(change):
+def test_started_ufg_recovery_does_not_read_proxy_binding_guards():
+    from test_lifecycle_read_counts import CountingTransport
     provider = UfgRpcScenario(request(), confirmed_phase=1, latest_phase=1)
-    if change == "hash":
-        provider.config_hash = "0x" + "ff" * 32
-    else:
-        provider.principal = TOKEN
-    with pytest.raises(LifecyclePlanningError) as failure:
-        plan_launch(SimpleNamespace(provider=provider), request(), account=PRINCIPAL, mode="staged", ufg=terms())
-    assert failure.value.code == "INVALID_UFG_PLAN"
+    provider.config_hash, provider.principal = "0x" + "ff" * 32, TOKEN
+    client = CountingTransport(provider)
+    planned = plan_launch(client, request(), account=PRINCIPAL, mode="staged", ufg=terms())
+    assert planned.admitted
+    forbidden = {keccak(text=signature)[:4].hex()
+        for signature in ("principalOf(bytes32)", "launchConfigHash(bytes32)")}
+    assert not any(call["method"] == "eth_call" and call["params"][0]["data"][2:10] in forbidden
+        for call in client.calls)
+
+
+@pytest.mark.parametrize("mode", ["atomic", "staged"])
+def test_original_proxy_receipt_calldata_binds_treasury_config_without_mapping_reads(mode):
+    from black_market_sdk.lifecycle import _transaction_matches_receipt
+    from black_market_sdk.lifecycle_rpc import LaunchBlock
+    plan, config = request(), terms()
+    transaction = build_ufg_launch_transactions(plan, config=config, mode=mode)[0].as_transaction()
+    block = LaunchBlock(51, "0x" + "ab" * 32, plan.deadline - 100, 30_000_000, 1)
+    assert _transaction_matches_receipt(None, plan, transaction, block, hash_ufg_launch_config(config))
+    changed = replace(config, exit_fee_bps=config.exit_fee_bps + 1)
+    assert not _transaction_matches_receipt(None, plan, transaction, block, hash_ufg_launch_config(changed))
 
 
 def test_treasury_read_distinguishes_zero_and_checksum_address():

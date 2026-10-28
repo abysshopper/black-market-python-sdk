@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.14.1**, Python **3.10+**, import `black_market_sdk`.
+Package **0.15.0**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.14.1
+python -m pip install black-market-sdk==0.15.0
 ```
 
 For the runnable examples, install an editable checkout:
@@ -51,7 +51,7 @@ Fund that creator with ETH for the buy **and gas**. `RPC_URL` optionally overrid
 the official mainnet RPC. Process environment values override `.env`.
 
 ```sh
-# Dry run: discovery, pricing, funding checks, simulation; no signatures or writes.
+# Dry run: discovery, pricing and admission; no signatures or writes.
 python examples/launch_erc20_abyss.py
 # Authorizes spending and publication, without an interactive prompt.
 python examples/launch_erc20_abyss.py --broadcast
@@ -96,11 +96,11 @@ Counts below are markets / positions / ordered buys.
 | [`launch_erc20_depth_v4.py`](examples/launch_erc20_depth_v4.py) | ERC20, four bands | 1 / 4 / 1 | staged |
 | [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py) | ERC20 dividends, WETH + USDG | 3 / 7 / 3 | staged |
 
-The three-market/seven-position case is **not a first-run template**. Its fresh
-prefix estimate is **75.5M gas**: begin 9.5M + preparation 3 × 16M + activation
-3 × 6M, above the default **50M simulation window**. Even two ordinary markets
-estimate 53.5M. These protected-buy examples need activation inside the proof;
-see [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
+Multi-market conversion-funded reviews prove their state prerequisites through
+activation in one native simulation request. There is no default 50M aggregate
+cap or silently admitted prefix: an actual provider limit or explicit caller
+policy can refuse the review. Direct-funded covered profiles need no simulation
+window. See [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
 
 ## Choose an offering
 
@@ -118,9 +118,10 @@ Follow the [launch guide](docs/launch-guide.md) for pricing, signing, publicatio
 recovery, and claims. Check **receipt confirmed → markets active → metadata
 published → API indexed** separately; an API timeout does not undo an open token.
 
-Version 0.14.1 enables Robinhood's deployed planning lens through the lifecycle
-preset automatically. Planning batches dependent reads and hook mining, and
-`build_next_transaction` proves only the immediate command.
+Release-owned openings use versioned gas profiles and exact ordered local buy
+math. Kyber-funded execution and its consuming activation retain exact simulation.
+`build_next_transaction` handles only the immediate command. The wallet assigns
+its transaction nonce; the committed `LaunchPlanV1.nonce` remains launch identity.
 
 See [runner configuration](examples/README.md), [limits and codecs](docs/reference.md),
 [release changes](CHANGELOG.md), and the [MIT license](LICENSE).

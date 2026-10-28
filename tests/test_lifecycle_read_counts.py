@@ -73,8 +73,10 @@ class NativeBuyScenario(UfgRpcScenario):
         if kind not in {"atomic", "activate"}:
             return data
         abi_type = _tuple_type(LAUNCH_RECEIPT_COMPONENTS_V1)
+        from black_market_sdk import compute_lifecycle_opening_buys
         values = list(abi_decode([abi_type], bytes.fromhex(data[2:]))[0])
-        values[8] = tuple(1000 for _ in self.plan.buys)
+        values[8] = tuple(quote.token_out for quote in compute_lifecycle_opening_buys(
+            self.plan, predicted_token=values[2]))
         return "0x" + abi_encode([abi_type], [tuple(values)]).hex()
 
 
@@ -113,34 +115,33 @@ def prepared():
     return draft, client, launch
 
 
-def assert_budget(client, *, calls, simulations, gas_prices=1, total):
+def assert_budget(client, *, calls, simulations, total):
     assert client.counts == Counter({
-        "eth_getBlockByNumber": 2, "eth_chainId": 1,
-        "eth_getTransactionCount": 3, "eth_call": calls,
+        "eth_getBlockByNumber": 2, "eth_call": calls,
         "eth_simulateV1": simulations,
-        **({"eth_gasPrice": gas_prices} if gas_prices else {}),
     })
     assert len(client.calls) == total
 
 
-def test_protected_preparation_pins_once_and_keeps_calibration_separate(prepared):
+def test_protected_preparation_pins_once_without_a_diagnostic_buy_simulation(prepared):
     _, client, launch = prepared
     assert client.counts == Counter({"eth_chainId": 1, "eth_getBlockByNumber": 2,
-        "eth_getTransactionCount": 3, "eth_call": 3,
-        "eth_gasPrice": 1, "eth_getCode": 2, "eth_simulateV1": 3})
-    assert len(client.calls) == 15
-    assert launch.transactions[0].nonce == launch.progress.pending_account_nonce
+        "eth_call": 2, "eth_getCode": 2, "eth_simulateV1": 3})
+    assert len(client.calls) == 10
+    assert "nonce" not in launch.transactions[0].as_transaction()
     config = decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config)
     assert len(config.positions) == 6 and config.ufg_launch_config == terms()
-    assert launch.plan.buys[0].min_token_out == 995
+    from black_market_sdk import compute_lifecycle_opening_buys
+    quote, = compute_lifecycle_opening_buys(launch.plan, predicted_token=launch.progress.token)
+    assert launch.plan.buys[0].min_token_out == quote.token_out * 9950 // 10000
 
 
-@pytest.mark.parametrize("entry,total,calls,simulations,prices", [
-    ("plan", 12, 3, 2, 1), ("simulate", 12, 3, 2, 1),
-    ("build", 11, 3, 1, 1), ("reviewed", 9, 2, 1, 0),
-    ("staged", 12, 3, 2, 1), ("staged-reviewed", 9, 2, 1, 0),
+@pytest.mark.parametrize("entry,total,calls,simulations", [
+    ("plan", 6, 2, 2), ("simulate", 6, 2, 2),
+    ("build", 5, 2, 1), ("reviewed", 5, 2, 1),
+    ("staged", 6, 2, 2), ("staged-reviewed", 5, 2, 1),
 ])
-def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations, prices):
+def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations):
     _, client, launch = prepared
     if entry == "staged-reviewed":
         launch = plan_launch(client, launch.plan, account=PRINCIPAL, mode="staged", confirmations=2, ufg=terms())
@@ -156,50 +157,31 @@ def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations, pri
     else:
         result = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
         assert result.as_transaction() == launch.transactions[0].as_transaction()
-    assert_budget(client, calls=calls, simulations=simulations, gas_prices=prices, total=total)
+    assert_budget(client, calls=calls, simulations=simulations, total=total)
 
 
-def test_standalone_progress_retains_confirmation_and_pending_nonces(prepared):
+def test_standalone_progress_retains_domain_confirmations_without_eoa_nonce_reads(prepared):
     _, client, launch = prepared
     client.calls.clear()
-    progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic")
-    assert progress.confirmation_safe
-    assert client.counts == Counter({"eth_getBlockByNumber": 2, "eth_chainId": 1,
-        "eth_getTransactionCount": 3, "eth_call": 2})
-    assert len(client.calls) == 8
-    assert [call["params"][1] for call in client.calls if call["method"] == "eth_getTransactionCount"] == ["0x32", "0x33", "pending"]
+    progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic", ufg=terms())
+    assert progress.confirmation_safe and progress.nonce == launch.plan.nonce
+    assert client.counts == Counter({"eth_getBlockByNumber": 2, "eth_call": 2})
+    assert len(client.calls) == 4
 
 
-def test_submission_preflight_checks_its_provider_without_source_rechecks(prepared):
-    _, client, launch = prepared
-    client.calls.clear()
-    original = client.provider.make_request
-    def respond(method, params):
-        if method == "eth_estimateGas":
-            return {"result": hex(100_000)}
-        return original(method, params)
-    client.provider.make_request = respond
-    result = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0], submission_client=client)
-    assert result.admission.transport_preflight == "passed"
-    assert len(client.calls) == 12
-    assert client.counts["eth_chainId"] == 3
-    estimate = next(index for index, call in enumerate(client.calls) if call["method"] == "eth_estimateGas")
-    assert [call["method"] for call in client.calls[estimate + 1:]] == ["eth_chainId"]
-
-
-@pytest.mark.parametrize("price,expected_total", [(None, 14), (7, 13)])
-def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price, expected_total):
+@pytest.mark.parametrize("price", [None, 7])
+def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price):
     draft = draft_plan()
     client = CountingTransport(NativeBuyScenario(draft))
     launch = prepare(client, draft, fixed_final_envelope=LifecycleFinalEnvelope(31_000_000, price))
-    assert launch.admitted and len(client.calls) == expected_total
+    assert launch.admitted and len(client.calls) == 9
     transaction = launch.transactions[0]
     assert transaction.gas_limit == 31_000_000
     assert transaction.gas_price == (2 if price is None else price)
-    assert client.counts["eth_simulateV1"] == 3
-    assert client.counts["eth_gasPrice"] == (1 if price is None else 0)
+    assert client.counts["eth_simulateV1"] == 2
+    assert client.counts["eth_gasPrice"] == 0
     executions = client.provider.simulations
-    assert [payload["validation"] for payload in executions] == [False, True]
+    assert [payload["validation"] for payload in executions] == [True]
     assert int(executions[-1]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 31_000_000
     poster_calls = [call for call in client.calls if call["method"] == "eth_call" and call["params"][0]["to"].lower().endswith("00c8")]
     assert poster_calls == []  # Neither calibration nor an explicitly fixed envelope needs a quote.
@@ -231,8 +213,6 @@ def test_held_fixed_envelope_failure_is_not_resized_or_remeasured(prepared):
     assert len(client.provider.simulations) == 1 and client.provider.simulations[0]["validation"]
     assert all(call["params"][0]["to"].lower() != "0x00000000000000000000000000000000000000c8"
         for call in client.calls if call["method"] == "eth_call")
-
-
 
 
 def test_multicall_attestation_rejects_changed_runtime_before_execution():
@@ -281,42 +261,30 @@ def test_equal_receipt_blocks_share_headers_but_are_checked_after_identity_reads
         if method == "eth_getTransactionByHash":
             return {"result": {"from": PRINCIPAL, "to": UFG_LAUNCH_PROXY_ADDRESS,
                 "input": build_ufg_launch_transactions(launch.plan, config=terms(), mode="atomic")[0].data,
-                "value": hex(10**14)}}
+                "nonce": "0x7" if params[0].endswith("cc") else "0x8", "value": hex(10**14)}}
         return original(method, params)
     client.provider.make_request = receipts
     references = tuple(LifecycleReceiptReference("0x" + byte * 32, observed_block_number=49,
         observed_block_hash=BLOCK_HASH) for byte in ("cc", "dd"))
     client.calls.clear()
-    progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic", receipts=references)
+    progress = read_launch_progress(client, launch.plan, confirmations=2, mode="atomic", receipts=references, ufg=terms())
     assert [receipt.status for receipt in progress.receipts] == ["confirmed", "confirmed"]
-    assert len(client.calls) == 13
+    assert [receipt.nonce for receipt in progress.receipts] == [7, 8]
+    assert client.counts["eth_getTransactionCount"] == 0
+    assert len(client.calls) == 9
     assert len([call for call in client.calls if call["method"] == "eth_getBlockByNumber" and call["params"][0] == "0x31"]) == 1
 
 
-def test_reviewed_nonce_cannot_be_rewritten_when_account_history_advances(prepared):
-    _, client, launch = prepared
-    original = client.provider.make_request
-    def advance_nonce(method, params):
-        if method == "eth_getTransactionCount":
-            return {"result": "0x1"}
-        return original(method, params)
-    client.provider.make_request = advance_nonce
-    client.calls.clear()
-    with pytest.raises(LifecyclePlanningError) as failure:
-        build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
-    assert failure.value.code == "REVIEWED_TRANSACTION_MISMATCH"
-    assert client.counts["eth_simulateV1"] == 0
-
-
 @pytest.mark.parametrize("nonce", [-1, True, 1 << 64])
-def test_reviewed_nonce_rejects_invalid_quantities_before_rpc(prepared, nonce):
+def test_reviewed_extra_nonce_is_ignored_and_wallet_owns_assignment(prepared, nonce):
     _, client, launch = prepared
-    transaction = replace(launch.transactions[0], nonce=nonce)
+    held = launch.transactions[0]
+    transaction = {**held.as_transaction(), "id": held.step_id, "kind": held.kind, "nonce": nonce}
     client.calls.clear()
-    with pytest.raises(LifecyclePlanningError) as failure:
-        build_next_transaction(client, launch, reviewed_transaction=transaction)
-    assert failure.value.code == "INVALID_REVIEWED_TRANSACTION"
-    assert client.calls == []
+    current = build_next_transaction(client, launch, reviewed_transaction=transaction)
+    assert current.as_transaction() == held.as_transaction()
+    assert "nonce" not in current.as_transaction()
+    assert client.counts["eth_getTransactionCount"] == client.counts["eth_chainId"] == 0
 
 
 @pytest.mark.parametrize("invalid", ["missing", "failed"])
@@ -356,19 +324,21 @@ def test_fee_recommendation_is_frozen_inside_preparation_but_not_across_invocati
     client = CountingTransport(NativeBuyScenario(draft_plan()))
     client.provider.gas_price = 15
     def change_recommendation(args, _response):
-        if args["method"] == "eth_gasPrice":
+        if args["method"] == "eth_call" and args["params"][0]["to"].lower() == ROBINHOOD_MULTICALL3.lower():
             client.provider.gas_price = 999
     client.after_response = change_recommendation
     launch = prepare(client, draft_plan())
     assert launch.transactions[0].gas_price == 15
-    assert client.counts["eth_gasPrice"] == 1
+    assert client.counts["eth_gasPrice"] == 0
     assert all(int(block["calls"][0]["gasPrice"], 16) == 15
         for payload in client.provider.simulations for block in payload["blockStateCalls"])
     client.calls.clear()
+    client.provider.block_number += 1
+    client.provider.block_hash = ORPHAN_HASH
     current = plan_launch(client, launch.plan, account=PRINCIPAL, mode="atomic",
         confirmations=2, ufg=terms())
     assert current.transactions[0].gas_price == 999
-    assert client.counts["eth_gasPrice"] == 1
+    assert client.counts["eth_gasPrice"] == 0
 
 
 def test_fixed_envelope_also_applies_without_mining_or_buy_calibration():

@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.14.1** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.15.0** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -178,13 +178,15 @@ quote-denominated FDV; spend alone does not describe the allocation.
 | Helper / option | What it protects or estimates |
 | --- | --- |
 | `estimate_launch_initial_buy` | Pure **first-band** estimate; excludes later bands, earlier ordered buys, and hook effects. Do not derive executable minima from it alone. |
+| `compute_lifecycle_opening_buys(plan, predicted_token=...)` | Exact ordered unopened release-template curves, including band crossings and hook fees. Not a live quote or execution proof. |
 | `derive_launch_buy_sqrt_price_limit_x96` | Directional **price guard**; a tight guard can truncate a buy. It is not a token-output minimum. |
-| `buy_slippage_bps=50` | Planner diagnoses ordered buys, commits each output minimum, then simulates the final protected plan. |
+| `buy_slippage_bps=50` | Planner commits ordered exact local quote minima for known curves; conversion-funded reviews still receive final exact simulation. |
 
-`min_token_out = simulated_token_out * (10000 - buy_slippage_bps) // 10000`.
+`min_token_out = quoted_token_out * (10000 - buy_slippage_bps) // 10000`.
 For illustrative output 123456789 and 50 bps, the minimum is **122839505**.
-Calibration requires activation inside the simulated prefix. A Kyber conversion
-floor protects ETH→quote, not quote→launch token. A minimum of **1 wei is unprotected**.
+Conversion-funded reviews require activation inside the exact simulated sequence.
+A conversion floor protects ETH→quote, not quote→launch token. A minimum of
+**1 wei is unprotected**.
 
 ## Build the plan
 
@@ -309,32 +311,58 @@ Use `asyncio.run(prepare_first_launch(client, draft))` from a synchronous progra
 or `await` it in an existing event loop. Keep the returned `launch.plan`, hash,
 mode, and confirmation policy: V4 salts and calibrated minima may change the draft.
 Preparation mines bound-hook salts with the preset's deployed miner, verifies the
-returned CREATE2 addresses locally, reads funding, and proves ordered execution.
+returned CREATE2 addresses locally, reads funding, and computes the applicable
+profiled admission or exact conversion-funded execution proof.
 Without a configured miner it uses local mining. `plan_launch` is synchronous for
 an already-finalized plan.
 
-An admitted `launch.transactions[0]` includes its exact nonce, gas and gas price.
-Use it for review instead of running another unreviewed planning pass. Before signing,
-call `build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`
-once for fresh canonical progress and exact-envelope admission. Never use the stored
-planning result alone as fresh signing authority.
-Build-next retains receipt/nonce confirmation handling, but compiles the original
-preparation boundaries and simulates only the next command. It does not repeat
-profile discovery or simulate the remaining suffix.
-The full staged prefix is still simulated for feasibility. Only its immediate
-transaction has final signing gas, fee estimates and admission; later
-`simulation.steps` are marked `provisional=True`. They are freshly poster-quoted,
-sized and exactly validated when they become next. A suffix simulation ceiling
-is never a future transaction's fee estimate.
+An admitted `launch.transactions[0]` includes gas and gas price, but no wallet
+transaction nonce. The wallet assigns that nonce; `LaunchPlanV1.nonce` is still
+committed launch identity, including UFG principal namespacing. Optional
+`LifecycleReceiptReference.nonce` / receipt-status nonce records an actual submitted
+transaction, not a planning observation.
+Use the immediate envelope for review instead of another unreviewed planning pass.
+Before signing, call
+`build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`
+once for fresh canonical progress and envelope admission. The wallet must verify
+its active account/chain; the SDK's chain observation is cached per client session.
+Canonical launch progress and included/replacement receipt confirmations remain;
+unrelated global mempool activity is not a launch-confirmation gate.
+
+Build-next handles only the immediate command, retaining original preparation
+boundaries without repeating profile discovery or proving the remaining suffix.
+Known internal commands use explicit versioned gas profiles and exact local curves.
+They return `confidence=\"profiled\"`, `execution_proof=\"not-run\"`,
+`protocol_fit=\"profiled\"` and no simulated `steps`. `simulation.gas_profile` holds
+estimates and ordered opening quotes; profile estimates have `gas_used=None`.
+This is not a claim that a contract executed successfully.
+`simulate_launch_plan` is an explicit request for real execution, so it does not
+return a profile-only outcome even for a covered template.
+The v1 profile covers released assets/templates on Robinhood ArbOS61 for direct
+EOAs. Other supported inputs use exact simulation; coverage is not an asset ban.
+At the pinned block, expired non-cancel commands are refused; cancellation remains
+available after expiry.
+A refused complete review cannot be used to start funding approvals or begin a
+launch. Pass the admitted `PlannedLaunch`; next-only construction does not replan
+its remaining sequence. Already-started recovery and cancellation remain available.
+An unstarted raw `LaunchPlanV1` is no longer accepted by `build_next_transaction`.
+First obtain an admitted `PlannedLaunch` with the planning API. Raw plans remain
+supported for already-started recovery, cancellation and terminal reads.
+
+Conversion-funded planning proves the stateful sequence through activation in one
+`eth_simulateV1` request. Internal preparation calls in that request are state
+prerequisites, not extra simulation RPCs. Only the immediate envelope is final;
+suffix envelopes remain provisional. At its turn, a known internal preparation
+uses profile admission, while the consuming activation receives fresh exact proof.
 
 Atomic callers with an explicit signing gas policy may pass
 `fixed_final_envelope=LifecycleFinalEnvelope(gas=31_000_000)` to
 `prepare_and_plan_lifecycle_launch`. This is an exact gas choice, not a ceiling or recommendation.
 Omitting `gas_price` freezes the operation's single fee recommendation; supplying it
-holds that exact price. Protected preparation still measures diagnostic buy outputs
-and validates the exact final protected calldata/gas/price. Staged plans and
-approval-first sequences cannot use this option. A failed held envelope is refused,
-not enlarged.
+holds that exact price. Local opening-buy calibration does not invent measured gas.
+Retained simulation validates the final protected calldata and held envelope;
+profiled admission remains explicitly distinct. Staged plans and approval-first
+sequences cannot use this option. A failed held envelope is refused, not enlarged.
 
 | Mode | Transactions after approvals | What can be interrupted |
 | --- | --- | --- |
@@ -344,63 +372,69 @@ not enlarged.
 Staging is not rollback: an expired begun launch remains begun until cancelled.
 Select the mode explicitly; a refusal does not authorize changing the economics.
 
-Robinhood's default aggregate `eth_simulateV1` budget is **50M gas**. Fresh ordinary
-plans estimate begin **9.5M**, preparation **16M/market**, activation **6M/market**:
-one market **31.5M**, two **53.5M**, three **75.5M**, before any approval estimates.
-These are prefix-selection estimates, not measured gas or a chain transaction cap.
+There is no invented default aggregate simulation cap. Direct-funded known-template
+profiles need no simulation window. Conversion-funded reviews require the stateful
+sequence through activation in one request; the native provider decides actual
+aggregate availability unless explicit caller policy tightens it. A request that
+cannot include required activation refuses the unproved sequence, not admits a
+prefix as complete feasibility. Profile estimates are not measured gas.
 
-`launch.simulation.deferred_transaction_ids` lists the suffix outside the proof.
-Deferred transactions have no signing gas/price/admission. `buy_slippage_bps`
-requires activation outputs, so the fixed protected-buy runner refuses a deferred
-activation. For a larger plan, use a native provider supporting a larger request
-and pass `LaunchExecutionLimits(rpc_total_simulation_gas_limit=...)` in your
-integration. The Python runner has no environment override for that aggregate cap.
-A generic Anvil fork cannot prove Robinhood's native Nitro metering.
+Deferred work never supplies a signing envelope. Use optional
+`LaunchExecutionLimits(rpc_total_simulation_gas_limit=...)` only for an actual
+provider/account policy. The Python runner has no environment override for that
+policy. A generic Anvil fork cannot prove Robinhood's native Nitro metering.
 
 ## Sign and confirm
 
 Call `build_next_transaction` after every confirmed receipt, passing the immediate
 reviewed transaction when one is held. Review and sign only the returned exact
-`as_transaction()` envelope; `submission_client` optionally preflights your send RPC.
-Immediately before signing, verify the active provider's account/chain, fresh pending
-nonce and pending balance for value plus fees. SDK proof does not replace those
-wallet/provider guards. Deferred commands cannot be signed.
+`as_transaction()` envelope. The wallet owns its active account/chain, nonce and
+balance checks. Track actual submitted nonces and replacements locally; an unknown
+wallet-session nonce may be recovered once, not reread at every planning stage.
+SDK admission does not replace wallet authority. Deferred commands cannot be signed.
 
-This loop **spends funds when called** with your authorized `eth-account` local wallet.
-Supply `persist`, your application's durable owner-only journal callback. Resolve any
-previously signed hash first. Exceptions stop execution without automatically resending.
+This loop **spends funds when called** with your authorized, exclusively used
+`eth-account` local wallet and chain-bound client. Supply `persist`, your durable
+owner-only journal callback, and a known `next_nonce` from wallet session state
+when available. Resolve any previously signed hash first. Exceptions stop execution
+without automatically resending.
 
 ```python
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from black_market_sdk import (
     LifecycleReceiptReference, build_next_transaction,
     launch_plan_to_dict, read_launch_progress,
 )
 import time
 
-def execute_launch(client, launch, wallet, persist, references=()):
+def execute_launch(client, launch, wallet, persist, references=(), *, next_nonce=None):
     references = list(references)
     def save():
         persist({"plan": launch_plan_to_dict(launch.plan), "mode": launch.mode,
-                 "confirmations": launch.confirmations,
+                 "confirmations": launch.confirmations, "nextNonce": next_nonce,
                  "receipts": [asdict(item) for item in references]})
     while True:
         command = build_next_transaction(
-            client, launch, receipts=tuple(references), submission_client=client,
+            client, launch, receipts=tuple(references),
         )
         if command is None:
             return read_launch_progress(
                 client, launch.plan, mode=launch.mode,
                 confirmations=launch.confirmations, receipts=tuple(references),
             )
-        if (client.eth.chain_id != launch.plan.chain_id
+        if (command.chain_id != launch.plan.chain_id
                 or wallet.address.lower() != launch.account.lower()):
             raise RuntimeError("Wallet or chain changed")
-        signed = wallet.sign_transaction(command.as_transaction())
+        envelope = command.as_transaction()
+        if next_nonce is None:  # One unknown-session recovery, at the signing boundary.
+            next_nonce = client.eth.get_transaction_count(wallet.address, "pending")
+        envelope["nonce"] = next_nonce
+        signed = wallet.sign_transaction(envelope)
         tx_hash = Web3.to_hex(signed.hash)
         references.append(LifecycleReceiptReference(
-            tx_hash, confirmations=launch.confirmations,
+            tx_hash, confirmations=launch.confirmations, nonce=next_nonce,
         ))
+        next_nonce += 1
         save()  # Retain the computed hash BEFORE submission.
         client.eth.send_raw_transaction(signed.raw_transaction)
         receipt = client.eth.wait_for_transaction_receipt(tx_hash)
