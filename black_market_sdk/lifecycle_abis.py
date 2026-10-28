@@ -130,4 +130,49 @@ LAUNCH_LENS_V1_ABI = [
     _function("feeRoute", [_argument("token", "address")], [_argument("", "tuple", components=FEE_ROUTE_COMPONENTS_V1)]),
 ]
 
+HOOK_SALT_MINER_ABI = [
+    _function("findMany", [
+        _argument("searches", "tuple[]", components=[
+            _argument("deployer", "address"), _argument("initCodeHash", "bytes32"),
+            _argument("startSalt", "uint256"), _argument("flags", "uint160"),
+        ]),
+        _argument("maxAttempts", "uint256"),
+    ], [
+        _argument("salts", "bytes32[]"), _argument("hooks", "address[]"), _argument("found", "bool[]"),
+    ], "pure"),
+]
+LAUNCH_LENS_TOKEN_BALANCE_COMPONENTS = [
+    _argument("token", "address"), _argument("balance", "uint256"), _argument("allowance", "uint256"),
+]
+LAUNCH_LENS_PREPARED_MARKET_COMPONENTS = [
+    _argument("index", "uint32"), _argument("adapter", "address"),
+    _argument("prepared", "tuple", components=PREPARED_MARKET_COMPONENTS_V1),
+    _argument("liveStateSuccess", "bool"),
+    _argument("live", "tuple", components=MARKET_LIVE_STATE_COMPONENTS_V1),
+    _argument("liveStateError", "bytes"),
+]
+LAUNCH_LENS_HOOK_DEPLOYMENT_COMPONENTS = [
+    _argument("marketIndex", "uint32"), _argument("adapter", "address"),
+    _argument("deployer", "address"), _argument("constructorParameters", "bytes"),
+    _argument("initCodeHash", "bytes32"), _argument("salt", "bytes32"),
+    _argument("hook", "address"), _argument("found", "bool"),
+]
+LAUNCH_LENS_SNAPSHOT_COMPONENTS = [
+    _argument("chainId", "uint256"), _argument("blockNumber", "uint256"),
+    _argument("parentBlockHash", "bytes32"), _argument("timestamp", "uint256"),
+    _argument("nativeBalance", "uint256"),
+    _argument("tokenBalances", "tuple[]", components=LAUNCH_LENS_TOKEN_BALANCE_COMPONENTS),
+    _argument("predictedToken", "address"), _argument("launchId", "bytes32"),
+    _argument("progress", "tuple", components=LAUNCH_PROGRESS_COMPONENTS_V1),
+    _argument("preparedMarkets", "tuple[]", components=LAUNCH_LENS_PREPARED_MARKET_COMPONENTS),
+    _argument("hookDeployments", "tuple[]", components=LAUNCH_LENS_HOOK_DEPLOYMENT_COMPONENTS),
+]
+LAUNCH_LENS_ABI = [
+    _function("snapshot", [
+        _argument("plan", "tuple", components=LAUNCH_PLAN_COMPONENTS_V1),
+        _argument("owner", "address"), _argument("fundingEscrow", "address"),
+        _argument("tokens", "address[]"), _argument("maxAttempts", "uint256"),
+    ], [_argument("result", "tuple", components=LAUNCH_LENS_SNAPSHOT_COMPONENTS)]),
+]
+
 __all__ = [name for name in globals() if name.isupper() and not name.startswith("_")]

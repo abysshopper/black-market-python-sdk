@@ -43,8 +43,10 @@ Use synchronous Web3, not AsyncWeb3. `read_lifecycle_profiles`, `read_launch_pro
 `plan_launch`, `simulate_launch_plan` and `build_next_transaction` are synchronous;
 `prepare_and_plan_lifecycle_launch` and `mine_pool_bound_hook_salt` are asynchronous.
 Do not translate Node calls mechanically or wrap unified preparation in another
-mining/admission loop. Known presets never remove live continuity, receipt, nonce,
-affordability or simulation checks.
+mining/admission loop. Release presets own profile/deployment wiring. One final
+exact-calldata simulation and on-chain enforcement replace repeated metadata and
+source guards; receipt/nonce confirmation handling remains. Build-next proves
+only the immediate command, not the whole remaining launch.
 
 Atomic/staged mode is explicit. Refusal does not authorize fallback, smaller budgets,
 fewer positions, dropped buys or a different hook. Staging partitions preparation,

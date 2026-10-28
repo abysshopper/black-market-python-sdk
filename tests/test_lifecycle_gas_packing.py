@@ -53,11 +53,15 @@ def test_hmm_reserve_is_added_once_per_atomic_or_activation(monkeypatch, dynamic
 
 def test_hmm_reserve_is_not_added_to_begin_or_prepare(monkeypatch):
     request = hmm_plan(1)
-    lifecycle, _, _, client = wire_planning(monkeypatch, request=request,
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"compute_gas_by_kind": {"begin": 8_000_000, "prepare": 14_000_000, "activate": 6_000_000}})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
     assert planned.admitted and planned.simulation.deferred_transaction_ids == ()
-    assert [transaction.gas_limit for transaction in planned.transactions] == [9_200_000, 16_100_000, 10_250_000]
+    assert [transaction.gas_limit for transaction in planned.transactions] == [9_200_000, None, None]
+    provider.latest_phase = provider.confirmed_phase = LifecyclePhase.PREPARING
+    assert build_next_transaction(client, planned).gas_limit == 16_100_000
+    provider.latest_phase = provider.confirmed_phase = LifecyclePhase.READY
+    assert build_next_transaction(client, planned).gas_limit == 10_250_000
 
 
 @pytest.mark.parametrize("mode", ["atomic", "staged"])
@@ -66,20 +70,21 @@ def test_non_hmm_plan_keeps_percentage_only_padding(monkeypatch, mode):
     lifecycle, _, _, client = wire_planning(monkeypatch, request=request)
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode=mode)
     assert planned.admitted
-    assert all(transaction.gas_limit == 115_000 for transaction in planned.transactions)
+    assert planned.transactions[0].gas_limit == 115_000
+    assert all(transaction.gas_limit is None for transaction in planned.transactions[1:])
 
 
 @pytest.mark.parametrize("gross", [27_360_000, 31_000_000])
-def test_one_pool_hmm_atomic_uses_reserve_and_clamps_padding(monkeypatch, gross):
+def test_one_pool_hmm_atomic_uses_reserve_in_complete_envelope_budget(monkeypatch, gross):
     request = hmm_plan(1)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"compute_gas": gross})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert planned.admitted and planned.mode == "atomic"
-    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 32_000_000)
+    expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 50_000_000)
     assert planned.transactions[0].gas_limit == expected
-    replay = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
-    assert int(replay["gas"], 16) == expected
+    measurement = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
+    assert int(measurement["gas"], 16) == 32_000_000
 
 
 def test_true_atomic_compute_overflow_still_refuses(monkeypatch):
@@ -125,7 +130,7 @@ def test_underestimated_packed_prepare_splits_at_near_ceiling_for_any_error(monk
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"] and error is not None:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1 and error is not None:
             for block, result in zip(params[0]["blockStateCalls"], response["result"]):
                 kind, args = provider.command(block["calls"][0])
                 if kind == "prepare" and args[2] > 1:
@@ -148,7 +153,7 @@ def test_measurement_distinguishes_transport_exhaustion_from_semantic_failure(mo
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"]:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1 and provider.command(params[0]["blockStateCalls"][-1]["calls"][0])[0] == "activate":
             result = response["result"][-1]["calls"][0]
             result.update(status="0x0", returnData="0x" + keccak(text="SlippageExceeded()")[:4].hex(),
                           error={"code": 3, "message": "execution reverted"})
@@ -180,11 +185,12 @@ def test_default_aggregate_cap_proves_prefix_and_defers_unpriced_suffix_then_rec
     assert planned.simulation.deferred_transaction_ids == ("prepare:2:1", "activate")
     assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [2, 2]
     assert planned.simulation.evidence.complete
-    for transaction in (*planned.transactions, *planned.simulation.transactions):
-        if transaction.step_id in planned.simulation.deferred_transaction_ids:
-            assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
-        else:
+    for index, transaction in enumerate(planned.transactions):
+        if index == 0:
             assert transaction.admission.admitted and transaction.gas_limit is not None
+        else:
+            assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
+    assert planned.simulation.steps[1].provisional
     with pytest.raises(ValueError, match="activation outputs beyond the proven simulation prefix") as error:
         _protect_ordered_buy_minimums(planned, 500)
     assert error.value.code == "LAUNCH_DIAGNOSTIC_FAILED"
@@ -200,7 +206,9 @@ def test_explicit_aggregate_override_can_prove_whole_sequence(monkeypatch):
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
         limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
     assert planned.admitted and planned.simulation.deferred_transaction_ids == ()
-    assert all(transaction.admission.admitted for transaction in planned.transactions)
+    assert planned.transactions[0].admission.admitted
+    assert all(transaction.admission is None for transaction in planned.transactions[1:])
+    assert all(step.success and step.provisional for step in planned.simulation.steps[1:])
 
 
 @pytest.mark.parametrize("count,compute_cap,rpc_cap,constraint,reason", [
@@ -225,14 +233,15 @@ def test_no_prefix_refusal_prioritizes_compute_limit_over_rpc_budget(monkeypatch
     assert provider.simulations == []
 
 
-def test_owner_guard_collapses_planning_rpc_count(monkeypatch):
+def test_plain_planning_pins_once_then_sizes_and_exactly_validates(monkeypatch):
     request = hmm_plan(1)
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
     assert planned.admitted
-    assert provider.operations.count("eth_chainId") == 2
-    assert provider.operations.count("eth_getBlockByNumber") == 2
-    assert len(provider.operations) == 15  # Five invariant getters share one attested aggregate.
+    assert provider.operations.count("eth_chainId") == 1
+    assert provider.operations.count("eth_getBlockByNumber") == 1
+    assert provider.operations.count("eth_simulateV1") == 3
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
 
 
 def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
@@ -241,7 +250,7 @@ def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"]:
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
             result = response["result"][-1]["calls"][0]
             result.update(status="0x0", gasUsed=hex(1_000_000), maxUsedGas=hex(1_000_000),
                 returnData="0x" + keccak(text="InvalidConfiguration()")[:4].hex(),
@@ -260,14 +269,14 @@ def test_reviewed_prepare_preserves_held_span_without_batch_rediscovery(monkeypa
     lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
         scenario_options={"prepare_gas_per_market": 18_000_000})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    held = planned.transactions[1]
-    assert held.kind == "prepare" and held.market_count == 1
-    provider.prepare_gas_per_market = 14_000_000
     provider.latest_phase = provider.confirmed_phase = LifecyclePhase.PREPARING
     original = provider.make_request
     def respond(method, params):
         return {"result": "0x1"} if method == "eth_getTransactionCount" else original(method, params)
     monkeypatch.setattr(provider, "make_request", respond)
+    held = build_next_transaction(client, planned)
+    assert held.kind == "prepare" and held.market_count == 1
+    provider.prepare_gas_per_market = 14_000_000
     provider.simulations.clear()
     current = build_next_transaction(client, planned, reviewed_transaction=held)
     assert current.as_transaction() == held.as_transaction()
@@ -278,8 +287,9 @@ def test_reviewed_prepare_preserves_held_span_without_batch_rediscovery(monkeypa
     assert args[1:] == (0, 1)
 
 
+@pytest.mark.parametrize("reviewed", [False, True])
 @pytest.mark.parametrize("execution_succeeds", [False, True])
-def test_reviewed_generic_owned_fork_replays_directly_without_estimation_or_backend_switch(monkeypatch, execution_succeeds):
+def test_sized_generic_owned_fork_executes_directly_without_estimation_or_backend_switch(monkeypatch, execution_succeeds, reviewed):
     from types import SimpleNamespace
     from black_market_sdk import ControlledLaunchFork, build_lifecycle_calldata
     from test_lifecycle import TRANSACTION_HASH
@@ -315,11 +325,11 @@ def test_reviewed_generic_owned_fork_replays_directly_without_estimation_or_back
     fork = ControlledLaunchFork(client=SimpleNamespace(provider=fork_provider), isolated=True,
         source_rpc_url=provider.endpoint_uri)
     if execution_succeeds:
-        current = build_next_transaction(client, planned, reviewed_transaction=held, fork=fork)
+        current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None, fork=fork)
         assert current.as_transaction() == held.as_transaction() and current.admission.admitted
     else:
         with pytest.raises(ValueError) as failure:
-            build_next_transaction(client, planned, reviewed_transaction=held, fork=fork)
+            build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None, fork=fork)
         assert failure.value.code == "PLAN_NOT_ADMITTED"
         assert failure.value.simulation.backend == "controlled-fork"
     assert provider.simulations == []
@@ -341,7 +351,7 @@ def test_exact_hmm_profile_estimates_are_global_but_unknown_profiles_get_no_rese
     assert _forwarding_reserve(unknown, "activate") == _forwarding_reserve(unknown, "atomic") == 0
 
 
-def test_unified_preparation_retains_only_owner_source_guards(monkeypatch):
+def test_unified_preparation_reuses_initial_pin_after_mining(monkeypatch):
     import asyncio
     from black_market_sdk.lifecycle import _known_bound_deployment, PoolBoundLifecycleDeployment
     from test_lifecycle import ORPHAN_HASH
@@ -358,7 +368,33 @@ def test_unified_preparation_retains_only_owner_source_guards(monkeypatch):
         provider.block_hash = ORPHAN_HASH
     planned = asyncio.run(lifecycle.prepare_and_plan_lifecycle_launch(client, request,
         account=request.creator, mode="atomic", on_progress=advance))
-    assert planned.admitted and planned.progress.head_block.number == 52
-    assert provider.operations.count("eth_chainId") == 2
-    assert provider.operations.count("eth_getBlockByNumber") == 3
-    assert len(provider.operations) == 17
+    assert planned.admitted and planned.progress.head_block.number == 51
+    assert provider.operations.count("eth_chainId") == 1
+    assert provider.operations.count("eth_getBlockByNumber") == 1
+
+
+def test_per_call_sizing_keeps_an_affordable_heavy_preparation_packed(monkeypatch):
+    request = hmm_plan(2)
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"balance": 146_000_000, "prepare_gas_per_market": 15_500_000,
+            "compute_gas_by_kind": {"begin": 9_000_000, "activate": 6_000_000}})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
+    assert planned.admitted
+    assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
+    assert planned.transactions[1].market_count == 2
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert all(int(block["calls"][0]["gas"], 16) == 32_000_000
+        for block in provider.simulations[0]["blockStateCalls"])
+
+
+def test_affordability_capped_sizing_failure_does_not_infer_native_capacity_or_split(monkeypatch):
+    request = hmm_plan(2)
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"balance": 20_000_000, "prepare_gas_per_market": 15_500_000})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
+    assert not planned.admitted
+    assert planned.simulation.failed_transaction_id == "prepare:0:2"
+    assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [2]
+    assert [payload["validation"] for payload in provider.simulations] == [False]

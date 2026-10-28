@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.0
+
+- Pin each planning invocation once and batch same-block progress, prediction, Nitro limits, native balances, ERC20 balances and allowances through Multicall3 without a minimum batch size. Batch prepared-directory reads and dependent adapter reads in their respective stages.
+- Reuse successful Multicall3 runtime, direct-EOA and native-Nitro capability checks for the same transport session. Mutable balances, progress, allowances and limits remain invocation-local.
+- Size the immediate signing envelope from protected-buy calibration or a retained compute-only `simulation.steps[i].compute_gas_required` observation. If neither exists, run one unvalidated sizing pass. Bound both discovery and final proposals by pinned native balance and committed value: Nitro checks upfront fees in both validation modes. Return exactly the final validated gas/price. Reviewed envelopes remain unchanged; generic-EVM fork sizing uses gross `eth_estimateGas`, not refund-reduced receipt gas.
+- Prove the staged prefix's full feasibility with conservative suffix budgets, but attach signing gas, fee estimates and admission only to the immediate transaction. Later `simulation.steps` have `provisional=True`; `build_next_transaction` uses retained compute and a fresh poster quote at each turn, never treating a suffix simulation ceiling or previous complete total as compute. Missing compute observations trigger sizing, not stale-envelope reuse.
+- Bound raw discovery per call rather than dividing spendable gas equally across commands; unused reservations refund before subsequent calls. Only a native upfront-funds admission refusal permits one shared-budget sizing retry, followed by the one exact final validation. Contract reverts, OOG and provider failures do not trigger that retry; a repeated funds refusal never selects a fork. Do not infer native capacity or split preparations from a failure at a lower affordability ceiling.
+- Document the low-margin limitation: a sequence the payer can actually fund may still be refused by the single shared-budget sizing retry. Report below-native-ceiling retry OOG as affordability, not native capacity. The previous release also refused these cases; no successful-prefix observations are synthesized from top-level RPC refusals.
+- Build and simulate only the next canonical command after a receipt, clipping stored preparation batches to unfinished markets and reconstructing missing suffixes from waiting plans. Do not replan or reread profile metadata for the remaining launch.
+- Add `LifecycleDeploymentPreset.hook_salt_miner` and `.launch_lens`, `HOOK_SALT_MINER_ABI`, and the new `LAUNCH_LENS_ABI`. Robinhood uses the deployed batched miner and verifies its salts locally. The new dependent planning lens stays unset pending owner deployment; the existing inspection lens remains unchanged.
+- Use one authoritative L2 RPC header for the planning pin and issue the aggregate at its explicit block number. Nitro's EVM block-number/hash getters expose L1 values and are not used as L2 pins.
+- Diagnostic migration: ordinary final proof no longer emits `simulation.replay`, and `simulation.envelope` rescue events are removed. `simulation.measure` can cover optional sizing and final validation; reviewed-only proof retains `simulation.replay`. Track completion with returned admission/outcomes rather than a fixed stage sequence. Build-next no longer emits nested `plan.context`, `plan.domain` or `plan.inputs` stages for whole-plan metadata/suffix work.
+
 ## 0.13.0
 
 - Aggregate the reviewed Robinhood Nitro getters, immutable factory prediction and head progress with pinned, runtime-attested Multicall3. Keep caller-sensitive poster estimates on their original direct path.
@@ -60,4 +73,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.13.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.14.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

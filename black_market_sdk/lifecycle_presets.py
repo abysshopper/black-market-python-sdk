@@ -84,6 +84,8 @@ class LifecycleDeploymentPreset:
     funding_escrow: str
     profiles: tuple[LifecycleProfilePreset, ...]
     provenance: LifecycleDeploymentProvenance
+    hook_salt_miner: str | None = None
+    launch_lens: str | None = None
 
 
 def _load_deployment() -> LifecycleDeploymentPreset:
@@ -132,7 +134,8 @@ def _load_deployment() -> LifecycleDeploymentPreset:
     provenance = data["provenance"]
     return LifecycleDeploymentPreset(data["chainId"], addresses["orchestrator"], addresses["registry"],
                                      addresses["tokenFactory"], data["tokenFactoryCodeHash"], addresses["fundingEscrow"],
-                                     tuple(profiles), LifecycleDeploymentProvenance(provenance["sourceCommit"], provenance["deploymentBlock"]))
+                                     tuple(profiles), LifecycleDeploymentProvenance(provenance["sourceCommit"], provenance["deploymentBlock"]),
+                                     hook_salt_miner="0x2f06176ba739b609b6a7334e2e6647558ba78ad5")
 
 
 _DEPLOYMENT = _load_deployment()
