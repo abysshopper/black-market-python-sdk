@@ -43,15 +43,19 @@ Use synchronous Web3, not AsyncWeb3. `read_lifecycle_profiles`, `read_launch_pro
 `plan_launch`, `simulate_launch_plan` and `build_next_transaction` are synchronous;
 `prepare_and_plan_lifecycle_launch` and `mine_pool_bound_hook_salt` are asynchronous.
 Do not translate Node calls mechanically or wrap unified preparation in another
-mining/admission loop. Release presets own profile/deployment wiring. One final
-exact-calldata simulation and on-chain enforcement replace repeated metadata and
-source guards; receipt/nonce confirmation handling remains. Build-next proves
-only the immediate command, not the whole remaining launch.
+mining/admission loop. Release presets own profile/deployment wiring. Launch commands
+use the fixed preset native ceiling (32M total gas on 4663), not profile-sized gas,
+poster additions or held-gas substitutions. Profiles classify atomic versus staged.
+Aggregator-funded execution and consuming activation retain exact simulation at
+that same ceiling. Build-next handles only the immediate command.
+Chain identity is observed once per client session; the wallet assigns EOA nonces.
+Launch/domain nonces and receipt-confirmation policy remain unchanged.
 
-Atomic/staged mode is explicit. Refusal does not authorize fallback, smaller budgets,
-fewer positions, dropped buys or a different hook. Staging partitions preparation,
-not final activation. Native Nitro compute/poster evidence is not generic local
-EVM gas. Optional limits tighten policy; never invent a 16M/32M chain cap from a fixture.
+Review the selected atomic/staged mode before execution. A refusal does not
+authorize smaller budgets, fewer positions, dropped buys, a different hook or
+automatic wallet-write replay. Staging partitions preparation, not final activation.
+Native Nitro execution is not generic local EVM evidence. Use the release preset's
+native ceiling, not a template estimate or fixture-derived chain limit.
 
 ## Representation and integration boundaries
 

@@ -264,6 +264,9 @@ from .lifecycle import (
     LifecycleProofOutcomes,
     LifecycleSimulationStep,
     LifecycleTransactionEstimate,
+    LifecycleOpeningBuyQuote,
+    LifecycleLaunchGasBounds,
+    LifecycleGasProfileEvidence,
     LaunchBlock,
     LaunchExecutionLimits,
     LaunchLimitContext,
@@ -271,7 +274,6 @@ from .lifecycle import (
     LaunchProgress,
     LaunchSimulation,
     LifecycleAdmission,
-    LaunchSubmissionPreflightError,
     LaunchStateChanged,
     LifecycleAbyssMarketConfig,
     LifecycleAbyssPosition,
@@ -280,7 +282,6 @@ from .lifecycle import (
     LifecycleEvent,
     LifecycleFeeAssetPolicy,
     LifecycleFundingKind,
-    LifecycleFinalEnvelope as LifecycleFinalEnvelope,
     LifecycleHookTopology,
     LifecycleInitialBuy,
     LifecycleLimitResolver,
@@ -348,6 +349,8 @@ from .lifecycle import (
     validate_v4_lifecycle_market,
     validate_v4_lifecycle_oracle,
     build_launch_transactions,
+    compute_lifecycle_opening_buys,
+    compute_lifecycle_launch_gas_bounds,
     build_pool_bound_hook_parameters,
     encode_launch_plan,
     encode_lifecycle_abyss_market_config,
@@ -403,6 +406,7 @@ from .ufg_abis import (
 )
 from .lifecycle_rpc import LifecycleRpcClient, LifecycleDiagnosticEvent, LifecycleDiagnosticListener
 from .lifecycle_presets import (
+    ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT,
     KnownLifecycleHook, KnownLifecycleProfile, LifecycleBoundHookPreset, LifecycleProfilePreset,
     LifecycleDeploymentPreset, LifecycleDeploymentProvenance,
     get_known_lifecycle_deployment, get_known_lifecycle_profile, list_known_lifecycle_profiles,
@@ -427,4 +431,4 @@ from .live import (
     wallet_map_from_lens,
 )
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"

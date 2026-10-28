@@ -144,19 +144,30 @@ def test_default_case_dry_run_saves_final_review_without_wallet_or_writes(runner
     assert json.loads((output / "admission.json").read_text())["admitted"] is True
     assert review["reviewHash"] == example.economic_review_hash(review["review"])
     assert review["review"]["image"] == example.portable(runner_context.image)
-    assert len(review["review"]["simulatedBuys"]) == len(launch.plan.buys)
+    assert len(review["review"]["openingBuys"]) == len(launch.plan.buys)
     assert review["review"]["funding"] == review["review"]["plan"]["funding"]
     text = capsys.readouterr()
     assert text.err == ""
     assert text.out.splitlines()[0] == "DRY RUN — no transactions signed or broadcast."
-    assert review["reviewHash"] in text.out and '"simulatedBuys"' in text.out
+    assert review["reviewHash"] in text.out and '"openingBuys"' in text.out
     assert text.out.splitlines()[-1] == shlex.join([sys.executable, script, "--broadcast"])
 
 
-@pytest.mark.parametrize("filename", CASES)
-def test_broadcast_case_routes_all_execution_phases_without_hash_input(runner_context, filename, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("filename,select_staged", [
+    *((filename, False) for filename in CASES), ("launch_erc20_abyss.py", True),
+])
+def test_broadcast_case_routes_all_execution_phases_without_hash_input(runner_context, filename, select_staged, tmp_path, monkeypatch, capsys):
     phases, api, recovery, receipt, references = [], object(), {}, {"transactionHash": TX_HASH}, ()
     monkeypatch.setattr(example, "api_client", lambda url: api)
+    requested_cases = []
+    admit = example.admit_plan
+    def admission(client, plan, case, artifacts, cancellation):
+        requested_cases.append((case, case["mode"]))
+        launch = admit(client, plan, case, artifacts, cancellation)
+        if select_staged:
+            launch.mode = "staged"
+        return launch
+    monkeypatch.setattr(example, "admit_plan", admission)
 
     def stage(client, actual_api, plan, artifacts, cancellation, **options):
         phases.append("stage")
@@ -179,6 +190,7 @@ def test_broadcast_case_routes_all_execution_phases_without_hash_input(runner_co
         phases.append("verify")
         assert predicted == TOKEN and actual_receipt is receipt and hashes == [TX_HASH]
         assert actual_references is references
+        assert case["mode"] == runner_context.preparations[0][2].mode
         artifacts.result["chain"]["status"] = "passed"
 
     def publish(client, actual_api, actual_recovery, plan, predicted, actual_receipt, actual_references, timeout, artifacts, cancellation):
@@ -199,6 +211,9 @@ def test_broadcast_case_routes_all_execution_phases_without_hash_input(runner_co
     assert result["status"] == "passed" and result["execution"] == "executed"
     assert result["chain"]["status"] == "passed" and result["api"]["status"] == "passed"
     assert json.loads((output / "run.json").read_text())["executionMode"] == "broadcast"
+    assert requested_cases[0][0]["mode"] == requested_cases[0][1]
+    if select_staged:
+        assert requested_cases[0][1] == "atomic" and runner_context.preparations[0][2].mode == "staged"
     text = capsys.readouterr()
     assert text.err == "" and "DRY RUN" not in text.out
     assert '"reviewHash"' in text.out and "end-to-end" in text.out

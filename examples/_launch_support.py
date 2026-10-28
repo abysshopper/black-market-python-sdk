@@ -23,7 +23,7 @@ from eth_abi import decode
 from eth_abi.exceptions import DecodingError
 from eth_account.messages import encode_typed_data
 
-from black_market_sdk.lifecycle_rpc import hex_bytes, quantity, rpc
+from black_market_sdk.lifecycle_rpc import hex_bytes, quantity, rpc, rpc_transaction
 from black_market_sdk import (
     LAUNCH_IMAGE_CONTENT_TYPES, MAX_LAUNCH_IMAGE_BYTES, LaunchSessionImageDescriptor,
     LaunchSessionMetadata, canonical_launch_metadata_hash, sha256_hex,
@@ -701,14 +701,14 @@ class LocalSigningWallet:
             raise ExampleFailure("typed data signature recovered another creator", code="WALLET_IDENTITY_MISMATCH")
         return signature
 
-    def prepare_transaction(self, transaction):
+    def prepare_transaction(self, transaction, *, kind=None):
         self.check_chain()
         envelope = dict(transaction)
         if (quantity(envelope.get("chainId", 0)) != self.chain_id
                 or str(envelope.get("from", "")).lower() != self.account.address.lower()):
             raise ExampleFailure("transaction sender or chain differs from wallet", code="WALLET_IDENTITY_MISMATCH")
-        # SDK gas/value/calldata are authoritative. Never estimate or rewrite them.
-        if not {"gas", "value", "data", "to"} <= envelope.keys():
+        # Launch gas stays exact. Approval gas and fees belong to this wallet.
+        if not {"value", "data", "to"} <= envelope.keys() or ("gas" not in envelope and kind not in {"approve", "approve-reset"}):
             raise ExampleFailure("SDK transaction lacks an exact execution envelope", code="TRANSACTION_IDENTITY_MISMATCH")
         if "nonce" not in envelope:
             envelope["nonce"] = quantity(rpc(self.client, "eth_getTransactionCount", [self.account.address, "pending"]))
@@ -720,10 +720,12 @@ class LocalSigningWallet:
             elif "maxFeePerGas" not in envelope:
                 block = rpc(self.client, "eth_getBlockByNumber", ["latest", False])
                 envelope["maxFeePerGas"] = 2 * quantity(block["baseFeePerGas"]) + quantity(envelope["maxPriorityFeePerGas"])
+        if "gas" not in envelope:
+            envelope["gas"] = quantity(rpc(self.client, "eth_estimateGas", [rpc_transaction(envelope)]))
         return envelope
 
     def send_transaction(self, kind: str, transaction):
-        envelope = self.prepare_transaction(transaction)
+        envelope = self.prepare_transaction(transaction, kind=kind)
         signing = {key: value for key, value in envelope.items() if key != "from"}
         signing["to"] = Web3.to_checksum_address(signing["to"])
         if self.signature_guard is not None:

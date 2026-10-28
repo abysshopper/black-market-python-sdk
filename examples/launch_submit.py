@@ -47,7 +47,7 @@ def parse_receipt_references(value):
     if not isinstance(value, list):
         raise ValueError("receipts must be a JSON array of typed receipt references")
     fields = {"transaction_hash", "replacement_hash", "confirmations",
-              "observed_block_number", "observed_block_hash"}
+              "observed_block_number", "observed_block_hash", "nonce"}
 
     def integer(raw, name):
         if isinstance(raw, str):
@@ -69,6 +69,7 @@ def parse_receipt_references(value):
             observed_block_number=(integer(row["observed_block_number"], "observed_block_number")
                                    if row.get("observed_block_number") is not None else None),
             observed_block_hash=row.get("observed_block_hash"),
+            nonce=integer(row["nonce"], "nonce") if row.get("nonce") is not None else None,
         ))
     return tuple(references)
 
@@ -85,6 +86,11 @@ def receipt_reference_json(references, statuses=()):
                 row["observed_block_number"] = status.block_number
             if row["observed_block_hash"] is None:
                 row["observed_block_hash"] = status.block_hash
+        nonce = row.pop("nonce")
+        if nonce is None and status is not None:
+            nonce = status.nonce
+        if nonce is not None:
+            row["nonce"] = str(nonce)
         row["confirmations"] = str(row["confirmations"])
         if row["observed_block_number"] is not None:
             row["observed_block_number"] = str(row["observed_block_number"])
@@ -110,7 +116,6 @@ def main(argv=None):
     receipts_group.add_argument("--transaction-hash", action="append", default=[],
                                 help="Hash-only convenience alias; cannot retain original inclusion/replacement evidence")
     parser.add_argument("--fork-rpc-url", help="Separate owned local Anvil fork; never the source execution node")
-    parser.add_argument("--submission-rpc-url", help="Optional read-only immediate-next submission RPC preflight")
     parser.add_argument("--isolated-fork", action="store_true", help="Assert exclusive ownership of the local fork")
     parser.add_argument("--finalize-bound", action="store_true", help="Mine exact draft bound5/bound6 salts and admit only the final plan")
     args = parser.parse_args(argv)
@@ -130,7 +135,6 @@ def main(argv=None):
     if args.finalize_bound and references:
         parser.error("do not mutate deployment salts after submitting transaction evidence")
     client = Web3(Web3.HTTPProvider(args.rpc_url))
-    submission_client = Web3(Web3.HTTPProvider(args.submission_rpc_url)) if args.submission_rpc_url else None
     fork = create_controlled_launch_fork(client, Web3(Web3.HTTPProvider(args.fork_rpc_url)), isolated=True) if args.fork_rpc_url else None
 
     def limits(_, context):
@@ -153,7 +157,7 @@ def main(argv=None):
         "launchId": launch_id_of(plan), "mode": args.mode, "action": args.action,
         "note": "Unsigned output only; each wallet submission must revalidate live canonical state"}
     if args.action == "cancel":
-        next_transaction = build_next_transaction(client, plan, action="cancel", submission_client=submission_client, **options)
+        next_transaction = build_next_transaction(client, plan, action="cancel", **options)
         output["progress"] = read_launch_progress(client, plan, confirmations=args.confirmations,
                                                 receipts=options["receipts"], mode=args.mode)
         output["nextTransaction"] = next_transaction.as_transaction() if next_transaction else None
@@ -162,7 +166,7 @@ def main(argv=None):
         if planned is None:
             planned = plan_launch(client, plan, **options)
         next_transaction = build_next_transaction(client, planned, account=args.account, receipts=options["receipts"],
-                                                  fork=fork, submission_client=submission_client) if planned.admitted else None
+                                                  fork=fork) if planned.admitted else None
         output.update({"admitted": planned.admitted, "confidence": planned.confidence,
             "predictedToken": planned.predicted_token, "progress": planned.progress,
             "approvals": planned.approvals, "profiles": planned.profiles,

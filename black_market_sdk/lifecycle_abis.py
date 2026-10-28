@@ -94,6 +94,9 @@ NITRO_ARB_SYS_ABI = [_function("arbOSVersion", [], [_argument("", "uint256")])]
 NITRO_ARB_GAS_INFO_ABI = [
     _function("getMaxTxGasLimit", [], [_argument("", "uint256")]),
     _function("getMaxBlockGasLimit", [], [_argument("", "uint64")]),
+    _function("getPricesInWei", [], [_argument(name, "uint256") for name in (
+        "perL2Tx", "perL1CalldataUnit", "perStorageAllocation",
+        "perArbGasBase", "perArbGasCongestion", "perArbGasTotal")]),
 ]
 NITRO_NODE_INTERFACE_ABI = [
     _function("gasEstimateL1Component", [

@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 from dataclasses import replace
 from urllib.parse import urlsplit
 
@@ -57,7 +58,7 @@ def submit(client: Web3, transaction: dict) -> dict:
 async def construct_plan(client: Web3, *, dynamic: bool) -> tuple[LaunchPlanV1, UfgLaunchConfig, str]:
     infrastructure = get_launch_addresses(4663)
     supply, budget = 1_000_000 * 10**18, 500_000 * 10**18
-    sequence = client.eth.get_transaction_count(ANVIL_PRINCIPAL) + 120_000
+    sequence = secrets.randbits(96)
     config = UfgLaunchConfig(10000, 100, (ROBINHOOD_WETH,))
     draft = LaunchPlanV1(4663, infrastructure.orchestrator, UFG_LAUNCH_PROXY_ADDRESS,
         ufg_launch_nonce(ANVIL_PRINCIPAL, sequence),
@@ -128,7 +129,7 @@ async def run_case(client: Web3, *, dynamic: bool) -> dict:
     bound_hash = "0x" + proxy.functions.launchConfigHash(bytes.fromhex(launch_id_of(plan)[2:])).call().hex()
     if bound_hash != hash_ufg_launch_config(config):
         raise RuntimeError("Proxy launch config hash differs from the SDK commitment")
-    progress = read_launch_progress(client, plan, mode=mode)
+    progress = read_launch_progress(client, plan, mode=mode, ufg=config)
     if progress.phase.name != "ACTIVE" or progress.prepared_markets != 2:
         raise RuntimeError("Fork launch is not canonically active with both markets")
     decoded = decode_lifecycle_pool_bound_v4_market_config(plan.markets[1].config)

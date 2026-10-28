@@ -214,7 +214,7 @@ def test_lens_path_seeds_progress_balances_and_mining_in_first_aggregate(lens_pr
     draft = draft_plan()
     client = CountingTransport(LensScenario(draft))
     launch = prepare(client, draft, ufg=terms(), buy_slippage_bps=50)
-    assert launch.admitted and launch.plan.buys[0].min_token_out == 995
+    assert launch.admitted and launch.plan.buys[0].min_token_out > draft.buys[0].min_token_out
     assert len(aggregate_calls(client)) == 1
     calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(aggregate_calls(client)[0]["params"][0]["data"][10:]))[0]
     assert sum(target.lower() == LENS.lower() for target, _, _ in calls) == 1
@@ -278,30 +278,6 @@ def test_receipt_at_head_reuses_authoritative_l2_header():
     assert progress.receipts[0].block_hash == BLOCK_HASH
 
 
-@pytest.mark.parametrize("code,message,category", [
-    (3, "execution reverted", "opaque"), (-32000, "out of gas", "capacity"),
-])
-def test_final_measurement_never_masks_execution_refusal_with_a_fork(monkeypatch, code, message, category):
-    fixture = admission_fixture()
-    provider = fixture[1]
-    original = provider.make_request
-    def fail(method, params):
-        if method == "eth_simulateV1":
-            return {"error": {"code": code, "message": message}}
-        return original(method, params)
-    monkeypatch.setattr(provider, "make_request", fail)
-    operations = []
-    def forbidden(method, _params):
-        operations.append(method)
-        raise AssertionError("Execution refusals must not select a different backend")
-    fork = ControlledLaunchFork(client=SimpleNamespace(provider=SimpleNamespace(
-        endpoint_uri="http://127.0.0.1:19993", make_request=forbidden)),
-        isolated=True, source_rpc_url=provider.endpoint_uri)
-    result = simulate_fixture(fixture, fork=fork)
-    assert not result.admitted and result.failure_category == category
-    assert operations == []
-
-
 @pytest.mark.parametrize("field", [0, 1])
 def test_lens_rejects_a_different_chain_or_l1_height(lens_preset, field):
     draft = draft_plan()
@@ -350,7 +326,6 @@ class ResumeScenario(OrdinaryScenario):
     def __init__(self, draft, **options):
         super().__init__(draft, **options)
         self.prepared = 0
-        self.account_nonce = 0
 
     def progress(self, phase):
         values = list(super().progress(phase))
@@ -358,10 +333,6 @@ class ResumeScenario(OrdinaryScenario):
             values[9] = self.prepared
         return tuple(values)
 
-    def make_request(self, method, params):
-        if method == "eth_getTransactionCount":
-            return {"result": hex(self.account_nonce + (self.pending_nonce if params[1] == "pending" else 0))}
-        return super().make_request(method, params)
 
 
 def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeypatch):
@@ -373,37 +344,41 @@ def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeyp
     assert [(transaction.first_market, transaction.market_count) for transaction in launch.transactions
         if transaction.kind == "prepare"] == [(0, 2), (2, 1)]
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 1, 2
+    provider.prepared = 1
     provider.simulations.clear()
     def forbidden(*_, **__):
         raise AssertionError("Canonical next work must not replan the suffix")
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "prepare"
-    assert (transaction.first_market, transaction.market_count, transaction.nonce) == (1, 1, 2)
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert (transaction.first_market, transaction.market_count) == (1, 1)
+    assert "nonce" not in transaction.as_transaction()
+    assert [payload["validation"] for payload in provider.simulations] == [True]
     assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
 
 
 def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch):
     import black_market_sdk.lifecycle as lifecycle
     draft = ordinary_bound_draft(3)
-    provider = ResumeScenario(draft, pending_nonce=1)
+    provider = ResumeScenario(draft)
     client = CountingTransport(provider)
-    waiting = prepare(client, draft)
+    original = prepare(client, draft)
+    provider.plan = original.plan
+    provider.latest_phase, provider.confirmed_phase = 1, 0
+    waiting = prepare(client, original.plan, confirmations=2)
     assert waiting.transactions == () and not waiting.admitted
     provider.plan = waiting.plan
-    provider.pending_nonce = 0
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 1, 2
+    provider.prepared = 1
     provider.simulations.clear()
     def forbidden(*_, **__):
         raise AssertionError("A missing stored suffix must not trigger whole-plan simulation")
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     transaction = build_next_transaction(client, waiting)
     assert transaction.kind == "prepare"
-    assert (transaction.first_market, transaction.market_count, transaction.nonce) == (1, 2, 2)
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert (transaction.first_market, transaction.market_count) == (1, 2)
+    assert "nonce" not in transaction.as_transaction()
+    assert [payload["validation"] for payload in provider.simulations] == [True]
     assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
 
 
@@ -411,7 +386,7 @@ def enforce_native_fee_reservation(provider):
     original = provider.make_request
     def respond(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and isinstance(response.get("result"), list):
+        if method == "eth_simulateV1" and isinstance(response.get("result"), list) and not provider.is_probe(params[0]):
             remaining = provider.balance
             for block, result in zip(params[0]["blockStateCalls"], response["result"]):
                 if len(block["calls"]) != 1:
@@ -425,41 +400,31 @@ def enforce_native_fee_reservation(provider):
     provider.make_request = respond
 
 
-def test_authoritative_native_simulation_uses_an_affordable_exact_envelope():
+def test_native_admission_refuses_an_unaffordable_fixed_reservation_without_resizing():
     fixture = admission_fixture(nitro=True, balance=1_000_000)
-    provider = fixture[1]
-    enforce_native_fee_reservation(provider)
     result = simulate_fixture(fixture)
-    assert result.admitted
-    transaction = result.transactions[0]
-    final = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
-    assert provider.simulations[-1]["validation"] is True
-    assert transaction.gas_limit == int(final["gas"], 16) <= 1_000_000
-    assert transaction.maximum_execution_fee <= provider.balance
+    assert not result.admitted and result.failure_category == "affordability"
+    assert fixture[1].simulations == fixture[1].probes == []
 
 
-@pytest.mark.parametrize("compute_observation", [False, True])
-def test_unreviewed_next_uses_affordable_compute_or_sizes_if_missing(compute_observation):
+def test_unreviewed_next_uses_fixed_ceiling_instead_of_previous_compute_observations():
     draft = ordinary_bound_draft(1)
-    provider = OrdinaryScenario(draft, balance=2_000_000)
+    provider = OrdinaryScenario(draft, balance=200_000_000)
     enforce_native_fee_reservation(provider)
     client = CountingTransport(provider)
     launch = prepare(client, draft)
     assert launch.admitted
-    if not compute_observation:
-        launch = replace(launch, simulation=replace(launch.simulation,
-            transactions=tuple(replace(transaction, compute_gas_estimate=None)
-                for transaction in launch.simulation.transactions)))
+    provider.compute_gas = 500_000
     provider.simulations.clear()
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "begin" and transaction.admission.admitted
     final = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
-    assert transaction.gas_limit == int(final["gas"], 16)
-    assert transaction.value + transaction.maximum_execution_fee <= provider.balance
-    assert [payload["validation"] for payload in provider.simulations] == ([True] if compute_observation else [False, True])
+    assert transaction.gas_limit == int(final["gas"], 16) == 32_000_000
+    assert transaction.gas_used == 500_000
+    assert [payload["validation"] for payload in provider.simulations] == [True]
 
 
-def test_generic_fork_sizes_refund_producing_approval_from_gross_requirement(monkeypatch):
+def test_generic_fork_refund_observation_never_sizes_the_wallet_approval(monkeypatch):
     fixture = admission_fixture()
     request, provider = fixture[:2]
     original = provider.make_request
@@ -508,14 +473,15 @@ def test_generic_fork_sizes_refund_producing_approval_from_gross_requirement(mon
         source_rpc_url=provider.endpoint_uri)
     result = simulate_fixture(fixture, fork=fork)
     assert result.admitted and result.backend == "controlled-fork"
-    assert "eth_estimateGas" in fork_provider.operations
-    assert result.transactions[0].gas_estimate == 26_024
+    assert "eth_estimateGas" not in fork_provider.operations
+    assert result.transactions[0].gas_estimate is None
     assert result.transactions[0].gas_used == 21_224
-    assert result.transactions[0].gas_limit == fork_provider.gas_limits[-1] >= 26_024
+    assert result.transactions[0].gas_limit is result.transactions[0].gas_price is None
+    assert fork_provider.gas_limits == [30_000_000]
 
 
 @pytest.mark.parametrize("poster", [75_000, 200_000])
-def test_staged_suffix_retains_compute_for_fresh_next_poster_quote(poster):
+def test_staged_suffix_refreshes_poster_metadata_without_changing_native_gas(poster):
     draft = ordinary_bound_draft(2)
     provider = ResumeScenario(draft, poster_gas=75_000,
         compute_gas_by_kind={"begin": 100_000, "prepare": 500_000, "activate": 100_000})
@@ -528,44 +494,34 @@ def test_staged_suffix_retains_compute_for_fresh_next_poster_quote(poster):
     for transaction, step in zip(launch.transactions[1:], launch.simulation.steps[1:]):
         assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
         assert step.provisional and step.estimate is None
-        assert step.compute_gas_required in {100_000, 500_000}
+        assert step.gas_limit == 32_000_000
     provider.latest_phase = provider.confirmed_phase = 1
-    provider.prepared, provider.account_nonce = 0, 1
+    provider.prepared = 0
     provider.poster_gas = provider.actual_poster_gas = poster
     provider.simulations.clear()
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "prepare"
-    assert transaction.gas_limit == 575_000 + (poster * 11_500 + 9_999) // 10_000
+    expected_poster = 77_224 if poster == 75_000 else 209_608
+    assert transaction.poster_gas == expected_poster
+    assert transaction.gas_limit == 32_000_000
     assert [payload["validation"] for payload in provider.simulations] == [True]
     final = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
     assert int(final["gas"], 16) == transaction.gas_limit
 
 
-def test_tightly_funded_staged_sizing_uses_one_shared_budget_retry():
-    draft = ordinary_bound_draft(1)
-    provider = OrdinaryScenario(draft, balance=2_000_000, poster_gas=75_000)
-    enforce_native_fee_reservation(provider)
-    launch = prepare(CountingTransport(provider), draft)
-    assert launch.admitted
-    assert [payload["validation"] for payload in provider.simulations] == [False, False, True]
-    assert launch.transactions[0].gas_limit == 201_250
-    assert all(step.success for step in launch.simulation.steps)
-
-
-@pytest.mark.parametrize("nitro", [False, True])
 @pytest.mark.parametrize("error,funds", [
     ({"code": -38014, "message": "insufficient funds"}, True),
     ({"code": -32000, "message": "insufficient funds for gas * price + value"}, True),
     ({"code": 3, "message": "insufficient funds"}, False),
     ({"code": -32000, "message": "execution reverted: insufficient funds"}, False),
 ])
-def test_only_native_funds_admission_gets_one_sizing_retry_and_never_a_fork(monkeypatch, nitro, error, funds):
-    fixture = admission_fixture(nitro=nitro)
+def test_native_funds_refusal_never_retries_or_selects_a_generic_fork(monkeypatch, error, funds):
+    fixture = admission_fixture(nitro=True)
     provider = fixture[1]
     original = provider.make_request
     def refusal(method, params):
         response = original(method, params)
-        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
+        if method == "eth_simulateV1" and not provider.is_probe(params[0]):
             return {"error": error}
         return response
     monkeypatch.setattr(provider, "make_request", refusal)
@@ -580,7 +536,7 @@ def test_only_native_funds_admission_gets_one_sizing_retry_and_never_a_fork(monk
     result = simulate_fixture(fixture, fork=fork)
     assert not result.admitted and result.execution_proof == "unavailable"
     assert result.failure_category == ("affordability" if funds else "opaque")
-    assert [payload["validation"] for payload in provider.simulations] == ([False, False] if nitro and funds else [False])
+    assert [payload["validation"] for payload in provider.simulations] == [True]
 
 
 def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
@@ -593,7 +549,28 @@ def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
     assert launch.simulation.failure_category == "affordability"
     assert launch.simulation.capacity_constraint is None
     assert launch.simulation.execution_proof == "unavailable"
-    assert [payload["validation"] for payload in provider.simulations] == [False, False]
-    assert all(int(block["calls"][0]["gasPrice"], 16) == 2
-        for payload in provider.simulations for block in payload["blockStateCalls"])
-    assert all(transaction.gas_limit is transaction.admission is None for transaction in launch.transactions)
+    assert provider.simulations == provider.probes == []
+    assert all(transaction.admission is None or not transaction.admission.admitted for transaction in launch.transactions)
+
+
+@pytest.mark.parametrize("calldata_bytes,expected_gas,expected_fee", [
+    (0, 2988, 4480), (1, 2994, 4490), (639, 7248, 10870),
+    (640, 7308, 10960), (1024, 9868, 14800),
+])
+def test_local_nitro_poster_bound_covers_eoa_and_brotli_word_edges(calldata_bytes, expected_gas, expected_fee):
+    from black_market_sdk.lifecycle import _nitro_poster_gas_bound, _read_lifecycle_gas_price
+    request, provider, client, block, _, transaction = admission_fixture(nitro=True, l1_price_per_byte=10)
+    provider.gas_price = 3
+    transaction = replace(transaction, data="0x" + "ab" * calldata_bytes)
+    assert _nitro_poster_gas_bound(transaction, (0, 10, 0, 3, 0, 3)) == (expected_gas, expected_fee)
+    assert _read_lifecycle_gas_price(client, block, request.chain_id) == 3
+    assert provider.poster_requests == []
+    assert "eth_gasPrice" not in provider.operations
+
+
+def test_local_nitro_poster_bound_handles_free_data_but_refuses_unknown_base_fee():
+    from black_market_sdk.lifecycle import _nitro_poster_gas_bound
+    _, _, _, _, _, transaction = admission_fixture(nitro=True)
+    assert _nitro_poster_gas_bound(transaction, (0, 0, 0, 0, 0, 0)) == (0, 0)
+    with pytest.raises(LifecyclePlanningError, match="zero L2 gas price"):
+        _nitro_poster_gas_bound(transaction, (0, 1, 0, 0, 0, 0))

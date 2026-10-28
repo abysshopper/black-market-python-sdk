@@ -509,6 +509,34 @@ def test_wallet_only_prepares_absent_nonce_and_fees(tmp_path, monkeypatch):
     artifacts.finish()
 
 
+@pytest.mark.parametrize("kind,amount", [("approve", 123), ("approve-reset", 0)])
+def test_wallet_prepares_missing_approval_gas_without_relaxing_launch_envelopes(monkeypatch, kind, amount):
+    request = token_draft()
+    wallet = object.__new__(LocalSigningWallet)
+    wallet.client, wallet.chain_id = None, request.chain_id
+    wallet.account = SimpleNamespace(address=request.creator)
+    transaction = {"chainId": request.chain_id, "from": request.creator,
+        "to": "0x" + "ab" * 20, "value": 0,
+        "data": "0x095ea7b3" + encode(["address", "uint256"], [request.orchestrator, amount]).hex()}
+    methods = []
+    def rpc(_client, method, params):
+        methods.append(method)
+        if method == "eth_estimateGas":
+            assert params[0]["data"] == transaction["data"] and params[0]["to"] == transaction["to"]
+            assert params[0]["gasPrice"] == "0x64" and params[0]["nonce"] == "0x9"
+            return hex(26_024)
+        return {"eth_chainId": hex(request.chain_id), "eth_getTransactionCount": "0x9", "eth_gasPrice": "0x64"}[method]
+    monkeypatch.setattr(support, "rpc", rpc)
+    prepared = wallet.prepare_transaction(transaction, kind=kind)
+    assert prepared == {**transaction, "nonce": 9, "gasPrice": 100, "gas": 26_024}
+    assert methods == ["eth_chainId", "eth_getTransactionCount", "eth_gasPrice", "eth_estimateGas"]
+    methods.clear()
+    with pytest.raises(ExampleFailure) as failure:
+        wallet.prepare_transaction(transaction, kind="begin")
+    assert failure.value.code == "TRANSACTION_IDENTITY_MISMATCH"
+    assert methods == ["eth_chainId"]
+
+
 def test_wallet_signs_real_attribution_and_rejects_wrong_domain(tmp_path, monkeypatch):
     account = Account.from_key("0x" + "01" * 32)
     artifacts = Artifacts(tmp_path / "attribution", "boundary-case")
@@ -596,7 +624,7 @@ def test_unified_admission_retains_actual_final_planned_launch(construct_case, m
     progress = lifecycle.LaunchProgress(
         **fields, mode=case["mode"], block=block, head_block=block, awaiting_confirmations=False,
         canonical=canonical, head=canonical, confirmation_depth=1,
-        confirmed_account_nonce=0, head_account_nonce=0, pending_account_nonce=0, confirmation_safe=True,
+        confirmation_safe=True,
     )
     simulation = lifecycle.LaunchSimulation(
         "stateful", True, block, "eth_simulateV1", (), (), LaunchRpcSimulation("stateful", "eth_simulateV1", block, ()),
@@ -710,11 +738,14 @@ def test_fixed_example_guard_preserves_unknown_policy_and_nitro_total_envelope(m
                         hex(request.chain_id) if method == "eth_chainId" else "0x0" if method == "eth_getTransactionCount" else no_call())
     transaction = {"chainId": request.chain_id, "from": request.creator, "to": request.orchestrator,
                    "nonce": 0, "value": 0, "data": "0x0102", "gas": 34_500_000, "gasPrice": 1}
-    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000,
-                                   max_tx_compute_gas=32_000_000, max_block_compute_gas=32_000_000, arb_os_version=50)
+    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000, arb_os_version=50)
+    with pytest.raises(ExampleFailure) as native_failure:
+        example.validate_envelope(None, transaction, request, limits)
+    assert native_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
+    transaction["gas"] = 32_000_000
     assert example.validate_envelope(None, transaction, request, limits) is None
     with pytest.raises(ExampleFailure) as gas_failure:
-        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(account_transaction_gas_limit=34_000_000))
+        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(account_transaction_gas_limit=31_000_000))
     assert gas_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
     with pytest.raises(ExampleFailure) as calldata_failure:
         example.validate_envelope(None, transaction, request, LaunchExecutionLimits(max_calldata_bytes=1))
@@ -756,8 +787,7 @@ def test_executor_refuses_changed_held_envelope_before_signing(tmp_path, monkeyp
     plan = token_draft()
     client = object()
     artifacts = Artifacts(tmp_path / "held", "boundary-case")
-    held = lifecycle.LifecycleTransaction("atomic", "atomic", 4663, CREATOR, plan.orchestrator, "0x01", 0, 0, (), (),
-                                          gas_limit=100000, gas_price=1)
+    held = lifecycle.LifecycleTransaction("atomic", "atomic", 4663, CREATOR, plan.orchestrator, "0x01", 0, (), (), gas_limit=100000, gas_price=1)
     changed = held.as_transaction()
     changed[field] = value
     calls = []
@@ -1052,7 +1082,7 @@ def proved_review_launch(plan):
               tuple(350 * 10**18 * b.quote_amount_in // 10**15 for b in plan.buys))
     call = SimpleNamespace(success=True, return_data="0x" + encode([abi_type], [values]).hex())
     return SimpleNamespace(plan=plan, plan_hash=example.hash_launch_plan(plan), mode="atomic",
-                           simulation=SimpleNamespace(transactions=[SimpleNamespace(kind="atomic")],
+                           simulation=SimpleNamespace(confidence="stateful", transactions=[SimpleNamespace(kind="atomic")],
                                                       evidence=SimpleNamespace(calls=[call])))
 
 
@@ -1065,10 +1095,10 @@ def test_economic_review_retains_hash_as_provenance_and_reports_proved_all_in_pr
     review, digest = example.review_economics(launch, artifacts, example.Cancellation())
     saved = json.loads((artifacts.directory / "economic-review.json").read_text())
     assert not (artifacts.directory / "economic-admission.json").exists()
-    output = int(saved["review"]["simulatedBuys"][0]["tokenOut"])
-    assert saved["review"]["simulatedBuys"][0]["allInExecutionUnitPriceUsdX18"] == str(
+    output = int(saved["review"]["openingBuys"][0]["tokenOut"])
+    assert saved["review"]["openingBuys"][0]["allInExecutionUnitPriceUsdX18"] == str(
         plan.buys[0].quote_amount_in * 2486280000000000000000 // output)
-    assert int(saved["review"]["simulatedBuys"][0]["feesAndPriceImpactPremiumBps"]) > 0
+    assert int(saved["review"]["openingBuys"][0]["feesAndPriceImpactPremiumBps"]) > 0
     assert saved["review"]["quotes"][0]["apiOrigin"] == API_ORIGIN
     assert saved["review"]["quotes"][0]["sourceTimestamp"] == "1791552898"
     assert saved["review"]["quotes"][0]["retrievedAt"] == str(PRICE_RETRIEVED_AT)
@@ -1256,3 +1286,25 @@ def test_visible_api_origin_never_exposes_endpoint_credentials_paths_or_queries(
     redactor.remember_url(API_ORIGIN)
     assert redactor({"apiOrigin": API_ORIGIN}) == {"apiOrigin": API_ORIGIN}
     assert redactor({"apiOrigin": unsafe}) == {"apiOrigin": support.REDACTED}
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(construct_case, complete):
+    _, plan, predicted, artifacts = construct_case("launch_erc20_abyss.py")
+    quotes = tuple(lifecycle.LifecycleOpeningBuyQuote(index, buy.market_index,
+        buy.quote_amount_in, buy.quote_amount_in, 10**18, 1 << 96)
+        for index, buy in enumerate(plan.buys)) if complete else ()
+    launch = SimpleNamespace(plan=plan, predicted_token=predicted,
+        simulation=SimpleNamespace(confidence="profiled",
+            gas_profile=lifecycle.LifecycleGasProfileEvidence("test-profile", lifecycle.LifecycleLaunchGasBounds(0, 0), quotes),
+            transactions=(), evidence=SimpleNamespace(calls=())))
+    if complete:
+        rows = example.opening_buy_review(launch, artifacts.economic_pricing)
+        assert len(rows) == len(plan.buys)
+        assert all(row["quoteEvidence"] == "local-exact-curve" and row["tokenOut"] == str(10**18)
+            for row in rows)
+    else:
+        with pytest.raises(ExampleFailure) as failure:
+            example.opening_buy_review(launch, artifacts.economic_pricing)
+        assert failure.value.code == "INVALID_ECONOMIC_PROOF"
+    artifacts.finish()

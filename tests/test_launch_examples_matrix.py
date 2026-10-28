@@ -119,7 +119,7 @@ def test_depth_uses_increasing_source_inventory_adjacent_ranges_and_tail(token0)
 @pytest.mark.parametrize("filename", [NEW_CASES[0][0], NEW_CASES[2][0]])
 def test_proved_buy_review_scales_each_quotes_decimals(construct_case, filename):
     _, plan, _, artifacts = construct_case(filename)
-    rows = example.simulated_buy_review(proved_review_launch(plan), artifacts.economic_pricing)
+    rows = example.opening_buy_review(proved_review_launch(plan), artifacts.economic_pricing)
     for buy, row in zip(plan.buys, rows):
         pricing = artifacts.economic_pricing["markets"][buy.market_index]
         numerator = int(row["quoteSpent"]) * int(pricing["quote"]["priceUsdX18"]) * 10**18
@@ -355,7 +355,7 @@ def test_executor_reorg_barrier_never_replays_orphaned_work(tmp_path, monkeypatc
         return receipt
     monkeypatch.setattr(example, "read_launch_progress", progress)
     monkeypatch.setattr(example, "build_next_transaction", next_transaction)
-    monkeypatch.setattr(example, "validate_envelope", lambda *_args: None)
+    monkeypatch.setattr(example, "validate_envelope", lambda *_args, **_options: None)
     monkeypatch.setattr(example, "wait_receipt", wait)
     wallet = SimpleNamespace(client=client, account=SimpleNamespace(address=CREATOR), send_transaction=send)
     api = SimpleNamespace(get_launch_upload_session=lambda *_args: metadata_session())
@@ -446,12 +446,17 @@ def test_receipt_reference_json_roundtrips_wide_blocks_and_replacements():
     references = submit.parse_receipt_references({"receipts": payload})
     assert references[0].observed_block_number == 2**80 + 1 and references[0].replacement_hash == replacement
     assert submit.receipt_reference_json(references) == payload
+    known = replace(references[0], nonce=(1 << 64) - 1)
+    encoded = submit.receipt_reference_json((known,))
+    assert encoded[0]["nonce"] == str((1 << 64) - 1)
+    assert submit.parse_receipt_references(encoded) == (known,)
 
 
-@pytest.mark.parametrize("number", ["01", "1e3", "-1", True, "9" * 79])
-def test_receipt_reference_json_rejects_nonexact_block_values(number):
+@pytest.mark.parametrize("field", ["observed_block_number", "nonce"])
+@pytest.mark.parametrize("number", ["01", "1e3", "-1", True, 1.5, "9" * 79])
+def test_receipt_reference_json_rejects_nonexact_observations(field, number):
     with pytest.raises((ValueError, lifecycle.LifecyclePlanningError)):
-        submit.parse_receipt_references([{"transaction_hash": TX_HASH, "observed_block_number": number}])
+        submit.parse_receipt_references([{"transaction_hash": TX_HASH, field: number}])
 
 
 def test_submit_restores_wrapper_receipts(construct_case, tmp_path, monkeypatch, capsys):
