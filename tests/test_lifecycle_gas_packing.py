@@ -84,7 +84,7 @@ def test_one_pool_hmm_atomic_uses_reserve_in_complete_envelope_budget(monkeypatc
     expected = min(max(gross + 4_250_000, (gross * 11500 + 9999) // 10000), 50_000_000)
     assert planned.transactions[0].gas_limit == expected
     measurement = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
-    assert int(measurement["gas"], 16) == 50_000_000
+    assert int(measurement["gas"], 16) == 32_000_000
 
 
 def test_true_atomic_compute_overflow_still_refuses(monkeypatch):
@@ -141,7 +141,7 @@ def test_underestimated_packed_prepare_splits_at_near_ceiling_for_any_error(monk
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
     assert planned.admitted
     assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [1, 1]
-    assert [payload["validation"] for payload in provider.simulations] == [False, True, False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [False, False, True]
 
 
 @pytest.mark.parametrize("cumulative_cap", [False, True])
@@ -371,3 +371,30 @@ def test_unified_preparation_reuses_initial_pin_after_mining(monkeypatch):
     assert planned.admitted and planned.progress.head_block.number == 51
     assert provider.operations.count("eth_chainId") == 1
     assert provider.operations.count("eth_getBlockByNumber") == 1
+
+
+def test_per_call_sizing_keeps_an_affordable_heavy_preparation_packed(monkeypatch):
+    request = hmm_plan(2)
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"balance": 146_000_000, "prepare_gas_per_market": 15_500_000,
+            "compute_gas_by_kind": {"begin": 9_000_000, "activate": 6_000_000}})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
+    assert planned.admitted
+    assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
+    assert planned.transactions[1].market_count == 2
+    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert all(int(block["calls"][0]["gas"], 16) == 32_000_000
+        for block in provider.simulations[0]["blockStateCalls"])
+
+
+def test_affordability_capped_sizing_failure_does_not_infer_native_capacity_or_split(monkeypatch):
+    request = hmm_plan(2)
+    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
+        scenario_options={"balance": 20_000_000, "prepare_gas_per_market": 15_500_000})
+    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
+        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
+    assert not planned.admitted
+    assert planned.simulation.failed_transaction_id == "prepare:0:2"
+    assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [2]
+    assert [payload["validation"] for payload in provider.simulations] == [False]

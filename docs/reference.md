@@ -172,6 +172,9 @@ header gas field. Read failures stop admission.
 - Bound both calibration/sizing discovery and new final proposals by policy and
   pinned native affordability after committed values. Nitro checks upfront fees
   even with `validation=False`. Validate once and return that exact final envelope.
+  Discovery limits are per call: unused reservations refund before the next step.
+  A balance-capped failure below the native ceiling does not authorize splitting
+  a preparation batch as though it exceeded native compute capacity.
   Only the immediate envelope is final. Later steps prove feasibility with
   conservative affordable budgets and have `provisional=True`, no fee estimate,
   signing gas/price or admission. `build_next_transaction` freshly sizes each at

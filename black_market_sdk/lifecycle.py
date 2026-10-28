@@ -3186,17 +3186,12 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
     has_sizing = not diagnostic and sizing_hints is not None and all(transaction.step_id in sizing_hints for transaction in transactions)
     replay_fork = fork if not nitro and (reviewed_envelope is not None or has_sizing) else None
     if reviewed_envelope is None and not has_sizing:
-        # Native Nitro reserves fees even with validation=False. Divide only the
-        # real pinned fee budget, after every committed value, before dispatch.
+        # Unused per-call reservations are refunded before the next command.
+        # Bound each sizing call by pinned spendable funds, not an equal share.
         value = sum(transaction.value for transaction in transactions)
         available = balance - value
-        sizing_gas = []
-        if price:
-            available //= price
-        for index, ceiling in enumerate(discovery):
-            gas = min(ceiling, available // (len(transactions) - index)) if price else ceiling
-            sizing_gas.append(gas)
-            available -= gas
+        sizing_gas = tuple(min(total_cap, compute_cap + poster, available // price if price else total_cap)
+            for poster in poster_budgets)
         if balance < value or any(gas <= 0 for gas in sizing_gas):
             return finish(empty, transactions, ("Creator native balance cannot fund transaction value and sizing fee budgets",),
                 failure_category="affordability")
@@ -3222,7 +3217,7 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         if failed is not None:
             index, call = failed
             transaction = measuring[index]
-            near_ceiling_prepare = transaction.kind == "prepare" and transaction.market_count > 1 and (call.gas_used or 0) * 10_000 >= transaction.gas_limit * NEAR_GAS_CEILING_BPS
+            near_ceiling_prepare = transaction.kind == "prepare" and transaction.market_count > 1 and (not nitro or transaction.gas_limit >= compute_cap) and (call.gas_used or 0) * 10_000 >= transaction.gas_limit * NEAR_GAS_CEILING_BPS
             return finish(measured, measuring, (call.error or "Execution failed",),
                 execution_proof="failed", failure_category="capacity" if near_ceiling_prepare else call.failure_category or "opaque",
                 capacity_constraint="compute" if near_ceiling_prepare or call.failure_category == "capacity" else None,
@@ -3563,7 +3558,7 @@ def _plan_launch(
         from .lifecycle_presets import NEAR_GAS_CEILING_BPS
         failed_call = next((call for transaction, call in zip(simulation.transactions, simulation.evidence.calls)
             if transaction.step_id == simulation.failed_transaction_id), None)
-        if mode != "staged" or failed is None or failed.kind != "prepare" or failed.market_count <= 1 or failed_call is None or (failed_call.gas_used or 0) * 10_000 < min(failed.gas_limit, cap) * NEAR_GAS_CEILING_BPS:
+        if mode != "staged" or failed is None or failed.kind != "prepare" or failed.market_count <= 1 or failed_call is None or resolved_limits.protocol == "nitro" and failed.gas_limit < resolved_limits.compute_cap(block) or (failed_call.gas_used or 0) * 10_000 < min(failed.gas_limit, cap) * NEAR_GAS_CEILING_BPS:
             break
         index = groups.index((failed.first_market, failed.market_count))
         half = (failed.market_count + 1) // 2
