@@ -179,6 +179,12 @@ header gas field. Read failures stop admission.
   sizing attempt with a shared spendable budget, then the one exact validated
   pass. Contract reverts, OOG and provider failures do not select this fallback;
   a repeated funds refusal never switches to a generic fork.
+  Limitation: that retry can refuse a payer whose balance covers the actual
+  sequence but leaves less margin than the per-call native ceiling. It reports
+  `failure_category="affordability"`, not evidence that native compute was
+  exceeded. The previous release refused these cases too. A top-level funds
+  refusal exposes no successful-prefix observations; the SDK does not invent
+  them or perform further sizing attempts.
   Only the immediate envelope is final. Later steps prove feasibility with
   conservative affordable budgets and have `provisional=True`, no fee estimate,
   signing gas/price or admission. `build_next_transaction` freshly sizes each at

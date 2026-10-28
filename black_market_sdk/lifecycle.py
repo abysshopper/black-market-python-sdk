@@ -3199,7 +3199,8 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         with lifecycle_stage(client, "simulation.measure"):
             # Unreviewed fork measurement estimates gross gas before refunds.
             measured = run(measuring, False)
-            if nitro and measured.failure_category == "affordability":
+            funds_retry = nitro and measured.failure_category == "affordability"
+            if funds_retry:
                 # One narrowly triggered sizing retry avoids reserving the full
                 # spendable balance again after earlier commands consumed fees.
                 remaining = available // price if price else 0
@@ -3212,9 +3213,16 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
                     measuring = tuple(replace(transaction, gas_limit=gas)
                         for transaction, gas in zip(transactions, shared_gas))
                     measured = run(measuring, False)
+                    if measured.failure_category == "capacity" and all(gas < compute_cap for gas in shared_gas):
+                        measured = replace(measured, failure_category="affordability")
         if measured.backend == "controlled-fork":
             replay_fork = fork
         failed = next(((index, call) for index, call in enumerate(measured.calls) if not call.success), None)
+        if funds_retry and failed is not None:
+            index, call = failed
+            if call.failure_category == "capacity" and measuring[index].gas_limit < compute_cap:
+                return finish(measured, measuring, ("Native balance cannot cover conservative sequential sizing budgets",),
+                    failure_category="affordability", failed_transaction_id=measuring[index].step_id)
         if failed is not None and aggregate_cap is not None:
             index, call = failed
             consumed = sum(item.gas_used or 0 for item in measured.calls[:index + 1])

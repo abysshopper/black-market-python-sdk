@@ -588,3 +588,19 @@ def test_only_native_funds_admission_gets_one_sizing_retry_and_never_a_fork(monk
     assert not result.admitted and result.execution_proof == "unavailable"
     assert result.failure_category == ("affordability" if funds else "opaque")
     assert [payload["validation"] for payload in provider.simulations] == ([False, False] if nitro and funds else [False])
+
+
+def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
+    draft = ordinary_bound_draft(1)
+    provider = OrdinaryScenario(draft, balance=48_000_000,
+        compute_gas_by_kind={"begin": 9_000_000, "prepare": 5_000_000, "activate": 5_000_000})
+    enforce_native_fee_reservation(provider)
+    launch = prepare(CountingTransport(provider), draft)
+    assert not launch.admitted
+    assert launch.simulation.failure_category == "affordability"
+    assert launch.simulation.capacity_constraint is None
+    assert launch.simulation.execution_proof == "unavailable"
+    assert [payload["validation"] for payload in provider.simulations] == [False, False]
+    assert all(int(block["calls"][0]["gasPrice"], 16) == 2
+        for payload in provider.simulations for block in payload["blockStateCalls"])
+    assert all(transaction.gas_limit is transaction.admission is None for transaction in launch.transactions)
