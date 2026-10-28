@@ -7,13 +7,15 @@
 - Cache successful chain identity once per underlying client session, evict failed observations, and remove final chain rereads and nonce-based global-mempool quietness gates.
 - Batch `ArbGasInfo.getPricesInWei` at the same L2 pin. Its total L2 price supplies Robinhood's recommendation; a conservative EOA/Brotli data bound replaces per-transaction NodeInterface poster calls. Held reviewed gas prices remain exact.
 - Add `compute_lifecycle_opening_buys` and ordered `LifecycleOpeningBuyQuote` results for release-owned unopened curves, including overlap, bitmap-word rounding, dynamic opening minimum fees, dust and uint256 overflow branches. These mathematical quotes are not live-pool or execution proof.
-- Extend admission with explicit `profiled` confidence/protocol fit and `not-run` execution proof. `LifecycleGasProfileEvidence` carries versioned estimates and opening quotes in `LaunchSimulation.gas_profile`; estimates have no invented `gas_used`.
-- Prove conversion-funded stages through activation in one validated native request, including zero-buy activation. Opaque-router begin/atomic sizing uses the native compute ceiling, not a small static router allowance. Explicit simulation still executes covered templates; no incomplete prefix is admitted.
+- Extend admission with explicit `profiled` confidence/protocol fit and `not-run` execution proof. `LifecycleGasProfileEvidence` carries versioned `LifecycleLaunchGasBounds` and opening quotes in `LaunchSimulation.gas_profile`. Add the pure `compute_lifecycle_launch_gas_bounds` helper; opaque conversion routes return no invented bound.
+- Prove conversion-funded stages through activation in one validated native request, including zero-buy activation. Explicit simulation still executes covered templates; no incomplete prefix is admitted.
 - Require an admitted `PlannedLaunch` before starting approvals/begin. Retire the Python-only raw unstarted build-next path without implicit whole-sequence replanning or new RPC guards. Raw already-started recovery, terminal reads and cancellation remain available.
 - Remove UFG principal/config-hash mapping guard reads. Original submitted begin/atomic calldata still binds the treasury config during receipt reconciliation; Python progress callers supply `ufg=config` for that context.
 - Migrate example economic review artifacts to schema v2 and `openingBuys`, distinguishing local exact-curve quotes from actual simulated receipts.
 - Remove `submission_client`, `transport_preflight` and the dedicated submission-preflight error rather than replaying chain/gas-estimate guards after SDK admission. The wallet owns submission.
-- Remove the invented default aggregate simulation cap; explicit caller policy remains. A conservative profile crossing a real envelope/budget boundary selects one capped exact native proof, not a false static refusal.
+- Use the preset's fixed native ceiling for every launch command (32M total gas on Robinhood, including poster gas), with generic chains retaining their resolved ceiling. Remove profile-sized signing gas, affordable-envelope resizing and `LifecycleFinalEnvelope`/`fixed_final_envelope`; reviewed gas must match the native ceiling. Approvals leave gas preparation to the wallet.
+- Profiles classify mode, not signing gas: atomic is a preference that can select staged, while explicitly staged remains staged. Proven-impossible activation refuses; uncertain activation requires exact full-sequence admission before begin.
+- Refuse held prices below `max(ArbGasInfo.getPricesInWei()[5], block.baseFeePerGas)` without a bump, and refuse a fixed envelope above a real current caller ceiling. Retain explicit aggregate simulation policy without inventing a default cap.
 
 ## 0.14.1
 

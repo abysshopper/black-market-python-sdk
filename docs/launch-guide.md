@@ -316,9 +316,10 @@ profiled admission or exact conversion-funded execution proof.
 Without a configured miner it uses local mining. `plan_launch` is synchronous for
 an already-finalized plan.
 
-An admitted `launch.transactions[0]` includes gas and gas price, but no wallet
-transaction nonce. The wallet assigns that nonce; `LaunchPlanV1.nonce` is still
-committed launch identity, including UFG principal namespacing. Optional
+An admitted immediate launch command includes gas and gas price; an approval
+omits both for wallet preparation. Neither supplies a wallet transaction nonce.
+The wallet assigns it; `LaunchPlanV1.nonce` remains committed launch identity,
+including UFG principal namespacing. Optional
 `LifecycleReceiptReference.nonce` / receipt-status nonce records an actual submitted
 transaction, not a planning observation.
 If retained nonce evidence conflicts with the actual submitted/replacement
@@ -333,10 +334,10 @@ unrelated global mempool activity is not a launch-confirmation gate.
 
 Build-next handles only the immediate command, retaining original preparation
 boundaries without repeating profile discovery or proving the remaining suffix.
-Known internal commands use explicit versioned gas profiles and exact local curves.
-They return `confidence=\"profiled\"`, `execution_proof=\"not-run\"`,
+Known internal commands use explicit versioned capacity profiles and exact local
+curves. They return `confidence=\"profiled\"`, `execution_proof=\"not-run\"`,
 `protocol_fit=\"profiled\"` and no simulated `steps`. `simulation.gas_profile` holds
-estimates and ordered opening quotes; profile estimates have `gas_used=None`.
+mode/capacity `bounds` and ordered opening quotes, not transaction gas estimates.
 This is not a claim that a contract executed successfully.
 `simulate_launch_plan` is an explicit request for real execution, so it does not
 return a profile-only outcome even for a covered template.
@@ -357,14 +358,11 @@ prerequisites, not extra simulation RPCs. Only the immediate envelope is final;
 suffix envelopes remain provisional. At its turn, a known internal preparation
 uses profile admission, while the consuming activation receives fresh exact proof.
 
-Atomic callers with an explicit signing gas policy may pass
-`fixed_final_envelope=LifecycleFinalEnvelope(gas=31_000_000)` to
-`prepare_and_plan_lifecycle_launch`. This is an exact gas choice, not a ceiling or recommendation.
-Omitting `gas_price` freezes the operation's single fee recommendation; supplying it
-holds that exact price. Local opening-buy calibration does not invent measured gas.
-Retained simulation validates the final protected calldata and held envelope;
-profiled admission remains explicitly distinct. Staged plans and approval-first
-sequences cannot use this option. A failed held envelope is refused, not enlarged.
+Launch commands use the preset's native transaction ceiling: 32M total gas on
+Robinhood, including poster gas. Profiles classify atomic versus staged; they do
+not size signing gas. Reviewed gas is validated against that ceiling, never used
+as an override. A held price below the pinned fee floor refuses without a bump.
+Approval commands omit gas so the wallet can prepare their envelopes.
 
 | Mode | Transactions after approvals | What can be interrupted |
 | --- | --- | --- |
@@ -372,7 +370,9 @@ sequences cannot use this option. A failed held envelope is refused, not enlarge
 | `staged` | Begin → packed preparation transactions → one activation | Preparation is split; activation still mints, locks, buys, and opens every market together. |
 
 Staging is not rollback: an expired begun launch remains begun until cancelled.
-Select the mode explicitly; a refusal does not authorize changing the economics.
+Select the mode preference explicitly and review `launch.mode`: an atomic
+preference can select staged execution; explicit staging remains staged.
+The SDK does not shrink the native ceiling to fit a payer's balance.
 
 There is no invented default aggregate simulation cap. Direct-funded known-template
 profiles need no simulation window. Conversion-funded reviews require the stateful

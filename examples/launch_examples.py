@@ -896,13 +896,16 @@ def simulation_observation(launch):
             "tokenFactory": launch.token_factory, "tokenFactoryCodeHash": launch.token_factory_code_hash}
 
 
-def validate_envelope(client, transaction, plan, limits):
-    require(read_block(client).timestamp < plan.deadline,
+def validate_envelope(client, transaction, plan, limits, *, kind=None):
+    block = read_block(client)
+    require(block.timestamp < plan.deadline,
             "launch deadline expired before signing", code="TRANSACTION_IDENTITY_MISMATCH")
     require(quantity(rpc(client, "eth_chainId", [])) == plan.chain_id and transaction["chainId"] == plan.chain_id,
             "transaction chain differs from configured chain", code="TRANSACTION_IDENTITY_MISMATCH")
     require(address_equal(transaction["from"], plan.creator), "transaction sender differs from committed creator", code="TRANSACTION_IDENTITY_MISMATCH")
-    require(0 < transaction.get("gas", 0) <= limits.gas_cap(read_block(client)), "proven envelope exceeds known gas constraints", code="TRANSACTION_LIMIT_MISMATCH")
+    if kind not in {"approve", "approve-reset"} or "gas" in transaction:
+        require(0 < transaction.get("gas", 0) <= min(limits.compute_cap(block), limits.gas_cap(block)),
+                "proven envelope exceeds known gas constraints", code="TRANSACTION_LIMIT_MISMATCH")
     cap = limits.calldata_cap()
     require(cap is None or len(bytes.fromhex(transaction["data"][2:])) <= cap,
             "proven envelope exceeds known calldata constraints", code="TRANSACTION_LIMIT_MISMATCH")
@@ -1047,22 +1050,18 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
                                   chain_id=plan.chain_id, wallet=plan.creator,
                                   session_id=recovery["session"]["sessionId"], staging=True, image=recovery_image(recovery))
         cancellation.check()
-        # reviewed_transaction requires a complete envelope (gas + price). A held
-        # envelope from a resumed/prior process may not have gas populated yet, so
-        # only constrain the fresh proof when the held envelope is complete.
-        complete_held = held if getattr(held, "gas_limit", None) is not None and getattr(held, "gas_price", None) is not None else None
         step = build_next_transaction(client, launch, account=plan.creator, receipts=references,
                                       confirmations=CONFIRMATIONS,
-                                      reviewed_transaction=complete_held)
+                                      reviewed_transaction=held)
         require(step is not None and step.kind == held.kind and step.step_id == held.step_id
-                and (complete_held is None or step.as_transaction() == reviewed_envelope),
+                and step.as_transaction() == reviewed_envelope,
                 "fresh proof changed the held transaction envelope", code="TRANSACTION_IDENTITY_MISMATCH")
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
         artifacts.event("next-transaction-admitted", transaction=step)
         transaction = step.as_transaction()
         require(step.admission is not None and step.admission.admitted,
                 "SDK step lacks current bound admission", code="TRANSACTION_LIMIT_MISMATCH")
-        validate_envelope(client, transaction, plan, step.admission.limits)
+        validate_envelope(client, transaction, plan, step.admission.limits, kind=step.kind)
         require(wallet.client is client and address_equal(wallet.account.address, plan.creator),
                 "submission wallet differs from the reviewed source or creator", code="WALLET_IDENTITY_MISMATCH")
         cancellation.check()

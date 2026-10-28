@@ -76,6 +76,11 @@ Keep recovery files private; never commit keys, capabilities, or signed bytes.
   to their 0.3% LP fee. Their config6 minimum does not select dynamic behavior.
 - Reward examples allocate **40% of distributed fees** to rewards and 60% to the
   owner. The **275 bps** collection reward is a fee-distribution share, not a trader tax.
+- Launch commands reserve the preset's **32M total gas** on Robinhood, including
+  poster gas. Profiles select mode, never signing-gas size. An atomic preference
+  can select staged execution; review the returned `launch.mode`.
+- Approvals leave gas/fee preparation to the wallet. Held launch gas must match the
+  native ceiling, and held prices below the pinned fee floor refuse without a bump.
 
 ## Examples
 

@@ -42,6 +42,7 @@ HMM_V2_ADDITIONAL_MARKET_RESERVE = 500_000
 HMM_V2_PREPARE_GAS_ESTIMATE = 14_500_000
 OTHER_PREPARE_GAS_ESTIMATE = 16_000_000
 NEAR_GAS_CEILING_BPS = 9_500
+ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT = 32_000_000
 
 
 
@@ -84,6 +85,7 @@ class LifecycleDeploymentPreset:
     hook_salt_miner: str | None = None
     launch_lens: str | None = None
     launch_lens_code_hash: str | None = None
+    native_transaction_gas_limit: int | None = None
 
 
 def _load_deployment() -> LifecycleDeploymentPreset:
@@ -135,7 +137,8 @@ def _load_deployment() -> LifecycleDeploymentPreset:
                                      tuple(profiles), LifecycleDeploymentProvenance(provenance["sourceCommit"], provenance["deploymentBlock"]),
                                      hook_salt_miner="0x2f06176ba739b609b6a7334e2e6647558ba78ad5",
                                      launch_lens="0xcb4bb3caca71fe52eace8170cf83e901418646f8",
-                                     launch_lens_code_hash="0xc19e86bfed47afbb6ff719293edd8fb8bb3399d5d017b3f533d90cc72e58f1d3")
+                                     launch_lens_code_hash="0xc19e86bfed47afbb6ff719293edd8fb8bb3399d5d017b3f533d90cc72e58f1d3",
+                                     native_transaction_gas_limit=ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT)
 
 
 _DEPLOYMENT = _load_deployment()

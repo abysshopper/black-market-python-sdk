@@ -27,6 +27,7 @@ from black_market_sdk import (
     LaunchBlock,
     LaunchExecutionLimits,
     LaunchStateChanged,
+    NITRO_ARB_SYS_ADDRESS,
     LifecyclePhase,
     LifecycleTransaction,
     LifecycleLaunchPostcondition,
@@ -657,6 +658,12 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
         adapter = "0x" + f"{0xc2:040x}"
         return adapter, (identity, manager, manager, adapter, adapter, (), len(config.positions))
 
+    @staticmethod
+    def is_probe(payload):
+        blocks = payload["blockStateCalls"]
+        return len(blocks) == 1 and all(call["to"].lower() == NITRO_ARB_SYS_ADDRESS
+            for call in blocks[0]["calls"])
+
     def command(self, transaction):
         calldata = bytes.fromhex(transaction["data"][2:])
         for name, kind in (("launchAtomic", "atomic"), ("beginLaunch", "begin"),
@@ -786,15 +793,15 @@ class AdmissionRpcScenario(CanonicalRpcScenario):
             payload, tag = params
             assert int(tag, 16) <= self.block_number
             blocks = payload["blockStateCalls"]
-            if len(blocks) == 1 and len(blocks[0]["calls"]) == 3:
+            if self.is_probe(payload):
                 self.probes.append(payload)
                 if self.probe_failure == "unsupported":
                     return {"error": {"code": -32601, "message": "native Nitro simulation unavailable"}}
                 if self.probe_failure == "incomplete":
                     return {"result": [{"calls": []}]}
-                values = (self.raw_version, self.tx_cap, self.block_cap)
+                values = (self.raw_version,)
                 if self.probe_failure == "mismatch":
-                    values = (self.raw_version, self.tx_cap - 1, self.block_cap)
+                    values = (self.raw_version + 1,)
                 return {"result": [{"calls": [
                     {"status": "0x1", "gasUsed": "0x3e8", "returnData": "0x" + abi_encode(["uint256"], [value]).hex()}
                     for value in values
@@ -867,14 +874,14 @@ def test_complete_execution_has_separate_proof_protocol_and_transport_outcomes(k
     admission = result.transactions[0].admission
     assert admission.admitted and admission.block_number == 51 and admission.block_hash == BLOCK_HASH
     assert admission.execution_proof == admission.protocol_fit == "proved"
-    assert [payload["validation"] for payload in fixture[1].simulations] == [False, True]
-    assert result.transactions[0].gas_limit == 115_000
+    assert [payload["validation"] for payload in fixture[1].simulations] == [True]
+    assert result.transactions[0].gas_limit == 30_000_000
     assert int(fixture[1].simulations[0]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 30_000_000
     assert int(fixture[1].simulations[-1]["blockStateCalls"][0]["calls"][0]["gas"], 16) == result.transactions[0].gas_limit
 
 
 @pytest.mark.parametrize("failure", ["revert", "missing-activation", "unsupported", "incomplete"])
-def test_final_validated_measurement_rejects_execution_and_backend_failures(failure):
+def test_final_exact_simulation_rejects_execution_and_backend_failures(failure):
     fixture = admission_fixture(kind="atomic", replay_failure=failure)
     result = simulate_fixture(fixture)
     assert not result.admitted and result.protocol_fit == "unknown"
@@ -884,29 +891,29 @@ def test_final_validated_measurement_rejects_execution_and_backend_failures(fail
 
 
 @pytest.mark.parametrize("cap_name", ["chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit"])
-def test_known_envelope_policy_clamps_optional_headroom(cap_name):
+def test_generic_policy_sets_the_resolved_native_ceiling(cap_name):
     fixture = admission_fixture(policy=LaunchExecutionLimits(**{cap_name: 110_000}))
     result = simulate_fixture(fixture)
     assert result.admitted and result.protocol_fit == result.execution_proof == "proved"
     assert result.transactions[0].gas_limit == 110_000
-    assert [payload["validation"] for payload in fixture[1].simulations] == [False, True]
+    assert [payload["validation"] for payload in fixture[1].simulations] == [True]
 
 
-@pytest.mark.parametrize("balance,admitted", [(115_009, True), (115_008, False)])
+@pytest.mark.parametrize("balance,admitted", [(30_000_009, True), (30_000_008, False)])
 def test_generic_external_data_fee_is_added_once_and_affordability_is_exact(balance, admitted):
     fixture = admission_fixture(balance=balance)
     result = simulate_fixture(fixture, data_fee_estimator=lambda *_: 9)
     assert result.admitted is admitted
     assert result.execution_proof == result.protocol_fit == "proved"
     transaction = result.transactions[0]
-    assert transaction.maximum_execution_fee == 115_000 and transaction.data_fee == 9
-    assert transaction.total_fee == 115_009 and not transaction.data_fee_included_in_gas
+    assert transaction.maximum_execution_fee == 30_000_000 and transaction.data_fee == 9
+    assert transaction.total_fee == 30_000_009 and not transaction.data_fee_included_in_gas
     assert "data_fee" not in result.unknown_constraints
 
 
 def test_nitro_validated_total_includes_actual_poster_without_double_charge():
     fixture = admission_fixture(nitro=True, compute_gas=20_000_000, poster_gas=10_000_000,
-                                actual_poster_gas=13_000_000, balance=37_950_000)
+                                actual_poster_gas=11_000_000, balance=37_950_000)
 
     def must_not_add_external_fee(*_):
         raise AssertionError("Nitro gas already includes the poster fee")
@@ -914,14 +921,13 @@ def test_nitro_validated_total_includes_actual_poster_without_double_charge():
     result = simulate_fixture(fixture, data_fee_estimator=must_not_add_external_fee)
     assert result.admitted and result.protocol_fit == result.execution_proof == "proved"
     transaction = result.transactions[0]
-    assert transaction.compute_gas_estimate == transaction.gas_estimate == 20_000_000
-    assert transaction.gas_limit == 33_007_456 > fixture[4].execution_gas_ceiling
-    assert transaction.gas_used == 33_000_000 > fixture[4].execution_gas_ceiling
+    assert transaction.gas_estimate == 31_000_000
+    assert transaction.gas_limit == fixture[4].execution_gas_ceiling == 32_000_000
+    assert transaction.gas_used == 31_000_000
     assert transaction.poster_gas == transaction.poster_fee == 10_007_456
     assert transaction.data_fee == 0 and transaction.data_fee_included_in_gas
-    assert transaction.total_fee == transaction.maximum_execution_fee == 33_007_456
-    assert fixture[4].arb_os_version == 50 and fixture[4].max_tx_compute_gas == 32_000_000
-    assert fixture[4].max_block_compute_gas == 32_000_000
+    assert transaction.total_fee == transaction.maximum_execution_fee == 32_000_000
+    assert fixture[4].arb_os_version == 50
     assert fixture[4].transaction_gas_ceiling is None
     assert "chain_transaction_gas_limit" not in result.unknown_constraints and "data_fee" not in result.unknown_constraints
     probe = fixture[1].probes[0]
@@ -931,23 +937,23 @@ def test_nitro_validated_total_includes_actual_poster_without_double_charge():
     assert fixture[1].poster_requests == []
 
 
-@pytest.mark.parametrize("balance,admitted", [(115_000, True), (114_999, True), (100_000, True), (99_999, False)])
-def test_nitro_exactly_funded_small_cancellation_does_not_need_probe_funds(balance, admitted):
+@pytest.mark.parametrize("balance,admitted", [(32_000_000, True), (31_999_999, False)])
+def test_nitro_exact_native_ceiling_reservation_does_not_need_additional_probe_funds(balance, admitted):
     result = simulate_fixture(admission_fixture(nitro=True, balance=balance))
     assert result.admitted is admitted
     if admitted:
         assert result.execution_proof == result.protocol_fit == "proved"
         assert result.transactions[0].gas_limit <= balance
     else:
-        assert result.execution_proof == "failed" and result.failure_category == "capacity"
+        assert result.execution_proof == "unavailable" and result.failure_category == "affordability"
 
 
-def test_nitro_known_total_envelope_cap_is_not_a_compute_cutoff():
+def test_nitro_total_policy_never_adds_poster_on_top_of_the_native_ceiling():
     policy = LaunchExecutionLimits(account_transaction_gas_limit=34_000_000)
     fixture = admission_fixture(nitro=True, policy=policy, compute_gas=20_000_000, poster_gas=10_000_000)
     result = simulate_fixture(fixture)
     assert result.admitted and result.protocol_fit == "proved"
-    assert result.transactions[0].gas_limit == 33_007_456 < policy.account_transaction_gas_limit
+    assert result.transactions[0].gas_limit == 32_000_000 < policy.account_transaction_gas_limit
     assert fixture[4].execution_gas_ceiling == 32_000_000
     assert fixture[4].transaction_gas_ceiling == 34_000_000
 
@@ -964,7 +970,7 @@ def test_nitro_non_native_or_mismatched_backend_is_explicitly_unavailable(failur
     {"error": {"code": -32000, "message": "historical state unavailable"}},
     {"result": "0x"}, {"result": "0x" + "00" * 64},
 ])
-def test_nitro_cap_read_failure_cannot_fall_back_to_huge_header(override):
+def test_nitro_version_read_failure_cannot_fabricate_native_context(override):
     request = replace(plan(), chain_id=4663)
     provider = AdmissionRpcScenario(request)
     provider.getter_override = override
@@ -975,10 +981,11 @@ def test_nitro_cap_read_failure_cannot_fall_back_to_huge_header(override):
     assert provider.simulations == [] and provider.probes == []
 
 
-@pytest.mark.parametrize("options", [{"raw_version": 104}, {"tx_cap": 0}, {"block_cap": 0}, {"block_cap": 2**64}])
-def test_nitro_getter_values_are_validated_and_version_offset_is_not_ignored(options):
-    with pytest.raises((ValueError, RuntimeError, DecodingError)):
-        admission_fixture(nitro=True, **options)
+@pytest.mark.parametrize("raw,epoch", [(104, 49), (105, 50), (116, 61)])
+def test_native_preset_ceiling_is_independent_of_removed_dynamic_cap_getters(raw, epoch):
+    fixture = admission_fixture(nitro=True, raw_version=raw, tx_cap=0, block_cap=0)
+    assert fixture[4].arb_os_version == epoch
+    assert fixture[4].execution_gas_ceiling == 32_000_000
 
 
 def test_nitro_generic_controlled_fork_cannot_claim_native_compute_proof():
@@ -1215,7 +1222,7 @@ def test_staged_nitro_planner_returns_only_immediate_exact_wire_gas(monkeypatch,
     gas_limits = [transaction.gas_limit for transaction in planned.transactions]
     assert planned.admitted
     assert [transaction.kind for transaction in planned.transactions] == ["begin", "prepare", "activate"]
-    assert gas_limits == [4_681_864, None, None]
+    assert gas_limits == [32_000_000, None, None]
     assert gas_limits == [transaction.gas_limit for transaction in planned.simulation.transactions]
     for transaction in planned.transactions[:1]:
         assert transaction.gas_price == 2
@@ -1225,7 +1232,7 @@ def test_staged_nitro_planner_returns_only_immediate_exact_wire_gas(monkeypatch,
     for transaction, step in zip(planned.transactions[1:], planned.simulation.steps[1:]):
         assert transaction.gas_price is transaction.estimate is transaction.admission is None
         assert step.success and step.provisional and step.estimate is None
-    assert [payload["validation"] for payload in provider.simulations] == [False, True]
+    assert [payload["validation"] for payload in provider.simulations] == [True]
     held = planned.transactions[0]
     current = build_next_transaction(client, planned, reviewed_transaction=held)
     assert current.as_transaction() == held.as_transaction()
@@ -1246,7 +1253,7 @@ def test_reviewed_nitro_envelope_can_consume_original_margin_at_fresh_block(monk
     assert planned.admitted and held.gas_limit > provider.compute_gas + provider.actual_poster_gas and held.gas_price == 40_124_000
     provider.block_number += 1
     provider.block_hash = ORPHAN_HASH
-    provider.gas_price, provider.base_fee_per_gas = 40_230_000, 20_110_000
+    provider.gas_price, provider.base_fee_per_gas = 40_120_000, 20_110_000
     provider.child_base_fee = 20_111_000
     if drift == "compute":
         provider.compute_gas += 153
@@ -1309,6 +1316,8 @@ def test_reviewed_nitro_envelope_still_refuses_real_capacity_fee_and_proof_failu
         assert error.simulation.protocol_fit == "failed"
         assert error.simulation.capacity_constraint == "gas-envelope"
         assert provider.simulations == []
+    elif violation in {"base-fee", "balance"}:
+        assert provider.simulations == []
     else:
         assert [payload["validation"] for payload in provider.simulations] == [True]
         replay = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
@@ -1329,12 +1338,12 @@ def test_reviewed_next_does_not_remeasure_or_replay_future_envelopes(monkeypatch
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
     held = planned.transactions[0]
     provider.replay_compute_gas_by_kind["prepare"] = 160_000
-    provider.gas_price = 3
+    provider.gas_price = held.gas_price
     provider.simulations.clear()
     provider.poster_requests.clear()
     current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None)
     assert current.admission.admitted
-    assert current.gas_limit == (held.gas_limit if reviewed else 136_224)
+    assert current.gas_limit == 32_000_000
     assert current.gas_price == (held.gas_price if reviewed else provider.gas_price)
     assert current.maximum_execution_fee == current.gas_limit * current.gas_price
     assert [payload["validation"] for payload in provider.simulations] == [True]
@@ -1404,14 +1413,14 @@ def test_wide_internal_buffering_does_not_narrow_policy_provenance_or_fee_widths
 
 
 
-def test_gross_requirement_not_refund_reduced_gas_usage_sets_reviewed_envelope(monkeypatch):
+def test_actual_gross_gas_is_metadata_never_native_ceiling_sizing(monkeypatch):
     fixture = admission_fixture()
     provider = fixture[1]
     original = provider.make_request
 
     def response(method, params):
         result = original(method, params)
-        if method == "eth_simulateV1" and not params[0]["validation"]:
+        if method == "eth_simulateV1":
             result["result"][0]["calls"][0]["gasUsed"] = hex(50_000)
             result["result"][0]["calls"][0]["maxUsedGas"] = hex(100_000)
         return result
@@ -1420,7 +1429,7 @@ def test_gross_requirement_not_refund_reduced_gas_usage_sets_reviewed_envelope(m
     result = simulate_fixture(fixture)
     assert result.admitted
     assert result.transactions[0].gas_estimate == 100_000
-    assert result.transactions[0].gas_limit == 115_000
+    assert result.transactions[0].gas_limit == 30_000_000
 
 
 @pytest.mark.parametrize("malformed", [
@@ -1455,7 +1464,7 @@ def test_known_calldata_and_rpc_payload_constraints_are_enforced(policy):
     assert not result.admitted
 
 
-def test_fitting_final_activation_clamps_padding_and_remains_indivisible(monkeypatch):
+def test_fitting_final_activation_uses_the_fixed_generic_ceiling_and_remains_indivisible(monkeypatch):
     lifecycle, request, provider, client = wire_planning(monkeypatch, scenario_options={"compute_gas_by_kind": {"activate": 27_000_000}})
     planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
     assert planned.admitted and planned.mode == "staged"
@@ -1470,21 +1479,21 @@ def test_fitting_final_activation_clamps_padding_and_remains_indivisible(monkeyp
 
 
 
-def test_nitro_compute_headroom_and_serialized_poster_bound_are_added_once():
+def test_nitro_serialized_poster_bound_is_metadata_not_added_to_signing_gas():
     fixture = admission_fixture(nitro=True, compute_gas=10_000_001, poster_gas=1, l1_price_per_byte=3)
     result = simulate_fixture(fixture)
     assert result.admitted
     transaction = result.transactions[0]
     size = transaction.calldata_bytes + 384
     poster = 6 * (size + 8 * (size // 1024) + 64)  # prices[1]=3, prices[5]=1, 2x allowance.
-    assert transaction.compute_gas_estimate == 10_000_001
+    assert transaction.gas_estimate == 10_000_002
     assert transaction.poster_gas == poster
-    assert transaction.gas_limit == 11_500_002 + poster
+    assert transaction.gas_limit == 32_000_000
 
 
 def test_zero_gas_price_remains_valid_when_actual_backend_accepts_exact_replay():
     fixture = admission_fixture(balance=0)
-    fixture = (*fixture[:-1], replace(fixture[-1], gas_price=0))
+    fixture = (*fixture[:3], replace(fixture[3], base_fee_per_gas=0), fixture[4], replace(fixture[-1], gas_price=0))
     result = simulate_fixture(fixture, data_fee_estimator=lambda *_: 0)
     assert result.admitted and result.transactions[0].maximum_execution_fee == result.transactions[0].total_fee == 0
 
@@ -1513,7 +1522,6 @@ def test_headroom_cannot_exceed_matching_zero_to_one_hundred_percent_range(headr
 @pytest.mark.parametrize("name", [
     "chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit",
     "rpc_total_simulation_gas_limit", "execution_gas_ceiling", "transaction_gas_ceiling",
-    "max_tx_compute_gas", "max_block_compute_gas",
 ])
 def test_transaction_and_compute_cap_boundaries_are_positive_uint64(name):
     assert getattr(LaunchExecutionLimits(**{name: 2**64 - 1}), name) == 2**64 - 1
@@ -1538,15 +1546,6 @@ def test_discovery_cannot_request_a_non_uint64_physical_gas_envelope(gas):
     with pytest.raises(ValueError):
         simulate_transactions(fixture[2], [replace(fixture[-1], gas_limit=gas).as_transaction()],
             block=fixture[3], limits=fixture[4])
-
-
-@pytest.mark.parametrize("nitro", [False, True])
-def test_zero_metering_cannot_create_a_reviewed_transaction_or_claim_execution_proof(nitro):
-    fixture = admission_fixture(nitro=nitro, compute_gas=0, poster_gas=0)
-    result = simulate_fixture(fixture)
-    assert not result.admitted
-    assert result.execution_proof == "unavailable" and result.protocol_fit == "failed"
-    assert len(fixture[1].simulations) == 1
 
 
 @pytest.mark.parametrize("scenario_options", [

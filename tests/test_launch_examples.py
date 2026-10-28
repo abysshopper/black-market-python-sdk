@@ -509,6 +509,34 @@ def test_wallet_only_prepares_absent_nonce_and_fees(tmp_path, monkeypatch):
     artifacts.finish()
 
 
+@pytest.mark.parametrize("kind,amount", [("approve", 123), ("approve-reset", 0)])
+def test_wallet_prepares_missing_approval_gas_without_relaxing_launch_envelopes(monkeypatch, kind, amount):
+    request = token_draft()
+    wallet = object.__new__(LocalSigningWallet)
+    wallet.client, wallet.chain_id = None, request.chain_id
+    wallet.account = SimpleNamespace(address=request.creator)
+    transaction = {"chainId": request.chain_id, "from": request.creator,
+        "to": "0x" + "ab" * 20, "value": 0,
+        "data": "0x095ea7b3" + encode(["address", "uint256"], [request.orchestrator, amount]).hex()}
+    methods = []
+    def rpc(_client, method, params):
+        methods.append(method)
+        if method == "eth_estimateGas":
+            assert params[0]["data"] == transaction["data"] and params[0]["to"] == transaction["to"]
+            assert params[0]["gasPrice"] == "0x64" and params[0]["nonce"] == "0x9"
+            return hex(26_024)
+        return {"eth_chainId": hex(request.chain_id), "eth_getTransactionCount": "0x9", "eth_gasPrice": "0x64"}[method]
+    monkeypatch.setattr(support, "rpc", rpc)
+    prepared = wallet.prepare_transaction(transaction, kind=kind)
+    assert prepared == {**transaction, "nonce": 9, "gasPrice": 100, "gas": 26_024}
+    assert methods == ["eth_chainId", "eth_getTransactionCount", "eth_gasPrice", "eth_estimateGas"]
+    methods.clear()
+    with pytest.raises(ExampleFailure) as failure:
+        wallet.prepare_transaction(transaction, kind="begin")
+    assert failure.value.code == "TRANSACTION_IDENTITY_MISMATCH"
+    assert methods == ["eth_chainId"]
+
+
 def test_wallet_signs_real_attribution_and_rejects_wrong_domain(tmp_path, monkeypatch):
     account = Account.from_key("0x" + "01" * 32)
     artifacts = Artifacts(tmp_path / "attribution", "boundary-case")
@@ -710,11 +738,14 @@ def test_fixed_example_guard_preserves_unknown_policy_and_nitro_total_envelope(m
                         hex(request.chain_id) if method == "eth_chainId" else "0x0" if method == "eth_getTransactionCount" else no_call())
     transaction = {"chainId": request.chain_id, "from": request.creator, "to": request.orchestrator,
                    "nonce": 0, "value": 0, "data": "0x0102", "gas": 34_500_000, "gasPrice": 1}
-    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000,
-                                   max_tx_compute_gas=32_000_000, max_block_compute_gas=32_000_000, arb_os_version=50)
+    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000, arb_os_version=50)
+    with pytest.raises(ExampleFailure) as native_failure:
+        example.validate_envelope(None, transaction, request, limits)
+    assert native_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
+    transaction["gas"] = 32_000_000
     assert example.validate_envelope(None, transaction, request, limits) is None
     with pytest.raises(ExampleFailure) as gas_failure:
-        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(account_transaction_gas_limit=34_000_000))
+        example.validate_envelope(None, transaction, request, LaunchExecutionLimits(account_transaction_gas_limit=31_000_000))
     assert gas_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
     with pytest.raises(ExampleFailure) as calldata_failure:
         example.validate_envelope(None, transaction, request, LaunchExecutionLimits(max_calldata_bytes=1))
@@ -1265,7 +1296,7 @@ def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(
         for index, buy in enumerate(plan.buys)) if complete else ()
     launch = SimpleNamespace(plan=plan, predicted_token=predicted,
         simulation=SimpleNamespace(confidence="profiled",
-            gas_profile=lifecycle.LifecycleGasProfileEvidence("test-profile", {}, quotes),
+            gas_profile=lifecycle.LifecycleGasProfileEvidence("test-profile", lifecycle.LifecycleLaunchGasBounds(0, 0), quotes),
             transactions=(), evidence=SimpleNamespace(calls=())))
     if complete:
         rows = example.opening_buy_review(launch, artifacts.economic_pricing)

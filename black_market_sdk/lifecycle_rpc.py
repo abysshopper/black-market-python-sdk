@@ -631,8 +631,6 @@ class LaunchExecutionLimits:
     execution_gas_ceiling: int | None = None
     transaction_gas_ceiling: int | None = None
     arb_os_version: int | None = None
-    max_tx_compute_gas: int | None = None
-    max_block_compute_gas: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.headroom_bps, bool) or not isinstance(self.headroom_bps, int) or not 0 <= self.headroom_bps <= 10_000:
@@ -640,7 +638,6 @@ class LaunchExecutionLimits:
         for name in (
             "chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit",
             "rpc_total_simulation_gas_limit", "execution_gas_ceiling", "transaction_gas_ceiling",
-            "max_tx_compute_gas", "max_block_compute_gas",
         ):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 < value < (1 << 64)):
@@ -678,7 +675,7 @@ class LaunchExecutionLimits:
     def compute_cap(self, block: LaunchBlock) -> int:
         if self.protocol == "nitro":
             if self.execution_gas_ceiling is None:
-                raise ValueError("Nitro compute ceilings have not been read at the canonical block")
+                raise ValueError("The native transaction ceiling has not been resolved")
             return self.execution_gas_ceiling
         return self.gas_cap(block)
 
@@ -716,6 +713,7 @@ class LaunchSimulationCall:
     native_error_data_bytes: int | None = None
     native_gas_capped: bool = False
     postcondition_data: tuple[str, ...] = ()
+    gas_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -975,8 +973,8 @@ def _simulate_rpc(
 
 def _simulate_fork(
     source: Web3 | LifecycleRpcClient, fork: ControlledLaunchFork,
-    transactions: Sequence[Mapping[str, Any]], block: LaunchBlock, validation: bool,
-    limits: LaunchExecutionLimits, postconditions: Sequence[Sequence[Mapping[str, str]]] | None,
+    transactions: Sequence[Mapping[str, Any]], block: LaunchBlock,
+    postconditions: Sequence[Sequence[Mapping[str, str]]] | None,
     postcondition_validator: Callable[[int, LaunchSimulationCall], None] | None,
 ) -> LaunchRpcSimulation:
     client = fork.client
@@ -1007,12 +1005,7 @@ def _simulate_fork(
                 impersonated.append(creator)
         for index, transaction in enumerate(transactions):
             request = {key: value for key, value in rpc_transaction(transaction).items() if key in {"from", "to", "data", "value", "gas", "gasPrice"}}
-            estimate = None
             try:
-                if not validation:
-                    estimate_request = {key: value for key, value in request.items() if key != "gas"}
-                    estimate = quantity(rpc(client, "eth_estimateGas", [estimate_request]))
-                    request["gas"] = hex(min(limits.buffered_gas(estimate), quantity(request["gas"])))
                 transaction_hash = rpc(client, "eth_sendTransaction", [request])
                 deadline = time.monotonic() + fork.receipt_timeout_ms / 1000
                 receipt = None
@@ -1028,7 +1021,7 @@ def _simulate_fork(
                 observed = tuple(hex_bytes(rpc(client, "eth_call", [{**condition, "from": transaction["from"]}, current.tag]))
                                  for condition in (postconditions[index] if postconditions is not None else ())) if success else ()
                 call = LaunchSimulationCall(success, quantity(receipt["gasUsed"]), "0x", tuple(receipt.get("logs", ())),
-                    None if success else "Actual controlled fork transaction reverted", estimate,
+                    None if success else "Actual controlled fork transaction reverted", None,
                     None if success else "opaque", postcondition_data=observed)
                 if success and postcondition_validator is not None:
                     try:
@@ -1099,7 +1092,7 @@ def simulate_transactions(
         if force_owned_fork:
             if fork is None or limits.protocol == "nitro":
                 raise ValueError("Owned replay requires its exact disposable generic-EVM backend")
-            return _simulate_fork(client, fork, transactions, block, validation, limits, postconditions, postcondition_validator)
+            return _simulate_fork(client, fork, transactions, block, postconditions, postcondition_validator)
         try:
             result = _simulate_rpc(client, transactions, block, limits, validation)
         except (LaunchStateChanged, LifecyclePlanningError):
@@ -1108,11 +1101,10 @@ def simulate_transactions(
             if _simulation_failure_kind(error) == "abort":
                 raise
             result = LaunchRpcSimulation("provisional", None, block, (), "Stateful sequential RPC returned invalid bounded execution results", len(transactions), "source")
-        # Only initial generic-EVM measurement may select an explicitly supplied
-        # fork after request/structural failure. Returned execution refusals and
-        # validated replay cannot switch their backend.
+        # An unvalidated generic-EVM diagnostic may use an explicitly supplied
+        # fork after structural source failure, never after an execution refusal.
         if not validation and result.failure_category == "source" and fork is not None and limits.protocol != "nitro":
-            return _simulate_fork(client, fork, transactions, block, validation, limits, postconditions, postcondition_validator)
+            return _simulate_fork(client, fork, transactions, block, postconditions, postcondition_validator)
         return result
     finally:
         if owns_source:

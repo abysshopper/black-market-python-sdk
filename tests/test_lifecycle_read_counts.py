@@ -30,7 +30,6 @@ from black_market_sdk import (
     UFG_DYNAMIC_PROFILE_ID,
     UFG_LAUNCH_PROXY_ADDRESS,
     LifecycleAssetFunding,
-    LifecycleFinalEnvelope,
     LifecycleInitialBuy,
     LifecyclePlanningError,
     LifecycleReceiptReference,
@@ -126,8 +125,8 @@ def assert_budget(client, *, calls, simulations, total):
 def test_protected_preparation_pins_once_without_a_diagnostic_buy_simulation(prepared):
     _, client, launch = prepared
     assert client.counts == Counter({"eth_chainId": 1, "eth_getBlockByNumber": 2,
-        "eth_call": 2, "eth_getCode": 2, "eth_simulateV1": 3})
-    assert len(client.calls) == 10
+        "eth_call": 2, "eth_getCode": 2, "eth_simulateV1": 2})
+    assert len(client.calls) == 9
     assert "nonce" not in launch.transactions[0].as_transaction()
     config = decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config)
     assert len(config.positions) == 6 and config.ufg_launch_config == terms()
@@ -137,9 +136,9 @@ def test_protected_preparation_pins_once_without_a_diagnostic_buy_simulation(pre
 
 
 @pytest.mark.parametrize("entry,total,calls,simulations", [
-    ("plan", 6, 2, 2), ("simulate", 6, 2, 2),
+    ("plan", 5, 2, 1), ("simulate", 5, 2, 1),
     ("build", 5, 2, 1), ("reviewed", 5, 2, 1),
-    ("staged", 6, 2, 2), ("staged-reviewed", 5, 2, 1),
+    ("staged", 5, 2, 1), ("staged-reviewed", 5, 2, 1),
 ])
 def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations):
     _, client, launch = prepared
@@ -167,52 +166,6 @@ def test_standalone_progress_retains_domain_confirmations_without_eoa_nonce_read
     assert progress.confirmation_safe and progress.nonce == launch.plan.nonce
     assert client.counts == Counter({"eth_getBlockByNumber": 2, "eth_call": 2})
     assert len(client.calls) == 4
-
-
-@pytest.mark.parametrize("price", [None, 7])
-def test_fixed_final_envelope_preserves_exact_gas_and_one_selected_fee(price):
-    draft = draft_plan()
-    client = CountingTransport(NativeBuyScenario(draft))
-    launch = prepare(client, draft, fixed_final_envelope=LifecycleFinalEnvelope(31_000_000, price))
-    assert launch.admitted and len(client.calls) == 9
-    transaction = launch.transactions[0]
-    assert transaction.gas_limit == 31_000_000
-    assert transaction.gas_price == (2 if price is None else price)
-    assert client.counts["eth_simulateV1"] == 2
-    assert client.counts["eth_gasPrice"] == 0
-    executions = client.provider.simulations
-    assert [payload["validation"] for payload in executions] == [True]
-    assert int(executions[-1]["blockStateCalls"][0]["calls"][0]["gas"], 16) == 31_000_000
-    poster_calls = [call for call in client.calls if call["method"] == "eth_call" and call["params"][0]["to"].lower().endswith("00c8")]
-    assert poster_calls == []  # Neither calibration nor an explicitly fixed envelope needs a quote.
-
-
-@pytest.mark.parametrize("envelope,mode", [
-    (LifecycleFinalEnvelope(0), "atomic"), (LifecycleFinalEnvelope(True), "atomic"),
-    (LifecycleFinalEnvelope(1 << 64), "atomic"), (LifecycleFinalEnvelope(1, -1), "atomic"),
-    (LifecycleFinalEnvelope(1), "staged"),
-])
-def test_invalid_fixed_envelopes_fail_before_rpc(envelope, mode):
-    client = CountingTransport(NativeBuyScenario(draft_plan()))
-    with pytest.raises(LifecyclePlanningError) as failure:
-        asyncio.run(prepare_and_plan_lifecycle_launch(client, draft_plan(), account=PRINCIPAL,
-            mode=mode, ufg=terms(), fixed_final_envelope=envelope))
-    assert failure.value.code == "INVALID_FINAL_ENVELOPE" and client.calls == []
-
-
-def test_held_fixed_envelope_failure_is_not_resized_or_remeasured(prepared):
-    _, client, launch = prepared
-    client.provider.replay_failure = "revert"
-    client.calls.clear()
-    client.provider.simulations.clear()
-    result = asyncio.run(prepare_and_plan_lifecycle_launch(client, launch.plan,
-        account=PRINCIPAL, mode="atomic", confirmations=2, ufg=terms(),
-        fixed_final_envelope=LifecycleFinalEnvelope(31_000_000, 7)))
-    assert not result.admitted
-    assert client.counts["eth_simulateV1"] == 1  # Successful session capability is reused.
-    assert len(client.provider.simulations) == 1 and client.provider.simulations[0]["validation"]
-    assert all(call["params"][0]["to"].lower() != "0x00000000000000000000000000000000000000c8"
-        for call in client.calls if call["method"] == "eth_call")
 
 
 def test_multicall_attestation_rejects_changed_runtime_before_execution():
@@ -308,18 +261,6 @@ def test_multicall_incomplete_or_failed_results_do_not_seed_successful_reads(inv
     assert prepare(client, draft_plan()).admitted
 
 
-def test_fixed_preparation_rejects_a_preceding_funding_approval(prepared):
-    _, client, launch = prepared
-    plan = replace(launch.plan, funding=(replace(launch.plan.funding[0], kind=0),))
-    client.calls.clear()
-    with pytest.raises(LifecyclePlanningError) as failure:
-        asyncio.run(prepare_and_plan_lifecycle_launch(client, plan, account=PRINCIPAL,
-            mode="atomic", confirmations=2, ufg=terms(),
-            fixed_final_envelope=LifecycleFinalEnvelope(31_000_000)))
-    assert failure.value.code == "INVALID_FINAL_ENVELOPE"
-    assert client.counts["eth_simulateV1"] == 0
-
-
 def test_fee_recommendation_is_frozen_inside_preparation_but_not_across_invocations():
     client = CountingTransport(NativeBuyScenario(draft_plan()))
     client.provider.gas_price = 15
@@ -339,18 +280,6 @@ def test_fee_recommendation_is_frozen_inside_preparation_but_not_across_invocati
         confirmations=2, ufg=terms())
     assert current.transactions[0].gas_price == 999
     assert client.counts["eth_gasPrice"] == 0
-
-
-def test_fixed_envelope_also_applies_without_mining_or_buy_calibration():
-    plan = request()
-    client = CountingTransport(NativeBuyScenario(plan))
-    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, plan, account=PRINCIPAL,
-        mode="atomic", ufg=terms(), fixed_final_envelope=LifecycleFinalEnvelope(31_000_000, 7)))
-    assert launch.admitted
-    assert launch.transactions[0].gas_limit == 31_000_000
-    assert launch.transactions[0].gas_price == 7
-    assert client.counts["eth_gasPrice"] == 0
-    assert client.counts["eth_simulateV1"] == 2
 
 
 @pytest.mark.parametrize("retained,actual,accepted", [(None, 7, True), (0, 0, True), (0, 7, False)])

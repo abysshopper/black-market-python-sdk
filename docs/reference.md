@@ -147,21 +147,22 @@ its selected profile's fee bounds, mode, oracle, and external-liquidity policy.
 
 ## Account for Nitro gas
 
-On chain4663, the SDK reads `ArbSys.arbOSVersion()` at `0x64` and
-`ArbGasInfo.getMaxTxGasLimit()` / `getMaxBlockGasLimit()` / `getPricesInWei()` at `0x6c` in one canonical
-context. Subtract the returned version offset **55**; actual ArbOS version must be
-**≥50**. Native compute ceilings come from these getters, not the large block
-header gas field. Read failures stop admission.
+On chain4663, the deployment preset supplies the fixed **32M total-gas ceiling**,
+including poster gas. `ArbSys.arbOSVersion()` at `0x64` selects the capacity epoch;
+subtract its returned version offset **55**. `ArbGasInfo.getPricesInWei()` at
+`0x6c` supplies the same-block fee context. Dynamic max-transaction/max-block
+getters are not planning guards.
 
-- `LaunchExecutionLimits.execution_gas_ceiling` caps compute;
-  `transaction_gas_ceiling` is separate total-envelope policy.
-- Release-owned direct-funded internal commands use versioned conservative gas
-  profiles, not a simulated success. Their outcomes are `confidence="profiled"`,
+- `LaunchExecutionLimits.execution_gas_ceiling` is the fixed native envelope;
+  `transaction_gas_ceiling` is separate tightening policy that can refuse it.
+- Release-owned direct-funded internal commands use versioned capacity profiles,
+  not a simulated success. Their outcomes are `confidence="profiled"`,
   `execution_proof="not-run"` and `protocol_fit="profiled"`; `steps` is empty.
-  `simulation.gas_profile` is `LifecycleGasProfileEvidence`: `version`,
-  transaction-ID-keyed `estimates` and exact ordered `initial_buys`.
-  Profile estimates omit measured `gas_used` and use
-  `fee_confidence="profiled-execution-and-data"`.
+  `simulation.gas_profile` is `LifecycleGasProfileEvidence`: `version`, `bounds`
+  (`LifecycleLaunchGasBounds`) and exact ordered `initial_buys`. Bounds contain
+  `atomic_compute_gas_upper_bound` and `activation_compute_gas_upper_bound`,
+  excluding poster gas. They never set signing gas. The immediate fee estimate
+  uses `fee_confidence="native-ceiling-and-data"` without invented `gas_used`.
   Version `robinhood-4663-arbos61-v1` covers released profiles and quote identities
   on ArbOS61 only. Other currencies/versions use exact execution, not an asset
   admission whitelist. Mutating the display catalog cannot grant coverage.
@@ -171,36 +172,39 @@ header gas field. Read failures stop admission.
 - Opening curves include overlapping bands, bitmap-word steps, per-step rounding,
   ordered previous buys and opening hook fees. `compute_lifecycle_opening_buys`
   is a pure unopened-curve calculation, not a live quote or contract-execution proof.
+  `compute_lifecycle_launch_gas_bounds(plan, predicted_token=..., ufg=...,
+  headroom_bps=1500)` is the parallel pure capacity helper. `None` means unprofiled,
+  including opaque conversion routes or missing UFG route context. A large upper
+  bound is uncertain, not proof that activation is impossible.
 - Conversion-funded execution and consuming activation retain exact validated
   simulation. Fresh staged conversion review includes the state prerequisites
   through activation in one `eth_simulateV1` request, not separate per-step RPCs.
   A request that cannot prove its required activation is not admitted as complete.
   Explicit `simulate_launch_plan` always requests real execution, including for a
   covered internal template; only planning/build-next can use profile-only admission.
-  Opaque-router begin/atomic sizing uses the pinned native compute ceiling, not a
-  static router allowance. This provisional sizing is never profile-only admission.
-- A profile bound above native/configured ceilings or available upfront budget
-  selects one capped exact native proof instead of falsely refusing a working
-  launch from the static estimate alone. Covered fitting commands remain
-  simulation-free. Held reviewed gas and price never change.
+- Every launch command uses the preset's fixed native total-gas ceiling, 32M on
+  Robinhood. Profiles only classify atomic versus staged: an atomic preference may
+  select staged execution, while explicitly staged execution remains staged.
+  Proven-impossible activation refuses; uncertain activation needs a complete exact
+  sequence proof before begin. Reviewed gas must match the native ceiling rather
+  than replacing it. Approval gas is left to wallet preparation.
 - The same-block price tuple replaces per-transaction NodeInterface calls.
   For calldata length `C`, use `N=C+384`, `B=N+8*(N//1024)+64`,
   `fee_bound=B*prices[1]`, and `poster_gas=2*ceil(fee_bound/prices[5])`
   (zero for zero data fee). The allowance covers serialized legacy/EIP-1559 EOA
   envelopes with an empty access list. Wallet-added access/authorization lists or
   AA wrappers are outside this direct-EOA profile and need their wallet envelope.
-- Add poster gas once to the compute envelope. Future profile estimates are
-  planning provenance at that pin, not signing authority. Only the immediate
-  transaction has final signing gas/price and admission; build-next refreshes the
-  actual next command. Simulated suffix steps remain provisional.
-- Generic-EVM controlled-fork sizing uses gross `eth_estimateGas`, not
-  refund-reduced receipt gas. A generic fork is not native Nitro fee/compute proof.
-- Poster gas is already inside the envelope: `data_fee_included_in_gas=True`,
-  `data_fee=0`, `total_fee=gas_limit * gas_price`. Do not add `poster_fee` again.
-  Receipt/total gas can exceed the compute ceiling.
+- Poster gas is inside Robinhood's 32M total ceiling, never added on top. Only the
+  immediate transaction has final signing gas/price and admission; build-next
+  refreshes the actual next command. Simulated suffix steps remain provisional.
+- Generic EVMs retain their resolved ceiling. A generic fork is not native Nitro
+  fee/compute proof.
+- Native fees use `data_fee_included_in_gas=True`, `data_fee=0` and
+  `total_fee=gas_limit * gas_price`. Do not add `poster_fee` again.
 - Robinhood's recommendation uses `getPricesInWei()[5]` and the existing twice-base-fee
-  floor, without a separate `eth_gasPrice`. Held reviewed envelopes retain their
-  exact price. Profile bounds and data-fee provenance are not measured receipt costs.
+  floor, without a separate `eth_gasPrice`. Held reviewed prices remain exact and
+  must cover the pinned fee floor. The SDK never lowers the fixed gas ceiling to
+  fit a payer's balance; the wallet must afford that upfront reservation.
 
 There is no invented default aggregate simulation cap. An explicit
 `rpc_total_simulation_gas_limit` still tightens caller/provider policy; otherwise
@@ -242,12 +246,12 @@ lens returned by `get_launch_addresses(4663).lens` or `LAUNCH_LENS_V1_ABI`.
 `launch_lens_code_hash` records the frozen runtime identity as deployment
 metadata; it does not add a guard-only RPC read.
 
-`LifecycleFinalEnvelope(gas, gas_price=None)` is the optional exact atomic envelope
-for `prepare_and_plan_lifecycle_launch`. Unlike
-`account_transaction_gas_limit`, its gas is the actual final proof/signing gas.
-An omitted price uses the invocation's single recommended fee; an explicit price
-is not raised. Profiled or exact admission, funding checks and native Nitro limits
-still apply.
+Launch commands use the fixed native ceiling from the deployment preset, not
+profile-sized gas, poster additions or an exact-envelope override. Robinhood's
+32M is the complete transaction gas limit. The pinned fee floor is
+`max(ArbGasInfo.getPricesInWei()[5], block.baseFeePerGas)`. A held price below that
+floor is refused rather than raised, even when a higher fresh recommendation is
+available.
 
 ## Observe planner diagnostics
 
