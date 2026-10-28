@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from .launch import get_tick_at_sqrt_ratio
 from .lifecycle import (
-    LaunchPlanV1, LaunchSimulation, LifecycleFundingKind, LifecycleGasProfile,
+    LaunchPlanV1, LaunchSimulation, LifecycleFundingKind, LifecycleGasProfileEvidence,
     LifecycleOpeningBuyQuote, LifecycleRewardMode, LifecycleTokenKind,
     LifecycleTransaction, LifecycleTransactionEstimate, _GasSizingHints,
     _PROFILED_QUOTE_IDENTITIES, _execution_account, _forwarding_reserve,
@@ -182,7 +182,7 @@ def profile_lifecycle_transactions(client, plan: LaunchPlanV1, transactions: Seq
     if expired:
         category, reason = "semantic", "Launch deadline has expired at the pinned block"
         failed_id = next((transaction.step_id for transaction in transactions if transaction.kind != "cancel"), None)
-    profile = LifecycleGasProfile(_PROFILE_VERSION, estimates, tuple(quotes))
+    profile = LifecycleGasProfileEvidence(_PROFILE_VERSION, estimates, tuple(quotes))
     simulation = _launch_simulation(plan, limits, LaunchRpcSimulation("profiled", "profiled", block, ()),
         bound, () if reason is None else (reason,), admitted=profile_only and policy_failure is None and semantic_failure is None and not expired,
         execution_proof="not-run", protocol_fit="profiled", unknown=limits.unknown_constraints(),

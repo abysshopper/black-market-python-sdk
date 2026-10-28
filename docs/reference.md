@@ -158,8 +158,9 @@ header gas field. Read failures stop admission.
 - Release-owned direct-funded internal commands use versioned conservative gas
   profiles, not a simulated success. Their outcomes are `confidence="profiled"`,
   `execution_proof="not-run"` and `protocol_fit="profiled"`; `steps` is empty.
-  `simulation.gas_profile` contains `version`, transaction-ID-keyed `estimates` and
-  exact ordered `initial_buys`. Profile estimates omit measured `gas_used` and use
+  `simulation.gas_profile` is `LifecycleGasProfileEvidence`: `version`,
+  transaction-ID-keyed `estimates` and exact ordered `initial_buys`.
+  Profile estimates omit measured `gas_used` and use
   `fee_confidence="profiled-execution-and-data"`.
   Version `robinhood-4663-arbos61-v1` covers released profiles and quote identities
   on ArbOS61 only. Other currencies/versions use exact execution, not an asset

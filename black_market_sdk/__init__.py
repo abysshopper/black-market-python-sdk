@@ -265,7 +265,7 @@ from .lifecycle import (
     LifecycleSimulationStep,
     LifecycleTransactionEstimate,
     LifecycleOpeningBuyQuote,
-    LifecycleGasProfile,
+    LifecycleGasProfileEvidence,
     LaunchBlock,
     LaunchExecutionLimits,
     LaunchLimitContext,

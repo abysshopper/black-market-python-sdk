@@ -1265,7 +1265,7 @@ def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(
         for index, buy in enumerate(plan.buys)) if complete else ()
     launch = SimpleNamespace(plan=plan, predicted_token=predicted,
         simulation=SimpleNamespace(confidence="profiled",
-            gas_profile=lifecycle.LifecycleGasProfile("test-profile", {}, quotes),
+            gas_profile=lifecycle.LifecycleGasProfileEvidence("test-profile", {}, quotes),
             transactions=(), evidence=SimpleNamespace(calls=())))
     if complete:
         rows = example.opening_buy_review(launch, artifacts.economic_pricing)

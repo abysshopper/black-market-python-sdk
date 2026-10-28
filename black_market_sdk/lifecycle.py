@@ -2395,7 +2395,7 @@ class LifecycleOpeningBuyQuote:
 
 
 @dataclass(frozen=True)
-class LifecycleGasProfile:
+class LifecycleGasProfileEvidence:
     version: str
     estimates: Mapping[str, LifecycleTransactionEstimate]
     initial_buys: tuple[LifecycleOpeningBuyQuote, ...]
@@ -2549,7 +2549,7 @@ class LaunchSimulation:
     failed_transaction_id: str | None = None
     limits: LaunchExecutionLimits | None = None
     deferred_transaction_ids: tuple[str, ...] = ()
-    gas_profile: LifecycleGasProfile | None = None
+    gas_profile: LifecycleGasProfileEvidence | None = None
 
     @property
     def outcomes(self) -> LifecycleProofOutcomes:
@@ -3025,7 +3025,7 @@ def _launch_simulation(
     failure_category: str | None = None, capacity_constraint: str | None = None,
     failed_transaction_id: str | None = None,
     deferred: Sequence[LifecycleTransaction] = (),
-    gas_profile: LifecycleGasProfile | None = None,
+    gas_profile: LifecycleGasProfileEvidence | None = None,
 ) -> LaunchSimulation:
     admission = LifecycleAdmission(
         admitted, evidence.confidence, limits, evidence.block.number, evidence.block.block_hash,
@@ -4153,7 +4153,7 @@ __all__ = [
     "LifecycleApproval", "LifecycleTransaction", "LifecycleTransactionKind", "LifecycleEvent",
     "LifecyclePostcondition", "LifecycleLaunchPostcondition", "LifecycleAllowancePostcondition",
     "LifecycleAdmission", "LifecycleProofOutcomes", "LifecycleTransactionEstimate", "LifecycleSimulationStep",
-    "LifecycleOpeningBuyQuote", "LifecycleGasProfile",
+    "LifecycleOpeningBuyQuote", "LifecycleGasProfileEvidence",
     "LifecycleFailureCategory", "LifecycleCapacityConstraint",
     "launch_plan_from_dict", "launch_plan_to_dict", "serialize_launch_plan", "parse_launch_plan",
     "to_launch_plan_tuple", "encode_launch_plan", "hash_launch_plan", "hash_launch_identity", "launch_id_of",
