@@ -915,7 +915,9 @@ def _simulate_rpc(
         kind = _simulation_failure_kind(error)
         if kind == "abort":
             raise
-        category = "capacity" if kind == "out-of-gas" else "opaque" if kind == "execution" else "source"
+        message = error._native.get("message")
+        funds = error.code == -38014 or error.code == -32000 and isinstance(message, str) and re.match(r"insufficient funds\b", message, re.I) is not None
+        category = "affordability" if funds else "capacity" if kind == "out-of-gas" else "opaque" if kind == "execution" else "source"
         return LaunchRpcSimulation("provisional", None, block, (), failure_reason(error), len(transactions), category, error.code)
     if not isinstance(raw, list) or len(raw) != len(transactions):
         raise RuntimeError("eth_simulateV1 returned an incomplete block sequence")

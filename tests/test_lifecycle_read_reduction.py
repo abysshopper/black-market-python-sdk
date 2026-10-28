@@ -417,15 +417,18 @@ def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch)
 def enforce_native_fee_reservation(provider):
     original = provider.make_request
     def respond(method, params):
-        if method == "eth_simulateV1":
-            for block in params[0]["blockStateCalls"]:
+        response = original(method, params)
+        if method == "eth_simulateV1" and isinstance(response.get("result"), list):
+            remaining = provider.balance
+            for block, result in zip(params[0]["blockStateCalls"], response["result"]):
                 if len(block["calls"]) != 1:
                     continue
                 transaction = block["calls"][0]
                 required = int(transaction["gas"], 16) * int(transaction["gasPrice"], 16) + int(transaction["value"], 16)
-                if required > provider.balance:
+                if required > remaining:
                     return {"error": {"code": -38014, "message": "insufficient funds"}}
-        return original(method, params)
+                remaining -= int(result["calls"][0]["gasUsed"], 16) * int(transaction["gasPrice"], 16) + int(transaction["value"], 16)
+        return response
     provider.make_request = respond
 
 
@@ -543,3 +546,45 @@ def test_staged_suffix_retains_compute_for_fresh_next_poster_quote(poster):
     assert [payload["validation"] for payload in provider.simulations] == [True]
     final = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
     assert int(final["gas"], 16) == transaction.gas_limit
+
+
+def test_tightly_funded_staged_sizing_uses_one_shared_budget_retry():
+    draft = ordinary_bound_draft(1)
+    provider = OrdinaryScenario(draft, balance=2_000_000, poster_gas=75_000)
+    enforce_native_fee_reservation(provider)
+    launch = prepare(CountingTransport(provider), draft)
+    assert launch.admitted
+    assert [payload["validation"] for payload in provider.simulations] == [False, False, True]
+    assert launch.transactions[0].gas_limit == 201_250
+    assert all(step.success for step in launch.simulation.steps)
+
+
+@pytest.mark.parametrize("nitro", [False, True])
+@pytest.mark.parametrize("error,funds", [
+    ({"code": -38014, "message": "insufficient funds"}, True),
+    ({"code": -32000, "message": "insufficient funds for gas * price + value"}, True),
+    ({"code": 3, "message": "insufficient funds"}, False),
+    ({"code": -32000, "message": "execution reverted: insufficient funds"}, False),
+])
+def test_only_native_funds_admission_gets_one_sizing_retry_and_never_a_fork(monkeypatch, nitro, error, funds):
+    fixture = admission_fixture(nitro=nitro)
+    provider = fixture[1]
+    original = provider.make_request
+    def refusal(method, params):
+        response = original(method, params)
+        if method == "eth_simulateV1" and len(params[0]["blockStateCalls"][0]["calls"]) == 1:
+            return {"error": error}
+        return response
+    monkeypatch.setattr(provider, "make_request", refusal)
+
+    class UnusedFork:
+        endpoint_uri = "http://127.0.0.1:19996"
+        def make_request(self, method, params):
+            raise AssertionError(f"Funds or execution refusal must not select a fork: {method}")
+
+    fork = ControlledLaunchFork(client=SimpleNamespace(provider=UnusedFork()), isolated=True,
+        source_rpc_url=provider.endpoint_uri)
+    result = simulate_fixture(fixture, fork=fork)
+    assert not result.admitted and result.execution_proof == "unavailable"
+    assert result.failure_category == ("affordability" if funds else "opaque")
+    assert [payload["validation"] for payload in provider.simulations] == ([False, False] if nitro and funds else [False])

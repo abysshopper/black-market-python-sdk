@@ -3199,6 +3199,19 @@ def _simulate_sequence_at_block(client: Web3, plan: LaunchPlanV1, transactions: 
         with lifecycle_stage(client, "simulation.measure"):
             # Unreviewed fork measurement estimates gross gas before refunds.
             measured = run(measuring, False)
+            if nitro and measured.failure_category == "affordability":
+                # One narrowly triggered sizing retry avoids reserving the full
+                # spendable balance again after earlier commands consumed fees.
+                remaining = available // price if price else 0
+                shared_gas = []
+                for index, ceiling in enumerate(sizing_gas):
+                    gas = min(ceiling, remaining // (len(transactions) - index)) if price else ceiling
+                    shared_gas.append(gas)
+                    remaining -= gas
+                if all(gas > 0 for gas in shared_gas):
+                    measuring = tuple(replace(transaction, gas_limit=gas)
+                        for transaction, gas in zip(transactions, shared_gas))
+                    measured = run(measuring, False)
         if measured.backend == "controlled-fork":
             replay_fork = fork
         failed = next(((index, call) for index, call in enumerate(measured.calls) if not call.success), None)

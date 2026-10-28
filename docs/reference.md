@@ -162,8 +162,8 @@ header gas field. Read failures stop admission.
 - `NodeInterface.gasEstimateL1Component()` at `0xc8` supplies one poster estimate
   for the immediate final command. Calibration and later commands do not quote it.
 - Reuse protected-buy calibration's compute observation `G`, exposed as
-  `simulation.steps[i].compute_gas_required`, when available. If missing, run one
-  unvalidated sizing pass. With compute `G`, size
+  `simulation.steps[i].compute_gas_required`, when available. If missing, run
+  unvalidated sizing. With compute `G`, size
   `max(G + R, ceil(G * (10000 + headroom_bps) / 10000)) + buffered_poster_gas`.
   Default headroom is 1500 bps. For atomic/activation with HMM,
   `R = 4_250_000 + 500_000 * (hmm_markets - 1)`; other commands use zero.
@@ -175,6 +175,10 @@ header gas field. Read failures stop admission.
   Discovery limits are per call: unused reservations refund before the next step.
   A balance-capped failure below the native ceiling does not authorize splitting
   a preparation batch as though it exceeded native compute capacity.
+  Only a native upfront-funds admission refusal permits one second unvalidated
+  sizing attempt with a shared spendable budget, then the one exact validated
+  pass. Contract reverts, OOG and provider failures do not select this fallback;
+  a repeated funds refusal never switches to a generic fork.
   Only the immediate envelope is final. Later steps prove feasibility with
   conservative affordable budgets and have `provisional=True`, no fee estimate,
   signing gas/price or admission. `build_next_transaction` freshly sizes each at
