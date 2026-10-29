@@ -31,7 +31,7 @@ from test_launch_examples import (
     API_ORIGIN, BLOCK_HASH, CREATOR, TOKEN, TX_HASH, Artifacts, ExampleFailure,
     clean_progress, construct_case, kyber_build_fixture, metadata_document,
     metadata_recovery, metadata_session, no_call, publication_context,
-    proved_review_launch, signed_metadata, token_draft,
+    assessed_review_launch, signed_metadata, token_draft,
 )
 
 NEW_CASES = [
@@ -119,7 +119,7 @@ def test_depth_uses_increasing_source_inventory_adjacent_ranges_and_tail(token0)
 @pytest.mark.parametrize("filename", [NEW_CASES[0][0], NEW_CASES[2][0]])
 def test_proved_buy_review_scales_each_quotes_decimals(construct_case, filename):
     _, plan, _, artifacts = construct_case(filename)
-    rows = example.opening_buy_review(proved_review_launch(plan), artifacts.economic_pricing)
+    rows = example.opening_buy_review(assessed_review_launch(plan), artifacts.economic_pricing)
     for buy, row in zip(plan.buys, rows):
         pricing = artifacts.economic_pricing["markets"][buy.market_index]
         numerator = int(row["quoteSpent"]) * int(pricing["quote"]["priceUsdX18"]) * 10**18
@@ -330,7 +330,7 @@ def test_executor_reorg_barrier_never_replays_orphaned_work(tmp_path, monkeypatc
     submitted_hash = "0x" + "ef" * 32
     envelope = {"chainId": 4663, "from": CREATOR, "to": plan.orchestrator, "data": "0x01", "value": 0, "gas": 100000, "gasPrice": 1, "nonce": 0}
     held = SimpleNamespace(kind="atomic", step_id="atomic", as_transaction=lambda: envelope,
-                           admission=SimpleNamespace(admitted=True, limits=None))
+                           assessment=SimpleNamespace(ready=True, limits=None))
     launch = SimpleNamespace(transactions=(held,), receipt_references=(original,), approvals=(), mode="atomic")
     reads, sent = [], []
     done = [False]
@@ -470,8 +470,10 @@ def test_submit_restores_wrapper_receipts(construct_case, tmp_path, monkeypatch,
         receipts: tuple
     status = lifecycle.LifecycleReceiptStatus(TX_HASH, TX_HASH, "confirmed", False, 16, BLOCK_HASH, 1)
     progress = ProgressOutput((status,))
-    planned = SimpleNamespace(admitted=True, confidence="stateful", predicted_token=TOKEN, progress=progress,
-                              approvals=(), profiles=(), hook_deployments=(), simulation={})
+    planned = SimpleNamespace(predicted_token=TOKEN, progress=progress, mode="staged",
+        approvals=(), profiles=(), hook_deployments=(),
+        assessment=lifecycle.LifecyclePlanningAssessment(True, 16, BLOCK_HASH, plan.creator,
+            plan.chain_id, lifecycle.LaunchExecutionLimits()))
     observed = []
     def plan_launch(_client, _plan, **options):
         assert options["receipts"] == (reference,)

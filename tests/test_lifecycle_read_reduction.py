@@ -11,7 +11,6 @@ from black_market_sdk import (
     HOOK_SALT_MINER_ABI, LAUNCH_LENS_SNAPSHOT_COMPONENTS, LAUNCH_PLAN_COMPONENTS_V1,
     KnownLifecycleProfile, LifecycleAssetFunding, LifecyclePlanningError,
     LaunchExecutionLimits, ROBINHOOD_MULTICALL3,
-    ControlledLaunchFork,
     build_next_transaction, get_known_lifecycle_deployment, get_known_lifecycle_profile,
     decode_lifecycle_pool_bound_v4_market_config, encode_lifecycle_pool_bound_v4_market_config,
     launch_id_of, prepare_and_plan_lifecycle_launch, read_launch_progress,
@@ -25,9 +24,9 @@ from black_market_sdk.lifecycle import (
 )
 from black_market_sdk.lifecycle_abis import NITRO_ARB_SYS_ABI
 from black_market_sdk.lifecycle_rpc import read_invocation
-from test_lifecycle_read_counts import CountingTransport, NativeBuyScenario, draft_plan
-from test_lifecycle import AdmissionRpcScenario, BLOCK_HASH, admission_fixture, simulate_fixture
-from test_ufg import CORE, PRINCIPAL, QUOTE, TOKEN, ZERO, terms
+from test_lifecycle_read_counts import CountingTransport, draft_plan
+from test_lifecycle import RecordingRpcScenario, BLOCK_HASH, read_fixture
+from test_ufg import CORE, PRINCIPAL, QUOTE, TOKEN, ZERO, terms, UfgRpcScenario
 
 LENS = "0x7777777777777777777777777777777777777777"
 DEPLOYED_LENS = "0xcb4bb3caca71fe52eace8170cf83e901418646f8"
@@ -40,7 +39,7 @@ def test_release_preset_uses_deployed_lens_without_caller_configuration():
     preset = get_known_lifecycle_deployment(chain_id=4663, orchestrator=CORE)
     assert preset.launch_lens == DEPLOYED_LENS
     assert preset.launch_lens_code_hash == "0xc19e86bfed47afbb6ff719293edd8fb8bb3399d5d017b3f533d90cc72e58f1d3"
-    assert launch.admitted and len(launch.hook_deployments) == 2
+    assert launch.assessment.ready and len(launch.hook_deployments) == 2
     calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(aggregate_calls(client)[0]["params"][0]["data"][10:]))[0]
     assert sum(target.lower() == DEPLOYED_LENS for target, _, _ in calls) == 1
     assert not any(call["params"][0]["to"].lower() == preset.hook_salt_miner
@@ -63,7 +62,7 @@ def ordinary_bound_draft(count=2):
     return replace(draft, creator=PRINCIPAL, token=replace(draft.token, supply=draft.token.supply * count),
         markets=markets, funding=(), buys=())
 
-class OrdinaryScenario(AdmissionRpcScenario):
+class OrdinaryScenario(RecordingRpcScenario):
     def command(self, transaction):
         kind, args = super().command(transaction)
         if args:
@@ -74,7 +73,7 @@ class OrdinaryScenario(AdmissionRpcScenario):
 
 def prepare(client, draft, **kwargs):
     return asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=PRINCIPAL,
-        mode="staged", limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=200_000_000), **kwargs))
+        mode="staged", **kwargs))
 
 
 def aggregate_calls(client):
@@ -96,7 +95,7 @@ def test_same_stage_funding_reads_share_pin_and_aggregate_duplicate_inputs(no_le
         LifecycleAssetFunding(QUOTE, 11, 0, QUOTE, 11, ZERO, b""),
         LifecycleAssetFunding(TOKEN, 7, 2, QUOTE, 13, PRINCIPAL, b"conversion"),
     ))
-    client = CountingTransport(NativeBuyScenario(draft))
+    client = CountingTransport(UfgRpcScenario(draft))
 
     @read_invocation("plan")
     def read(scoped):
@@ -118,7 +117,7 @@ def test_same_stage_funding_reads_share_pin_and_aggregate_duplicate_inputs(no_le
 
 
 def test_single_read_batches_without_threshold_and_attestation_is_session_scoped():
-    client = CountingTransport(NativeBuyScenario(draft_plan()))
+    client = CountingTransport(UfgRpcScenario(draft_plan()))
     calls = [{"to": "0x0000000000000000000000000000000000000064",
         "data": _encode_function(NITRO_ARB_SYS_ABI, "arbOSVersion", [])}]
 
@@ -140,7 +139,7 @@ def test_deployed_miner_batches_markets_and_verifies_create2_locally(monkeypatch
         raise AssertionError("Known deployments must use the deployed miner")
     monkeypatch.setattr(lifecycle, "mine_pool_bound_hook_salt", forbidden)
     launch = prepare(client, draft)
-    assert launch.admitted and len(launch.hook_deployments) == 2
+    assert launch.assessment.ready and len(launch.hook_deployments) == 2
     miner = get_known_lifecycle_deployment(chain_id=4663, orchestrator=CORE).hook_salt_miner
     calls = [call for call in client.calls if call["method"] == "eth_call"
         and call["params"][0]["to"].lower() == miner.lower()]
@@ -193,10 +192,10 @@ def test_miner_continues_only_unfound_markets_from_next_unsearched_salt(no_lens)
                 [[(searches[0][2] + attempts).to_bytes(32, "big")], [ZERO], [False]]).hex()
     client.after_response = exhausted
     launch = prepare(client, draft)
-    assert launch.admitted and starts == [0, 150_000]
+    assert launch.assessment.ready and starts == [0, 150_000]
 
 
-class LensScenario(NativeBuyScenario):
+class LensScenario(UfgRpcScenario):
     def make_request(self, method, params):
         if method == "eth_call" and params[0]["to"].lower() == LENS.lower():
             return {"result": self.lens_snapshot(params[0], params[1])}
@@ -214,7 +213,7 @@ def test_lens_path_seeds_progress_balances_and_mining_in_first_aggregate(lens_pr
     draft = draft_plan()
     client = CountingTransport(LensScenario(draft))
     launch = prepare(client, draft, ufg=terms(), buy_slippage_bps=50)
-    assert launch.admitted and launch.plan.buys[0].min_token_out > draft.buys[0].min_token_out
+    assert launch.assessment.ready and launch.plan.buys[0].min_token_out > draft.buys[0].min_token_out
     assert len(aggregate_calls(client)) == 1
     calls = abi_decode(["(address,bool,bytes)[]"], bytes.fromhex(aggregate_calls(client)[0]["params"][0]["data"][10:]))[0]
     assert sum(target.lower() == LENS.lower() for target, _, _ in calls) == 1
@@ -248,17 +247,14 @@ def test_next_builder_avoids_plan_metadata_and_proves_only_immediate_command(mon
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     monkeypatch.setattr(lifecycle, "_read_plan_metadata", forbidden)
     transaction = build_next_transaction(client, launch)
-    assert transaction.kind == "begin" and transaction.admission.admitted
-    assert len(client.provider.simulations) == 1
-    assert client.provider.simulations[0]["validation"] is True
-    assert len(client.provider.simulations[0]["blockStateCalls"]) == 1
-    assert client.counts["eth_getCode"] == 0  # Both successful capabilities survive the new pin.
-    assert len(client.provider.probes) == 1
+    assert transaction.kind == "begin" and transaction.assessment.ready
+    assert client.provider.simulations == client.provider.probes == []
+    assert client.counts["eth_getCode"] == 0  # Multicall3 attestation survives the new pin.
 
 
 def test_receipt_at_head_reuses_authoritative_l2_header():
     draft = draft_plan()
-    client = CountingTransport(NativeBuyScenario(draft))
+    client = CountingTransport(UfgRpcScenario(draft))
     original = client.provider.make_request
     def receipts(method, params):
         if method == "eth_getTransactionReceipt":
@@ -343,6 +339,7 @@ def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeyp
     launch = prepare(client, draft)
     assert [(transaction.first_market, transaction.market_count) for transaction in launch.transactions
         if transaction.kind == "prepare"] == [(0, 2), (2, 1)]
+    provider.plan = launch.plan
     provider.latest_phase = provider.confirmed_phase = 1
     provider.prepared = 1
     provider.simulations.clear()
@@ -351,10 +348,9 @@ def test_next_builder_clips_a_stored_batch_overlapping_prepared_progress(monkeyp
     monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
     transaction = build_next_transaction(client, launch)
     assert transaction.kind == "prepare"
-    assert (transaction.first_market, transaction.market_count) == (1, 1)
+    assert (transaction.first_market, transaction.market_count) == (1, 2)
     assert "nonce" not in transaction.as_transaction()
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-    assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
+    assert provider.simulations == []
 
 
 def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch):
@@ -366,7 +362,7 @@ def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch)
     provider.plan = original.plan
     provider.latest_phase, provider.confirmed_phase = 1, 0
     waiting = prepare(client, original.plan, confirmations=2)
-    assert waiting.transactions == () and not waiting.admitted
+    assert waiting.transactions == () and not waiting.assessment.ready
     provider.plan = waiting.plan
     provider.latest_phase = provider.confirmed_phase = 1
     provider.prepared = 1
@@ -378,179 +374,65 @@ def test_next_builder_constructs_missing_suffix_from_a_waiting_plan(monkeypatch)
     assert transaction.kind == "prepare"
     assert (transaction.first_market, transaction.market_count) == (1, 2)
     assert "nonce" not in transaction.as_transaction()
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-    assert all(len(payload["blockStateCalls"]) == 1 for payload in provider.simulations)
+    assert provider.simulations == []
 
 
-def enforce_native_fee_reservation(provider):
-    original = provider.make_request
-    def respond(method, params):
-        response = original(method, params)
-        if method == "eth_simulateV1" and isinstance(response.get("result"), list) and not provider.is_probe(params[0]):
-            remaining = provider.balance
-            for block, result in zip(params[0]["blockStateCalls"], response["result"]):
-                if len(block["calls"]) != 1:
-                    continue
-                transaction = block["calls"][0]
-                required = int(transaction["gas"], 16) * int(transaction["gasPrice"], 16) + int(transaction["value"], 16)
-                if required > remaining:
-                    return {"error": {"code": -38014, "message": "insufficient funds"}}
-                remaining -= int(result["calls"][0]["gasUsed"], 16) * int(transaction["gasPrice"], 16) + int(transaction["value"], 16)
-        return response
-    provider.make_request = respond
 
 
-def test_native_admission_refuses_an_unaffordable_fixed_reservation_without_resizing():
-    fixture = admission_fixture(nitro=True, balance=1_000_000)
-    result = simulate_fixture(fixture)
-    assert not result.admitted and result.failure_category == "affordability"
-    assert fixture[1].simulations == fixture[1].probes == []
+
+
 
 
 def test_unreviewed_next_uses_fixed_ceiling_instead_of_previous_compute_observations():
     draft = ordinary_bound_draft(1)
     provider = OrdinaryScenario(draft, balance=200_000_000)
-    enforce_native_fee_reservation(provider)
     client = CountingTransport(provider)
     launch = prepare(client, draft)
-    assert launch.admitted
-    provider.compute_gas = 500_000
+    assert launch.assessment.ready
     provider.simulations.clear()
     transaction = build_next_transaction(client, launch)
-    assert transaction.kind == "begin" and transaction.admission.admitted
-    final = provider.simulations[-1]["blockStateCalls"][0]["calls"][0]
-    assert transaction.gas_limit == int(final["gas"], 16) == 32_000_000
-    assert transaction.gas_used == 500_000
-    assert [payload["validation"] for payload in provider.simulations] == [True]
+    assert transaction.kind == "begin" and transaction.assessment.ready
+    assert transaction.gas_limit == 32_000_000
+    assert provider.simulations == []
 
 
-def test_generic_fork_refund_observation_never_sizes_the_wallet_approval(monkeypatch):
-    fixture = admission_fixture()
-    request, provider = fixture[:2]
-    original = provider.make_request
-    def unavailable(method, params):
-        if method == "eth_simulateV1":
-            return {"error": {"code": -32601, "message": "unsupported"}}
-        return original(method, params)
-    monkeypatch.setattr(provider, "make_request", unavailable)
-    transaction = replace(fixture[-1], step_id="approve-reset", kind="approve-reset", to=QUOTE,
-        data=_encode_function(_ERC20_READ_ABI, "approve", [request.orchestrator, 0]),
-        postconditions=(LifecycleAllowancePostcondition(QUOTE, request.orchestrator, 0, 0),))
-    fixture = (*fixture[:-1], transaction)
 
-    class RefundFork:
-        endpoint_uri = "http://127.0.0.1:19995"
-        def __init__(self):
-            self.operations = []
-            self.gas_limits = []
-
-        def make_request(self, method, params):
-            self.operations.append(method)
-            if method in {"eth_chainId", "eth_getBlockByNumber", "eth_getTransactionCount"}:
-                return original(method, params)
-            if method == "evm_snapshot":
-                result = "0x1"
-            elif method == "evm_revert":
-                result = True
-            elif method.endswith("_impersonateAccount") or method.endswith("_stopImpersonatingAccount"):
-                result = True
-            elif method == "eth_estimateGas":
-                result = hex(26_024)
-            elif method == "eth_sendTransaction":
-                self.gas_limits.append(int(params[0]["gas"], 16))
-                result = "0x" + "cc" * 32
-            elif method == "eth_getTransactionReceipt":
-                result = {"status": hex(int(self.gas_limits[-1] >= 26_024)),
-                    "gasUsed": hex(21_224), "logs": []}
-            elif method == "eth_call":
-                result = "0x" + abi_encode(["uint256"], [0]).hex()
-            else:
-                raise AssertionError(f"Unexpected disposable fork operation: {method}")
-            return {"result": result}
-
-    fork_provider = RefundFork()
-    fork = ControlledLaunchFork(client=SimpleNamespace(provider=fork_provider), isolated=True,
-        source_rpc_url=provider.endpoint_uri)
-    result = simulate_fixture(fixture, fork=fork)
-    assert result.admitted and result.backend == "controlled-fork"
-    assert "eth_estimateGas" not in fork_provider.operations
-    assert result.transactions[0].gas_estimate is None
-    assert result.transactions[0].gas_used == 21_224
-    assert result.transactions[0].gas_limit is result.transactions[0].gas_price is None
-    assert fork_provider.gas_limits == [30_000_000]
 
 
 @pytest.mark.parametrize("poster", [75_000, 200_000])
 def test_staged_suffix_refreshes_poster_metadata_without_changing_native_gas(poster):
     draft = ordinary_bound_draft(2)
-    provider = ResumeScenario(draft, poster_gas=75_000,
-        compute_gas_by_kind={"begin": 100_000, "prepare": 500_000, "activate": 100_000})
+    provider = ResumeScenario(draft, poster_gas=75_000)
     client = CountingTransport(provider)
     launch = prepare(client, draft)
-    assert launch.admitted and launch.simulation.evidence.complete
-    assert len(launch.simulation.evidence.calls) == len(launch.transactions) == 3
-    assert all(step.success for step in launch.simulation.steps)
-    assert launch.transactions[0].estimate is not None and launch.transactions[0].admission.admitted
-    for transaction, step in zip(launch.transactions[1:], launch.simulation.steps[1:]):
-        assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
-        assert step.provisional and step.estimate is None
-        assert step.gas_limit == 32_000_000
+    assert launch.assessment.ready
+    assert launch.transactions[0].estimate is not None and launch.transactions[0].assessment.ready
+    assert all(transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.assessment is None
+        for transaction in launch.transactions[1:])
+    provider.plan = launch.plan
     provider.latest_phase = provider.confirmed_phase = 1
     provider.prepared = 0
-    provider.poster_gas = provider.actual_poster_gas = poster
+    provider.poster_gas = poster
     provider.simulations.clear()
     transaction = build_next_transaction(client, launch)
-    assert transaction.kind == "prepare"
     expected_poster = 77_224 if poster == 75_000 else 209_608
     assert transaction.poster_gas == expected_poster
     assert transaction.gas_limit == 32_000_000
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-    final = provider.simulations[0]["blockStateCalls"][0]["calls"][0]
-    assert int(final["gas"], 16) == transaction.gas_limit
+    assert provider.simulations == []
 
 
-@pytest.mark.parametrize("error,funds", [
-    ({"code": -38014, "message": "insufficient funds"}, True),
-    ({"code": -32000, "message": "insufficient funds for gas * price + value"}, True),
-    ({"code": 3, "message": "insufficient funds"}, False),
-    ({"code": -32000, "message": "execution reverted: insufficient funds"}, False),
-])
-def test_native_funds_refusal_never_retries_or_selects_a_generic_fork(monkeypatch, error, funds):
-    fixture = admission_fixture(nitro=True)
-    provider = fixture[1]
-    original = provider.make_request
-    def refusal(method, params):
-        response = original(method, params)
-        if method == "eth_simulateV1" and not provider.is_probe(params[0]):
-            return {"error": error}
-        return response
-    monkeypatch.setattr(provider, "make_request", refusal)
 
-    class UnusedFork:
-        endpoint_uri = "http://127.0.0.1:19996"
-        def make_request(self, method, params):
-            raise AssertionError(f"Funds or execution refusal must not select a fork: {method}")
-
-    fork = ControlledLaunchFork(client=SimpleNamespace(provider=UnusedFork()), isolated=True,
-        source_rpc_url=provider.endpoint_uri)
-    result = simulate_fixture(fixture, fork=fork)
-    assert not result.admitted and result.execution_proof == "unavailable"
-    assert result.failure_category == ("affordability" if funds else "opaque")
-    assert [payload["validation"] for payload in provider.simulations] == [True]
 
 
 def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
     draft = ordinary_bound_draft(1)
-    provider = OrdinaryScenario(draft, balance=48_000_000,
-        compute_gas_by_kind={"begin": 9_000_000, "prepare": 5_000_000, "activate": 5_000_000})
-    enforce_native_fee_reservation(provider)
+    provider = OrdinaryScenario(draft, balance=48_000_000)
     launch = prepare(CountingTransport(provider), draft)
-    assert not launch.admitted
-    assert launch.simulation.failure_category == "affordability"
-    assert launch.simulation.capacity_constraint is None
-    assert launch.simulation.execution_proof == "unavailable"
+    assert not launch.assessment.ready
+    assert launch.assessment.failure_category == "affordability"
+    assert launch.assessment.capacity_constraint is None
     assert provider.simulations == provider.probes == []
-    assert all(transaction.admission is None or not transaction.admission.admitted for transaction in launch.transactions)
+    assert all(transaction.assessment is None or not transaction.assessment.ready for transaction in launch.transactions)
 
 
 @pytest.mark.parametrize("calldata_bytes,expected_gas,expected_fee", [
@@ -559,7 +441,7 @@ def test_low_margin_sequence_refusal_is_affordability_not_native_capacity():
 ])
 def test_local_nitro_poster_bound_covers_eoa_and_brotli_word_edges(calldata_bytes, expected_gas, expected_fee):
     from black_market_sdk.lifecycle import _nitro_poster_gas_bound, _read_lifecycle_gas_price
-    request, provider, client, block, _, transaction = admission_fixture(nitro=True, l1_price_per_byte=10)
+    request, provider, client, block, _, transaction = read_fixture(nitro=True, l1_price_per_byte=10)
     provider.gas_price = 3
     transaction = replace(transaction, data="0x" + "ab" * calldata_bytes)
     assert _nitro_poster_gas_bound(transaction, (0, 10, 0, 3, 0, 3)) == (expected_gas, expected_fee)
@@ -570,7 +452,7 @@ def test_local_nitro_poster_bound_covers_eoa_and_brotli_word_edges(calldata_byte
 
 def test_local_nitro_poster_bound_handles_free_data_but_refuses_unknown_base_fee():
     from black_market_sdk.lifecycle import _nitro_poster_gas_bound
-    _, _, _, _, _, transaction = admission_fixture(nitro=True)
+    _, _, _, _, _, transaction = read_fixture(nitro=True)
     assert _nitro_poster_gas_bound(transaction, (0, 0, 0, 0, 0, 0)) == (0, 0)
     with pytest.raises(LifecyclePlanningError, match="zero L2 gas price"):
         _nitro_poster_gas_bound(transaction, (0, 1, 0, 0, 0, 0))

@@ -26,7 +26,7 @@ from black_market_sdk import (
 from black_market_sdk.lifecycle import (
     _known_bound_deployment, encode_pool_bound_hook_parameters,
     PoolBoundLifecycleDeployment, _profile_topology, _validate_launch_plan,
-    plan_launch, simulate_launch_plan,
+    plan_launch,
 )
 from test_lifecycle import plan as full_budget_plan, wire_planning
 from black_market_sdk.lifecycle_rpc import LaunchRpcError
@@ -206,31 +206,9 @@ def test_missing_or_broken_registry_topology_never_becomes_a_certificate(error):
         _profile_topology(SimpleNamespace(provider=provider), REGISTRAR, PROFILE_ID, BLOCK)
 
 
-@pytest.mark.parametrize("field", ["deployer", "init_code_hash", "salt", "predicted_hook", "token_factory", "token_factory_code_hash"])
-def test_wallet_revalidation_rejects_hook_deployment_or_factory_drift(monkeypatch, field):
-    lifecycle, request, provider, client = wire_planning(monkeypatch, request=bound_plan())
-    deployment = PoolBoundLifecycleDeployment(REGISTRAR, "0x" + "12" * 32,
-        "0x" + "34" * 32, TOKEN, 0)
-    state = {"changed": False}
-    changed = "0x" + "56" * (20 if field in {"deployer", "predicted_hook", "token_factory"} else 32)
-    def metadata(*_):
-        current = replace(deployment, **{field: changed}) if state["changed"] and field not in {
-            "token_factory", "token_factory_code_hash"} else deployment
-        return (), (current,), ()
-    def factory(*_):
-        return (changed if state["changed"] and field == "token_factory" else REGISTRAR,
-            changed if state["changed"] and field == "token_factory_code_hash" else "0x" + "78" * 32)
-    monkeypatch.setattr(lifecycle, "_read_plan_metadata", metadata)
-    monkeypatch.setattr(lifecycle, "_read_token_factory_binding", factory)
-    reviewed = plan_launch(client, request, account=request.creator, mode="atomic")
-    assert reviewed.admitted
-    state["changed"] = True
-    with pytest.raises(ValueError) as failure:
-        simulate_launch_plan(client, reviewed)
-    assert failure.value.code == ("TOKEN_FACTORY_BINDING" if field.startswith("token_factory") else "HOOK_DEPLOYMENT_CHANGED")
 
 
-@pytest.mark.parametrize("drift", [None, "factory", "began", "constructor", "source-refusal"])
+@pytest.mark.parametrize("drift", [None, "factory", "began", "constructor"])
 def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_drift(monkeypatch, drift):
     lifecycle, request, provider, client = wire_planning(monkeypatch, request=bound_plan())
     state = {"changed": False}
@@ -261,8 +239,6 @@ def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_
         state["changed"] = True
         if drift == "began":
             provider.latest_phase = provider.confirmed_phase = 1
-        if drift == "source-refusal":
-            provider.replay_failure = "unsupported"
     async def prepare():
         return await prepare_and_plan_lifecycle_launch(client, request,
             account=request.creator, mode="atomic", on_progress=advance)
@@ -275,16 +251,8 @@ def test_async_mining_proves_final_plan_and_rejects_binding_or_committed_launch_
             assert failure.value.code == "HOOK_DEPLOYMENT_CHANGED"
     else:
         planned = asyncio.run(prepare())
-        assert planned.mode == "atomic"
-        if drift == "source-refusal":
-            assert not planned.admitted and planned.simulation.execution_proof == "unavailable"
-            assert planned.simulation.failure_category == "source"
-            assert all(transaction.gas_limit is None and transaction.gas_price is None
-                and transaction.admission is None
-                for transaction in planned.transactions)
-        else:
-            assert planned.admitted
-            assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
+        assert planned.mode == "staged"
+        assert planned.assessment.code == "UNKNOWN_GAS_PROFILE"  # Historical fixture is not a release budget.
         assert planned.plan_hash == hash_launch_plan(planned.plan)
         assert int(planned.hook_deployments[0].predicted_hook, 16) & 0x3FFF == 0x1AFC
         finalized = decode_lifecycle_pool_bound_v4_market_config(planned.plan.markets[0].config)

@@ -19,7 +19,7 @@ from examples import launch_examples as example
 from examples._launch_support import Artifacts, LocalSigningWallet
 from black_market_sdk import lifecycle
 from test_launch_examples import (
-    API_ORIGIN, TOKEN, TX_HASH, case_definition, construct_case, no_call, proved_review_launch,
+    API_ORIGIN, TOKEN, TX_HASH, case_definition, construct_case, no_call, assessed_review_launch,
 )
 
 CASES = [
@@ -83,16 +83,15 @@ def runner_context(construct_case, tmp_path, monkeypatch):
         # Model the planner's final protected commitment rather than the draft minima.
         buys = tuple(replace(buy, min_token_out=(350 * 10**18 * buy.quote_amount_in // 10**15) * 9950 // 10000)
                      for buy in plan.buys)
-        launch = proved_review_launch(replace(plan, buys=buys))
+        launch = assessed_review_launch(replace(plan, buys=buys))
         launch.mode = options["mode"]
         launch.predicted_token = TOKEN
         launch.launch_id = lifecycle.launch_id_of(launch.plan)
-        launch.admitted, launch.confidence = admitted[0], "proven"
-        launch.profiles, launch.hook_deployments, launch.limits = (), (), None
+        launch.assessment.ready = admitted[0]
+        launch.profiles, launch.hook_deployments = (), ()
         launch.token_factory, launch.token_factory_code_hash = None, None
-        launch.simulation.backend = "offline-fixture"
-        launch.simulation.reasons = () if admitted[0] else ("offline fixture refused",)
-        launch.simulation.transactions[0].kind = "atomic" if launch.mode == "atomic" else "activate"
+        launch.assessment.code = None if admitted[0] else "PLAN_NOT_READY"
+        launch.assessment.reason = None if admitted[0] else "offline fixture refused"
         preparations.append((plan, options, launch))
         return launch
 
@@ -141,7 +140,7 @@ def test_default_case_dry_run_saves_final_review_without_wallet_or_writes(runner
     assert options["buy_slippage_bps"] == example.BUY_SLIPPAGE_BPS
     assert all(buy.min_token_out > original.min_token_out for buy, original in zip(launch.plan.buys, draft.buys))
     assert json.loads((output / "plan.json").read_text()) == lifecycle.launch_plan_to_dict(launch.plan)
-    assert json.loads((output / "admission.json").read_text())["admitted"] is True
+    assert json.loads((output / "assessment.json").read_text())["ready"] is True
     assert review["reviewHash"] == example.economic_review_hash(review["review"])
     assert review["review"]["image"] == example.portable(runner_context.image)
     assert len(review["review"]["openingBuys"]) == len(launch.plan.buys)
@@ -160,14 +159,14 @@ def test_broadcast_case_routes_all_execution_phases_without_hash_input(runner_co
     phases, api, recovery, receipt, references = [], object(), {}, {"transactionHash": TX_HASH}, ()
     monkeypatch.setattr(example, "api_client", lambda url: api)
     requested_cases = []
-    admit = example.admit_plan
+    admit = example.assess_plan
     def admission(client, plan, case, artifacts, cancellation):
         requested_cases.append((case, case["mode"]))
         launch = admit(client, plan, case, artifacts, cancellation)
         if select_staged:
             launch.mode = "staged"
         return launch
-    monkeypatch.setattr(example, "admit_plan", admission)
+    monkeypatch.setattr(example, "assess_plan", admission)
 
     def stage(client, actual_api, plan, artifacts, cancellation, **options):
         phases.append("stage")
@@ -264,7 +263,7 @@ def test_modes_preserve_planner_refusal_before_wallet_creation(runner_context, t
     runner_context.send.assert_not_called()
     output = next((tmp_path / "launch-results").iterdir())
     result = json.loads((output / "result.json").read_text())
-    assert result["error"]["code"] == "LAUNCH_NOT_ADMITTED"
+    assert result["error"]["code"] == "PLAN_NOT_READY"
     assert result["chain"]["transactions"] == []
     assert not (output / "economic-admission.json").exists()
 

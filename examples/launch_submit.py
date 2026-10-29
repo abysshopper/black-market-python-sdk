@@ -26,7 +26,7 @@ from web3 import Web3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from black_market_sdk import (
-    LaunchExecutionLimits, LifecycleReceiptReference, build_next_transaction, create_controlled_launch_fork,
+    LaunchExecutionLimits, LifecycleReceiptReference, build_next_transaction,
     hash_launch_plan, launch_id_of, launch_plan_from_dict, launch_plan_to_dict,
     plan_launch, prepare_and_plan_lifecycle_launch, read_launch_progress,
 )
@@ -115,12 +115,8 @@ def main(argv=None):
     receipts_group.add_argument("--receipts", type=Path, help="Typed receipt-reference JSON; retains original blocks and replacements")
     receipts_group.add_argument("--transaction-hash", action="append", default=[],
                                 help="Hash-only convenience alias; cannot retain original inclusion/replacement evidence")
-    parser.add_argument("--fork-rpc-url", help="Separate owned local Anvil fork; never the source execution node")
-    parser.add_argument("--isolated-fork", action="store_true", help="Assert exclusive ownership of the local fork")
-    parser.add_argument("--finalize-bound", action="store_true", help="Mine exact draft bound5/bound6 salts and admit only the final plan")
+    parser.add_argument("--finalize-bound", action="store_true", help="Mine exact draft bound5/bound6 salts and assess the final plan")
     args = parser.parse_args(argv)
-    if bool(args.fork_rpc_url) != args.isolated_fork:
-        parser.error("--fork-rpc-url and --isolated-fork must be provided together")
     if args.finalize_bound and args.action == "cancel":
         parser.error("cancellation recovers committed economics; it cannot finalize deployment salts")
     payload = json.loads(args.plan.read_text())
@@ -135,7 +131,6 @@ def main(argv=None):
     if args.finalize_bound and references:
         parser.error("do not mutate deployment salts after submitting transaction evidence")
     client = Web3(Web3.HTTPProvider(args.rpc_url))
-    fork = create_controlled_launch_fork(client, Web3(Web3.HTTPProvider(args.fork_rpc_url)), isolated=True) if args.fork_rpc_url else None
 
     def limits(_, context):
         return LaunchExecutionLimits(
@@ -148,7 +143,7 @@ def main(argv=None):
 
     options = {"account": args.account, "mode": args.mode, "limits": limits,
         "confirmations": args.confirmations,
-        "receipts": references, "fork": fork}
+        "receipts": references}
     planned = None
     if args.finalize_bound:
         planned = asyncio.run(prepare_and_plan_lifecycle_launch(client, plan, **options))
@@ -161,18 +156,18 @@ def main(argv=None):
         output["progress"] = read_launch_progress(client, plan, confirmations=args.confirmations,
                                                 receipts=options["receipts"], mode=args.mode)
         output["nextTransaction"] = next_transaction.as_transaction() if next_transaction else None
-        output["nextAdmission"] = next_transaction.admission if next_transaction else None
+        output["nextAssessment"] = next_transaction.assessment if next_transaction else None
     else:
         if planned is None:
             planned = plan_launch(client, plan, **options)
-        next_transaction = build_next_transaction(client, planned, account=args.account, receipts=options["receipts"],
-                                                  fork=fork) if planned.admitted else None
-        output.update({"admitted": planned.admitted, "confidence": planned.confidence,
+        next_transaction = build_next_transaction(client, planned, account=args.account,
+            receipts=options["receipts"]) if planned.assessment.ready else None
+        output.update({"ready": planned.assessment.ready, "mode": planned.mode,
             "predictedToken": planned.predicted_token, "progress": planned.progress,
             "approvals": planned.approvals, "profiles": planned.profiles,
-            "hookDeployments": planned.hook_deployments, "simulation": planned.simulation,
+            "hookDeployments": planned.hook_deployments, "assessment": planned.assessment,
             "nextTransaction": next_transaction.as_transaction() if next_transaction else None,
-            "nextAdmission": next_transaction.admission if next_transaction else None})
+            "nextAssessment": next_transaction.assessment if next_transaction else None})
     output["receipts"] = receipt_reference_json(references, output["progress"].receipts)
     print(json.dumps(output, default=json_value, indent=2))
     return 0

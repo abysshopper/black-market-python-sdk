@@ -1,9 +1,4 @@
-"""Pinned-state, fresh-transaction simulation for opt-in launch lifecycle plans.
-
-No state override is used to make an unfunded or unapproved plan appear valid.
-Only an explicitly isolated, local Anvil fork may submit transactions; normal
-clients use the non-persisting ``eth_simulateV1`` method exclusively.
-"""
+"""Pinned, invocation-local reads for unsigned launch lifecycle planning."""
 
 from __future__ import annotations
 
@@ -22,8 +17,6 @@ import inspect
 import re
 from weakref import WeakKeyDictionary, ref
 
-from eth_utils import keccak
-from urllib.parse import urlsplit
 
 from web3 import Web3
 
@@ -81,7 +74,7 @@ class LifecycleDiagnosticEvent:
 LifecycleDiagnosticListener = Callable[[LifecycleDiagnosticEvent], Any]
 _DIAGNOSTIC_METHODS = frozenset((
     "eth_chainId", "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getCode",
-    "eth_getBalance", "eth_call", "eth_estimateGas", "eth_gasPrice", "eth_simulateV1",
+    "eth_getBalance", "eth_call", "eth_gasPrice",
     "eth_getTransactionCount", "eth_getTransactionReceipt", "eth_getTransactionByHash",
 ))
 
@@ -251,7 +244,7 @@ class _LifecycleReadClient:
         with self._lock:
             key = (block.number, block.block_hash.lower())
             if key not in self._gas_prices:
-                self._gas_prices[key] = max(quantity(self.run("eth_gasPrice", [])), (block.base_fee_per_gas or 0) * 2)
+                self._gas_prices[key] = quantity(self.run("eth_gasPrice", []))
             return self._gas_prices[key]
 
     def check_source(self, chain_id: int, blocks: Sequence[LaunchBlock]) -> None:
@@ -450,7 +443,7 @@ def rpc(client: Any, method: str, params: Sequence[Any]) -> Any:
 
 
 def _client_fact(client: Any, key: tuple[Any, ...], load: Callable[[], Any]) -> Any:
-    """Share only immutable chain/account-code observations for a client session."""
+    """Share immutable chain observations for a client session."""
     if isinstance(client, _LifecycleReadClient):
         client.assert_open()
     source = client.source if isinstance(client, _LifecycleReadClient) else client
@@ -493,13 +486,11 @@ def read_chain_id(client: Any) -> int:
     return _client_fact(client, ("chain-id",), lambda: quantity(rpc(client, "eth_chainId", [])))
 
 
-def _read_lifecycle_account_code(client: Any, account: str, chain_id: int, block: LaunchBlock) -> str:
-    return _client_fact(client, ("account-code", chain_id, account.lower()),
-        lambda: hex_bytes(pinned_rpc(client, "eth_getCode", [account, block.tag], block)))
+
 
 
 def read_gas_price(client: Any, block: LaunchBlock) -> int:
-    return client.gas_price(block) if isinstance(client, _LifecycleReadClient) else max(quantity(rpc(client, "eth_gasPrice", [])), (block.base_fee_per_gas or 0) * 2)
+    return client.gas_price(block) if isinstance(client, _LifecycleReadClient) else quantity(rpc(client, "eth_gasPrice", []))
 
 
 def check_lifecycle_source(client: Any, chain_id: int, *blocks: LaunchBlock) -> None:
@@ -534,7 +525,7 @@ def failure_reason(failure: Any) -> str:
             return "Lifecycle planning guard rejected the request"
         cause = field("cause")
         failure = cause if cause is not None else getattr(failure, "__cause__", None)
-    return "Read or execution proof failed"
+    return "Read failed"
 
 
 def pinned_rpc(client: Any, method: str, params: Sequence[Any], block: LaunchBlock) -> Any:
@@ -592,26 +583,21 @@ def read_block(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, tag: st
 
 def assert_canonical(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, block: LaunchBlock) -> None:
     if read_block(client, block.number).block_hash != block.block_hash.lower():
-        error = LaunchStateChanged("the estimate/read block was reorganized; read and simulate again")
+        error = LaunchStateChanged("the pinned read block was reorganized; read again")
         error.code = "STATE_REORGED"
         raise error
 
 
 def assert_chain(client: Web3 | LifecycleRpcClient | _LifecycleReadClient, chain_id: int) -> None:
     if read_chain_id(client) != chain_id:
-        error = LaunchStateChanged("the simulation source chain changed; read and simulate again")
+        error = LaunchStateChanged("the read source chain changed; read again")
         error.code = "CHAIN_MISMATCH"
         raise error
 
 
 @dataclass(frozen=True)
 class LaunchExecutionLimits:
-    """Optional tightening policy for the chain, RPC and direct EOA.
-
-    Missing policy is reported as uncertainty, not a fabricated restriction.
-    Supplied bounds and provenance are enforced in addition to the canonical
-    SDK simulation context and the protocol ceilings read from the chain.
-    """
+    """Optional gas/calldata policy, resolved against the chain's native ceiling."""
 
     headroom_bps: int = 1500
     chain_transaction_gas_limit: int | None = None
@@ -619,8 +605,6 @@ class LaunchExecutionLimits:
     account_transaction_gas_limit: int | None = None
     max_calldata_bytes: int | None = None
     account_max_calldata_bytes: int | None = None
-    rpc_max_request_bytes: int | None = None
-    rpc_total_simulation_gas_limit: int | None = None
     observed_block_number: int | None = None
     observed_block_hash: str | None = None
     chain_id: int | None = None
@@ -630,27 +614,21 @@ class LaunchExecutionLimits:
     protocol: Literal["evm", "nitro"] = "evm"
     execution_gas_ceiling: int | None = None
     transaction_gas_ceiling: int | None = None
-    arb_os_version: int | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.headroom_bps, bool) or not isinstance(self.headroom_bps, int) or not 0 <= self.headroom_bps <= 10_000:
             raise ValueError("headroom_bps must be an integer from 0 to 10000")
         for name in (
             "chain_transaction_gas_limit", "rpc_transaction_gas_limit", "account_transaction_gas_limit",
-            "rpc_total_simulation_gas_limit", "execution_gas_ceiling", "transaction_gas_ceiling",
+            "execution_gas_ceiling", "transaction_gas_ceiling",
         ):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 < value < (1 << 64)):
                 raise ValueError(f"{name} must be a positive uint64 when specified")
-        for name in ("max_calldata_bytes", "account_max_calldata_bytes", "rpc_max_request_bytes"):
+        for name in ("max_calldata_bytes", "account_max_calldata_bytes"):
             value = getattr(self, name)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= (1 << 53) - 1):
                 raise ValueError(f"{name} must be a positive safe integer")
-        if self.arb_os_version is not None and (
-            isinstance(self.arb_os_version, bool) or not isinstance(self.arb_os_version, int)
-            or not 0 < self.arb_os_version < (1 << 256)
-        ):
-            raise ValueError("arb_os_version must be a positive uint256")
         if self.protocol not in {"evm", "nitro"}:
             raise ValueError("protocol must be 'evm' or 'nitro'")
         if self.observed_block_number is not None and (
@@ -679,13 +657,6 @@ class LaunchExecutionLimits:
             return self.execution_gas_ceiling
         return self.gas_cap(block)
 
-    def unknown_constraints(self) -> tuple[str, ...]:
-        return tuple(name for name in (
-            "chain_transaction_gas_limit", "rpc_transaction_gas_limit",
-            "account_transaction_gas_limit", "max_calldata_bytes",
-            "account_max_calldata_bytes", "rpc_max_request_bytes",
-            "rpc_total_simulation_gas_limit",
-        ) if getattr(self, name) is None and not (name == "chain_transaction_gas_limit" and self.protocol == "nitro"))
 
 
     def calldata_cap(self) -> int | None:
@@ -698,109 +669,19 @@ class LaunchExecutionLimits:
         return (gas_used * (10_000 + self.headroom_bps) + 9_999) // 10_000
 
 
-@dataclass(frozen=True)
-class LaunchSimulationCall:
-    success: bool
-    gas_used: int | None
-    return_data: str
-    logs: tuple[Mapping[str, Any], ...]
-    error: str | None = None
-    gas_required: int | None = None
-    failure_category: Literal["semantic", "capacity", "opaque", "source", "postcondition", "affordability"] | None = None
-    decoded_error: str | None = None
-    native_error_code: int | None = None
-    native_error_kind: Literal["out-of-gas", "execution-reverted", "vm-error", "other", "missing"] | None = None
-    native_error_data_bytes: int | None = None
-    native_gas_capped: bool = False
-    postcondition_data: tuple[str, ...] = ()
-    gas_limit: int | None = None
 
 
-@dataclass(frozen=True)
-class LaunchRpcSimulation:
-    confidence: str
-    backend: str | None
-    block: LaunchBlock
-    calls: tuple[LaunchSimulationCall, ...]
-    reason: str | None = None
-    expected: int = 0
-    failure_category: str | None = None
-    native_error_code: int | None = None
-    @property
-    def complete(self) -> bool:
-        return bool(self.calls) and len(self.calls) == self.expected
-    @property
-    def successful(self) -> bool:
-        return self.confidence == "stateful" and self.complete and all(call.success for call in self.calls)
 
 
-@dataclass(frozen=True)
-class ControlledLaunchFork:
-    """An explicitly disposable, distinct loopback Anvil or Hardhat fork.
-
-    Only this opt-in instance may reset, impersonate, snapshot and send unsigned
-    simulation transactions. No balances, allowances or code are injected.
-    """
-
-    client: Web3 | LifecycleRpcClient
-    isolated: bool
-    source_rpc_url: str
-    fork_rpc_url: str | None = None
-    expected_chain_id: int | None = None
-    expected_block_hash: str | None = None
-    impersonation: Literal["anvil", "hardhat", "none"] = "none"
-    receipt_timeout_ms: int = 10000
-    reset_method: Literal["anvil_reset", "hardhat_reset"] = "anvil_reset"
-
-    def __post_init__(self) -> None:
-        if self.isolated is not True:
-            raise ValueError("a controlled launch fork must be explicitly isolated")
-        endpoint = self.fork_rpc_url or getattr(getattr(self.client, "provider", None), "endpoint_uri", "")
-        if not isinstance(endpoint, str) or urlsplit(endpoint).scheme not in {"http", "https"} or urlsplit(endpoint).hostname not in {"127.0.0.1", "localhost", "::1"}:
-            raise ValueError("controlled fork transaction execution requires a loopback HTTP RPC endpoint")
-        if not isinstance(self.source_rpc_url, str):
-            raise ValueError("controlled fork refresh requires an explicit HTTP source RPC URL")
-        source = urlsplit(self.source_rpc_url)
-        if source.scheme not in {"http", "https"} or not source.hostname:
-            raise ValueError("controlled fork source must be an HTTP JSON-RPC URL")
-        if _same_rpc_endpoint(endpoint, self.source_rpc_url):
-            raise ValueError("controlled fork must be separate from the source execution node")
-        object.__setattr__(self, "fork_rpc_url", endpoint)
-        if self.impersonation not in {"anvil", "hardhat", "none"} or self.reset_method not in {"anvil_reset", "hardhat_reset"}:
-            raise ValueError("Unsupported explicit controlled fork backend")
-        if isinstance(self.receipt_timeout_ms, bool) or not isinstance(self.receipt_timeout_ms, int) or self.receipt_timeout_ms <= 0:
-            raise ValueError("receipt_timeout_ms must be a positive integer")
-        if self.expected_chain_id is not None and (isinstance(self.expected_chain_id, bool) or not isinstance(self.expected_chain_id, int) or self.expected_chain_id <= 0):
-            raise ValueError("expected_chain_id must be a positive integer")
-        if self.expected_block_hash is not None and len(hex_bytes(self.expected_block_hash)) != 66:
-            raise ValueError("expected_block_hash must be bytes32")
 
 
-def _same_rpc_endpoint(first: str, second: str) -> bool:
-    def identity(url: str) -> tuple[Any, ...]:
-        parts = urlsplit(url)
-        host = parts.hostname
-        if host in {"127.0.0.1", "localhost", "::1"}:
-            host = "loopback"
-        return host, parts.port or (443 if parts.scheme == "https" else 80)
-    return identity(first) == identity(second)
 
 
-def create_controlled_launch_fork(
-    source: Web3 | LifecycleRpcClient, fork_client: Web3 | LifecycleRpcClient, *, isolated: bool,
-    source_rpc_url: str | None = None, fork_rpc_url: str | None = None,
-    expected_chain_id: int | None = None, expected_block_hash: str | None = None,
-    impersonation: Literal["anvil", "hardhat", "none"] = "none",
-    receipt_timeout_ms: int = 10000, reset_method: Literal["anvil_reset", "hardhat_reset"] = "anvil_reset",
-) -> ControlledLaunchFork:
-    """Configure a separate local fork with automatic exact source refresh."""
-    endpoint = source_rpc_url or getattr(getattr(source, "provider", None), "endpoint_uri", None)
-    if not isinstance(endpoint, str):
-        raise ValueError("controlled fork refresh requires an explicit HTTP source RPC URL")
-    if fork_client is source:
-        raise ValueError("controlled fork must be separate from the source execution node")
-    return ControlledLaunchFork(fork_client, isolated, endpoint, fork_rpc_url, expected_chain_id,
-                                expected_block_hash, impersonation, receipt_timeout_ms, reset_method)
+
+
+
+
+
 
 
 
@@ -819,302 +700,22 @@ def rpc_transaction(transaction: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def execution_failure(return_data: str | None, error: Any) -> dict[str, Any]:
-    """Expose reviewed names and safe numeric facts, never native messages/data."""
-    native = error if isinstance(error, Mapping) else None
-    data = native.get("data") if native is not None else None
-    for _ in range(3):
-        if not isinstance(data, Mapping):
-            break
-        data = data.get("data")
-    data_bytes = (len(data) - 2) // 2 if isinstance(data, str) and re.fullmatch(r"0x(?:[0-9a-fA-F]{2})*", data) else None
-    code = native.get("code") if native is not None else None
-    code = code if isinstance(code, int) and not isinstance(code, bool) and abs(code) <= (1 << 53) - 1 else None
-    message = native.get("message", "") if native is not None else ""
-    message = message if isinstance(message, str) else ""
-    capped = message.endswith(" (gas limit was capped by the RPC server's global gas cap)")
-    oog = return_data in (None, "0x") and native is not None and ("data" not in native or data_bytes == 0) and code in (-32015, -32000) and re.match(r"out of gas\b", message, re.I) is not None
-    kind = "missing" if native is None else "out-of-gas" if oog else "execution-reverted" if code == 3 else "vm-error" if code == -32015 else "other"
-    facts = dict(native_error_code=code, native_error_kind=kind, native_error_data_bytes=data_bytes, native_gas_capped=capped)
-    candidate = data if return_data in (None, "0x") else return_data
-    if isinstance(candidate, str) and re.fullmatch(r"0x(?:[0-9a-fA-F]{2}){4,}", candidate):
-        from .lifecycle_abis import FIXED_FEE_POOL_HOOK_V1_ABI
-        names = {entry["name"] for entry in FIXED_FEE_POOL_HOOK_V1_ABI if entry["type"] == "error"} | {
-            "WrongDomain", "PlanMismatch", "LaunchAlreadyExists", "InvalidMode", "InvalidPhase",
-            "InvalidPreparationOrder", "DeadlineExpired", "InvalidBinding", "InvalidMarket", "InsufficientEscrow",
-            "InvalidPositions", "InvalidPlan", "InvalidFunding", "InvalidFeePolicy", "InvalidBuy", "DuplicateMarket",
-            "IneligibleImplementation", "QuoteDebtForbidden", "SlippageExceeded", "FeeBelowMinimum", "DeploymentFailed",
-        }
-        selector = bytes.fromhex(candidate[2:10])
-        for name in names:
-            if selector == keccak(text=f"{name}()")[:4] and len(candidate) == 10:
-                return {**facts, "failure_category": "opaque" if name == "DeploymentFailed" else "semantic",
-                        "decoded_error": name, "error": f"Execution reverted ({name})"}
-        from eth_abi import decode
-        for name, signature, types in (("Error", "Error(string)", ["string"]), ("Panic", "Panic(uint256)", ["uint256"])):
-            if selector == keccak(text=signature)[:4]:
-                try:
-                    decode(types, bytes.fromhex(candidate[10:]))
-                    return {**facts, "failure_category": "semantic", "decoded_error": name, "error": f"Execution reverted ({name})"}
-                except Exception:
-                    break
-        return {**facts, "failure_category": "opaque", "error": "Execution reverted without a reviewed error"}
-    if oog:
-        return {**facts, "failure_category": "source" if capped else "capacity",
-                "error": "Native execution ran out of gas under the reported RPC gas cap" if capped else "Native execution ran out of gas"}
-    return {**facts, "failure_category": "opaque",
-            "error": "Native execution reverted without a reviewed error" if kind == "execution-reverted" else "Execution failed without a reviewed error"}
 
 
-def _simulation_failure_kind(failure: Any) -> Literal["abort", "out-of-gas", "execution", "source"]:
-    """Classify bounded native causes without exposing their messages or data."""
-    for _ in range(8):
-        if failure is None:
-            break
-        native = failure._native if isinstance(failure, LaunchRpcError) else failure
-        field = native.get if isinstance(native, Mapping) else lambda key: getattr(native, key, None)
-        if field("name") == "AbortError" or isinstance(failure, asyncio.CancelledError):
-            return "abort"
-        status = field("status")
-        if status is None:
-            status = field("statusCode")
-        if status is None:
-            status = field("status_code")
-        if isinstance(status, (int, float)) and not isinstance(status, bool) and 400 <= status <= 599:
-            return "source"
-        details, message = field("details"), field("message")
-        message = details if isinstance(details, str) else message if isinstance(message, str) else ""
-        diagnostic = {"code": field("code"), "message": message}
-        if isinstance(native, Mapping):
-            if "data" in native:
-                diagnostic["data"] = native["data"]
-        elif hasattr(native, "data"):
-            diagnostic["data"] = native.data
-        execution = execution_failure(None, diagnostic)
-        if execution["native_error_kind"] == "out-of-gas" and execution["native_gas_capped"]:
-            return "source"
-        if execution["failure_category"] == "capacity":
-            return "out-of-gas"
-        code = execution["native_error_code"]
-        if code == 3 or code == -32000 and re.match(r"execution (?:failed|reverted)\b", message, re.I):
-            return "execution"
-        cause = field("cause")
-        failure = cause if cause is not None else getattr(failure, "__cause__", None)
-    return "source"
 
 
-def _simulate_rpc(
-    client: Web3,
-    transactions: Sequence[Mapping[str, Any]],
-    block: LaunchBlock,
-    limits: LaunchExecutionLimits,
-    validation: bool,
-) -> LaunchRpcSimulation:
-    # Natural child-block fees must govern fee-bearing admission: only the
-    # child number/time are overridden and eth_simulateV1 derives its own
-    # baseFeePerGas; the parent chain gasLimit remains in force.
-    payload = {
-        "blockStateCalls": [
-            {
-                "blockOverrides": {"number": hex(block.number + index + 1), "time": hex(block.timestamp + index + 1), "gasLimit": hex(block.gas_limit)},
-                "calls": [{key: value for key, value in rpc_transaction(transaction).items() if key in {"from", "to", "data", "value", "gas", "gasPrice"}}],
-            }
-            for index, transaction in enumerate(transactions)
-        ],
-        "validation": validation,
-        "traceTransfers": False,
-        "returnFullTransactions": False,
-    }
-    if len(transactions) > 256:
-        return LaunchRpcSimulation("provisional", None, block, (), "eth_simulateV1 supports at most 256 fresh blocks")
-    if limits.rpc_max_request_bytes is not None:
-        envelope = {"jsonrpc": "2.0", "id": 1, "method": "eth_simulateV1", "params": [payload, block.tag]}
-        if len(json.dumps(envelope, separators=(",", ":")).encode()) > limits.rpc_max_request_bytes:
-            return LaunchRpcSimulation("provisional", None, block, (), "the RPC request-size cap is insufficient")
-    try:
-        raw = rpc(client, "eth_simulateV1", [payload, block.tag])
-    except LaunchRpcError as error:
-        kind = _simulation_failure_kind(error)
-        if kind == "abort":
-            raise
-        message = error._native.get("message")
-        funds = error.code == -38014 or error.code == -32000 and isinstance(message, str) and re.match(r"insufficient funds\b", message, re.I) is not None
-        category = "affordability" if funds else "capacity" if kind == "out-of-gas" else "opaque" if kind == "execution" else "source"
-        return LaunchRpcSimulation("provisional", None, block, (), failure_reason(error), len(transactions), category, error.code)
-    if not isinstance(raw, list) or len(raw) != len(transactions):
-        raise RuntimeError("eth_simulateV1 returned an incomplete block sequence")
-    calls: list[LaunchSimulationCall] = []
-    for transaction, simulated_block in zip(transactions, raw):
-        if not isinstance(simulated_block, Mapping):
-            raise RuntimeError("eth_simulateV1 returned a malformed simulated block")
-        results = simulated_block.get("calls")
-        if not isinstance(results, list) or len(results) != 1:
-            raise RuntimeError("eth_simulateV1 did not return one result per fresh transaction")
-        result = results[0]
-        if not isinstance(result, Mapping):
-            raise RuntimeError("eth_simulateV1 returned a malformed simulated call")
-        status = quantity(result["status"])
-        if status not in (0, 1):
-            raise RuntimeError("eth_simulateV1 returned an invalid call status")
-        gas_used = quantity(result["gasUsed"])
-        requested_gas = quantity(transaction["gas"])
-        gas_required = quantity(result["maxUsedGas"]) if result.get("maxUsedGas") is not None else gas_used
-        if not gas_used <= gas_required <= requested_gas:
-            raise RuntimeError("eth_simulateV1 returned gas consumption outside the exact requested envelope")
-        returned = hex_bytes(result["returnData"])
-        facts = {} if status == 1 else execution_failure(returned, result.get("error"))
-        logs = result.get("logs")
-        calls.append(LaunchSimulationCall(success=status == 1, gas_used=gas_used,
-            return_data=returned, logs=tuple(logs) if isinstance(logs, list) else (), gas_required=gas_required, **facts))
-        if status != 1:
-            break
-    return LaunchRpcSimulation("stateful", "eth_simulateV1", block, tuple(calls), None, len(transactions))
 
 
-def _simulate_fork(
-    source: Web3 | LifecycleRpcClient, fork: ControlledLaunchFork,
-    transactions: Sequence[Mapping[str, Any]], block: LaunchBlock,
-    postconditions: Sequence[Sequence[Mapping[str, str]]] | None,
-    postcondition_validator: Callable[[int, LaunchSimulationCall], None] | None,
-) -> LaunchRpcSimulation:
-    client = fork.client
-    original = source.source if isinstance(source, _LifecycleReadClient) else source
-    source_endpoint = getattr(getattr(original, "provider", None), "endpoint_uri", None) or fork.source_rpc_url
-    fork_endpoint = fork.fork_rpc_url or getattr(getattr(client, "provider", None), "endpoint_uri", "")
-    visible_endpoint = getattr(getattr(client, "provider", None), "endpoint_uri", None)
-    if visible_endpoint is not None and not _same_rpc_endpoint(visible_endpoint, fork_endpoint):
-        raise ValueError("Controlled fork transport differs from its configured loopback RPC")
-    if client is original or _same_rpc_endpoint(source_endpoint, fork_endpoint):
-        raise ValueError("Controlled fork must be separate from the simulation source")
-    source_chain = read_chain_id(source)
-    head = read_block(client)
-    if head.number != block.number or head.block_hash != block.block_hash:
-        if block.number > (1 << 53) - 1:
-            raise ValueError("Pinned block is not exactly representable by the fork reset API")
-        rpc(client, fork.reset_method, [{"forking": {"jsonRpcUrl": fork.source_rpc_url, "blockNumber": block.number}}])
-        head = read_block(client)
-    if read_chain_id(client) != source_chain or (fork.expected_chain_id is not None and source_chain != fork.expected_chain_id) or head.number != block.number or head.block_hash != block.block_hash or (fork.expected_block_hash is not None and head.block_hash != fork.expected_block_hash.lower()):
-        raise LaunchStateChanged("Controlled fork differs from the exact source chain and pinned block")
-    snapshot = rpc(client, "evm_snapshot", [])
-    calls: list[LaunchSimulationCall] = []
-    impersonated: list[str] = []
-    try:
-        if fork.impersonation != "none":
-            for creator in dict.fromkeys(transaction["from"] for transaction in transactions):
-                rpc(client, f"{fork.impersonation}_impersonateAccount", [creator])
-                impersonated.append(creator)
-        for index, transaction in enumerate(transactions):
-            request = {key: value for key, value in rpc_transaction(transaction).items() if key in {"from", "to", "data", "value", "gas", "gasPrice"}}
-            try:
-                transaction_hash = rpc(client, "eth_sendTransaction", [request])
-                deadline = time.monotonic() + fork.receipt_timeout_ms / 1000
-                receipt = None
-                while time.monotonic() <= deadline:
-                    receipt = rpc(client, "eth_getTransactionReceipt", [transaction_hash])
-                    if receipt is not None:
-                        break
-                    time.sleep(0.025)
-                if receipt is None:
-                    raise RuntimeError("Controlled fork receipt timed out")
-                success = quantity(receipt["status"]) == 1
-                current = read_block(client)
-                observed = tuple(hex_bytes(rpc(client, "eth_call", [{**condition, "from": transaction["from"]}, current.tag]))
-                                 for condition in (postconditions[index] if postconditions is not None else ())) if success else ()
-                call = LaunchSimulationCall(success, quantity(receipt["gasUsed"]), "0x", tuple(receipt.get("logs", ())),
-                    None if success else "Actual controlled fork transaction reverted", None,
-                    None if success else "opaque", postcondition_data=observed)
-                if success and postcondition_validator is not None:
-                    try:
-                        postcondition_validator(index, call)
-                    except LaunchStateChanged:
-                        raise
-                    except Exception:
-                        from dataclasses import replace
-                        call = replace(call, success=False, error="Actual controlled execution failed its committed postcondition", failure_category="postcondition")
-                calls.append(call)
-                if not call.success:
-                    break
-            except LaunchStateChanged:
-                raise
-            except Exception as error:
-                from .lifecycle import LifecyclePlanningError
-                if isinstance(error, LifecyclePlanningError) and error.code in {"READ_SCOPE_CLOSED", "LIMIT_CONTEXT_MISMATCH", "PLAN_MUTATED", "INVALID_SIMULATION"}:
-                    raise
-                if _simulation_failure_kind(error) == "abort":
-                    raise
-                calls.append(LaunchSimulationCall(False, None, "0x", (), failure_reason(error), failure_category="opaque"))
-                break
-        return LaunchRpcSimulation("stateful", "controlled-fork", block, tuple(calls), expected=len(transactions))
-    finally:
-        try:
-            for creator in impersonated:
-                rpc(client, f"{fork.impersonation}_stopImpersonatingAccount", [creator])
-        finally:
-            if rpc(client, "evm_revert", [snapshot]) is not True:
-                raise RuntimeError("Controlled fork snapshot cleanup failed; no simulation may be admitted")
 
 
-def simulate_transactions(
-    client: Web3,
-    transactions: Sequence[Mapping[str, Any]],
-    *,
-    block: LaunchBlock,
-    limits: LaunchExecutionLimits,
-    fork: ControlledLaunchFork | None = None,
-    validation: bool = True,
-    postconditions: Sequence[Sequence[Mapping[str, str]]] | None = None,
-    postcondition_validator: Callable[[int, LaunchSimulationCall], None] | None = None,
-    force_owned_fork: bool = False,
-    source_chain: int | None = None,
-) -> LaunchRpcSimulation:
-    """Execute exact ordered transactions without persisting source state."""
-    from .lifecycle import LifecyclePlanningError
-    owns_source = source_chain is None
-    if owns_source:
-        assert_canonical(client, block)
-        source_chain = read_chain_id(client)
-    try:
-        for transaction in transactions:
-            if "chainId" in transaction and quantity(transaction["chainId"]) != source_chain:
-                error = LaunchStateChanged("the reviewed transaction belongs to a different simulation source chain")
-                error.code = "CHAIN_MISMATCH"
-                raise error
-            gas = quantity(transaction["gas"])
-            if not 0 < gas < (1 << 64):
-                raise ValueError("the requested transaction gas must be a positive uint64")
-            if gas > limits.gas_cap(block):
-                return LaunchRpcSimulation("stateful", None, block, (), "a transaction exceeds the current gas cap")
-            cap = limits.calldata_cap()
-            if cap is not None and len(bytes.fromhex(hex_bytes(transaction.get("data", "0x"))[2:])) > cap:
-                return LaunchRpcSimulation("stateful", None, block, (), "a transaction exceeds the current calldata cap")
-        if not transactions:
-            return LaunchRpcSimulation("stateful", "none", block, ())
-        if force_owned_fork:
-            if fork is None or limits.protocol == "nitro":
-                raise ValueError("Owned replay requires its exact disposable generic-EVM backend")
-            return _simulate_fork(client, fork, transactions, block, postconditions, postcondition_validator)
-        try:
-            result = _simulate_rpc(client, transactions, block, limits, validation)
-        except (LaunchStateChanged, LifecyclePlanningError):
-            raise
-        except (RuntimeError, ValueError, KeyError, TypeError) as error:
-            if _simulation_failure_kind(error) == "abort":
-                raise
-            result = LaunchRpcSimulation("provisional", None, block, (), "Stateful sequential RPC returned invalid bounded execution results", len(transactions), "source")
-        # An unvalidated generic-EVM diagnostic may use an explicitly supplied
-        # fork after structural source failure, never after an execution refusal.
-        if not validation and result.failure_category == "source" and fork is not None and limits.protocol != "nitro":
-            return _simulate_fork(client, fork, transactions, block, postconditions, postcondition_validator)
-        return result
-    finally:
-        if owns_source:
-            assert_canonical(client, block)
-            assert_chain(client, source_chain)
+
+
+
+
+
 
 
 __all__ = [
-    "ControlledLaunchFork", "LaunchBlock", "LaunchExecutionLimits", "LaunchRpcError",
-    "LaunchRpcSimulation", "LaunchSimulationCall", "LaunchStateChanged",
-    "LaunchLimitContext",
-    "create_controlled_launch_fork",
+    "LaunchBlock", "LaunchExecutionLimits", "LaunchRpcError",
+    "LaunchStateChanged", "LaunchLimitContext",
 ]

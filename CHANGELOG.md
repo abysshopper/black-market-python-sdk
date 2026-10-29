@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.15.1
+
+- Replace launch simulation/admission/proof evidence with `LifecyclePlanningAssessment` on planned launches, immediate transactions and planning errors. Review `ready`, the pin, resolved limits, capacity/fee budgets and actionable refusal reason. Remove retired APIs/types, explicit simulation, fork options, backend probes and aggregate simulation limits without aliases.
+- Never execute launch calldata during planning or next-command construction, including Kyber funding and activation. Conversions rely on their committed calldata amountOutMinimum/deadline; ordered opening-buy floors use exact local curve math and buy slippage.
+- Require staged execution for multiple markets or any conversion. Atomic eligibility is limited to a single non-conversion market whose known bound fits the native ceiling. Use the shared `robinhood-4663-capacity-v3` measured-max table with at least 25% padding; pack contiguous preparation markets by profile/positions, full calldata cost and poster allocation.
+- Refuse unavailable capacity with `UNKNOWN_GAS_PROFILE` and oversized indivisible activation with actionable `ACTIVATION_GAS_LIMIT`. Preserve upstream auto-compound presets/codecs/math while retaining their gas-budget exclusion.
+- Rename `LifecycleGasProfileEvidence` to `LifecycleGasProfile`; add optional atomic bounds and `native-ceiling-only` fee confidence, without invented gas observations. All launch commands retain the fixed native ceiling, 32M total on Robinhood. Approvals omit gas/price/estimates for wallet preparation.
+- Build only the next canonical command and refresh full activation/funding/buy-floor checks, rather than trusting a cached ready flag. Preserve reviewed preparation spans and held identity/gas/price, fee-floor and caller-policy refusals, receipt confirmations, replacement/reorg reconciliation and started cancellation/terminal recovery.
+- Remove sender-code admission reads and ArbOS-version/native execution probes. Retain the L2 RPC-header pin, batched prices/balances/allowances, local CREATE2 verification and session-scoped chain/Multicall3 facts.
+- Migrate examples, CLI artifacts, public guidance and focused regressions to assessments and local-curve economic review. No simulated receipt is represented as observed execution.
+
 ## 0.15.0
 
 - Remove EOA nonce reads from lifecycle planning, progress, simulation and next-command construction. Unsigned envelopes omit nonce; optional receipt-reference/status nonce records actual submitted transaction evidence. Launch/domain nonces and UFG namespace identity are unchanged.
@@ -96,4 +107,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.15.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.15.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

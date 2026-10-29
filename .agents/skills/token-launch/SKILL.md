@@ -74,7 +74,7 @@ See `references/audit-history.md`.
   **Dynamic Fee Hook** uses `KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL`, zero LP
   fee and zero developer bps with explicit config6 minimum/maximum/sensitivity.
   Copy its own graph and terms; the fixed profile remains the examples' selection.
-  Frozen metadata supplies profile coverage; retained exact simulation, the wallet and on-chain enforcement determine execution, not repeated guard-only reads.
+  Frozen presets supply capacity coverage; planning never executes launch calldata. The wallet and on-chain enforcement determine execution, not guard-only reads or an assessment's ready flag.
 - **HMM V2 Fixed** / **HMM V2 Dynamic** use `KnownLifecycleProfile.V4_HMM_FIXED_POOL`
   / `V4_HMM_DYNAMIC_POOL`, zero LP/developer fees and their own admitted V2 graph.
   Config6 must include `hmm_launch_config`; `default_hmm_launch_config` requires
@@ -94,7 +94,7 @@ See `references/audit-history.md`.
   supported requested author rates/external-liquidity choices; never invent fee
   ceilings or disable external LP participation to simplify a launch.
 
-## Prove and execute the final commitment
+## Assess and execute the final commitment
 
 1. Confirm the intended graph. October8 includes enforced allocation/burn and
    custody-read fixes; October5 addresses do not acquire those changes.
@@ -106,13 +106,13 @@ See `references/audit-history.md`.
    not an unsolicited separate wallet swap.
 4. Freeze economics and ordered buys, then await
    `prepare_and_plan_lifecycle_launch` with explicit mode and optional
-   `buy_slippage_bps` for an unstarted launch. Review its final plan/hash,
-   explicit admission outcomes and immediate envelope. Profiled admission is not stateful execution proof.
+   `buy_slippage_bps` for an unstarted launch. Review its final plan/hash, returned
+   mode, `assessment.ready`, actionable reason and immediate envelope. Readiness is not execution proof.
 5. Require explicit authorization for real chain/API writes. Never overwrite
    `.env`, print secrets or provide a default development key.
 6. Sign only the exact immediate reviewed command. Save its signed hash before
    sending, then actual included/replacement hash and confirmation evidence.
-   Fresh build-next proof must not change committed economics.
+   Fresh build-next assessment must not change committed economics.
 7. Verify canonical Active state, receipt, custody/positions, burn/supply and
    ordered buys before reporting chain success. Verify publication separately;
    pending indexing is not completed publication.

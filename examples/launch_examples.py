@@ -68,7 +68,6 @@ from black_market_sdk import (
     build_next_transaction,
     decode_lifecycle_events,
     decode_lifecycle_abyss_market_config,
-    decode_lifecycle_launch_receipt,
     decode_lifecycle_pool_bound_v4_market_config,
     derive_launch_pool_recipe,
     derive_launch_position_ranges,
@@ -703,28 +702,16 @@ def economic_review_hash(review):
 
 
 def opening_buy_review(launch, pricing):
-    """Use exact local opening curves or the actual activation simulation."""
+    """Review exact local opening curves, not simulated or settled execution."""
     if not launch.plan.buys:
         return []
-    if launch.simulation.confidence == "profiled":
-        profile = launch.simulation.gas_profile
-        require(profile is not None and len(profile.initial_buys) == len(launch.plan.buys),
-                "profile omitted the ordered opening-buy quotes", code="INVALID_ECONOMIC_PROOF")
-        require(address_equal(launch.predicted_token, pricing["predictedToken"]),
-                "opening quotes belong to a different token", code="INVALID_ECONOMIC_PROOF")
-        amounts = ((quote.quote_spent, quote.token_out) for quote in profile.initial_buys)
-        evidence = "local-exact-curve"
-    else:
-        activation = [(transaction, call) for transaction, call in
-                      zip(launch.simulation.transactions, launch.simulation.evidence.calls)
-                      if transaction.kind in {"atomic", "activate"}]
-        require(len(activation) == 1 and activation[0][1].success,
-                "final proof omitted the complete opening-buy receipt", code="INVALID_ECONOMIC_PROOF")
-        receipt = decode_lifecycle_launch_receipt(activation[0][1].return_data, launch.plan)
-        require(address_equal(receipt.token, pricing["predictedToken"]),
-                "simulated buys belong to a different token", code="INVALID_ECONOMIC_PROOF")
-        amounts = zip(receipt.quote_spent, receipt.token_out)
-        evidence = "simulation-receipt"
+    profile = launch.assessment.gas_profile
+    require(profile is not None and len(profile.initial_buys) == len(launch.plan.buys),
+            "assessment omitted the ordered opening-buy quotes", code="INVALID_ECONOMIC_REVIEW")
+    require(address_equal(launch.predicted_token, pricing["predictedToken"]),
+            "opening quotes belong to a different token", code="INVALID_ECONOMIC_REVIEW")
+    amounts = ((quote.quote_spent, quote.token_out) for quote in profile.initial_buys)
+    evidence = "local-exact-curve"
     retained = int(pricing["expectedRetainedSupply"])
     results = []
     for index, (buy, (spent, output)) in enumerate(zip(launch.plan.buys, amounts)):
@@ -889,10 +876,10 @@ def recovery_image(recovery):
     return LaunchSessionImageDescriptor(**recovery["image"]) if recovery.get("image") is not None else None
 
 
-def simulation_observation(launch):
-    return {"admitted": launch.admitted, "confidence": launch.confidence, "backend": launch.simulation.backend,
-            "profiles": launch.profiles, "hookDeployments": launch.hook_deployments, "limits": launch.limits,
-            "simulation": launch.simulation,
+def planning_observation(launch):
+    return {"ready": launch.assessment.ready,
+            "profiles": launch.profiles, "hookDeployments": launch.hook_deployments, "limits": launch.assessment.limits,
+            "assessment": launch.assessment,
             "tokenFactory": launch.token_factory, "tokenFactoryCodeHash": launch.token_factory_code_hash}
 
 
@@ -954,8 +941,8 @@ def wait_receipt(client, row, artifacts, cancellation):
     return receipt
 
 
-def admit_plan(client, plan, case, artifacts, cancellation):
-    artifacts.enter("admission")
+def assess_plan(client, plan, case, artifacts, cancellation):
+    artifacts.enter("assessment")
     limits = limit_resolver()
     cancellation.check()
     def progress(observation):
@@ -970,10 +957,11 @@ def admit_plan(client, plan, case, artifacts, cancellation):
     artifacts.result["chain"].update(planHash=launch.plan_hash, launchId=launch.launch_id, mode=launch.mode)
     artifacts.event("plan-prepared", planHash=launch.plan_hash, launchId=launch.launch_id,
                     predictedToken=launch.predicted_token, deployments=launch.hook_deployments)
-    observation = simulation_observation(launch)
-    artifacts.save("admission.json", observation)
-    artifacts.event("launch-admission", **observation)
-    require(launch.admitted, "SDK refused this exact launch: " + "; ".join(launch.simulation.reasons), code="LAUNCH_NOT_ADMITTED", diagnostic=observation)
+    observation = planning_observation(launch)
+    artifacts.save("assessment.json", observation)
+    artifacts.event("launch-assessment", **observation)
+    require(launch.assessment.ready, "SDK refused this launch: " + (launch.assessment.reason or "The launch is not ready."),
+            code=launch.assessment.code or "LAUNCH_NOT_READY", diagnostic=observation)
     return launch
 
 
@@ -1059,9 +1047,9 @@ def execute_plan(client, launch, plan, artifacts, cancellation, *, wallet, api, 
         require(index < maximum_steps, "SDK sequence exceeded the complete bounded lifecycle", code="LIFECYCLE_SEQUENCE_MISMATCH")
         artifacts.event("next-transaction-admitted", transaction=step)
         transaction = step.as_transaction()
-        require(step.admission is not None and step.admission.admitted,
-                "SDK step lacks current bound admission", code="TRANSACTION_LIMIT_MISMATCH")
-        validate_envelope(client, transaction, plan, step.admission.limits, kind=step.kind)
+        require(step.assessment is not None and step.assessment.ready,
+                "SDK step lacks a current ready assessment", code="TRANSACTION_LIMIT_MISMATCH")
+        validate_envelope(client, transaction, plan, step.assessment.limits, kind=step.kind)
         require(wallet.client is client and address_equal(wallet.account.address, plan.creator),
                 "submission wallet differs from the reviewed source or creator", code="WALLET_IDENTITY_MISMATCH")
         cancellation.check()
@@ -1383,7 +1371,7 @@ def run(case, artifacts, cancellation, *, broadcast=False):
                               "policy": "Optional explicit tightening policy; native protocol ceilings are read at the canonical block"})
     artifacts.enter("plan")
     plan, predicted = construct_plan(client, configuration, case, nonce, token_salt, artifacts, cancellation, image=image)
-    launch = admit_plan(client, plan, case, artifacts, cancellation)
+    launch = assess_plan(client, plan, case, artifacts, cancellation)
     plan = launch.plan
     require(address_equal(launch.predicted_token, predicted), "final preparation changed the predicted token")
     review, review_hash = review_economics(launch, artifacts, cancellation)

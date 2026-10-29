@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.15.0**, Python **3.10+**, import `black_market_sdk`.
+Package **0.15.1**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.15.0
+python -m pip install black-market-sdk==0.15.1
 ```
 
 For the runnable examples, install an editable checkout:
@@ -101,11 +101,10 @@ Counts below are markets / positions / ordered buys.
 | [`launch_erc20_depth_v4.py`](examples/launch_erc20_depth_v4.py) | ERC20, four bands | 1 / 4 / 1 | staged |
 | [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py) | ERC20 dividends, WETH + USDG | 3 / 7 / 3 | staged |
 
-Multi-market conversion-funded reviews prove their state prerequisites through
-activation in one native simulation request. There is no default 50M aggregate
-cap or silently admitted prefix: an actual provider limit or explicit caller
-policy can refuse the review. Direct-funded covered profiles need no simulation
-window. See [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
+Planning never executes launch calldata, including conversion routes. Multi-market
+and conversion-funded plans use staged execution. Release-owned capacity budgets
+must fit the native ceiling; unavailable budgets refuse without a simulation
+fallback. See [prepare and assess](docs/launch-guide.md#prepare-and-assess).
 
 ## Choose an offering
 
@@ -118,16 +117,19 @@ window. See [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
 | UFG treasury | ERC20 with quote-fee reserves and holder redemption | [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches) |
 | Auto-compounding | Static/dynamic V4 with fee-funded, hook-owned full-range liquidity | [Auto-compounding launches](docs/launch-guide.md#auto-compounding-launches) |
 
+Auto-compounding presets and codecs are available, but planning currently refuses
+them with `UNKNOWN_GAS_PROFILE` because they lack a reviewed capacity budget.
+
 ## Integrate and recover
 
 Follow the [launch guide](docs/launch-guide.md) for pricing, signing, publication,
 recovery, and claims. Check **receipt confirmed → markets active → metadata
 published → API indexed** separately; an API timeout does not undo an open token.
 
-Release-owned openings use versioned gas profiles and exact ordered local buy
-math. Kyber-funded execution and its consuming activation retain exact simulation.
-`build_next_transaction` handles only the immediate command. The wallet assigns
-its transaction nonce; the committed `LaunchPlanV1.nonce` remains launch identity.
+Release-owned openings use versioned capacity budgets and exact ordered local buy
+math. `launch.assessment` reports readiness and actionable refusals, not execution
+proof. `build_next_transaction` refreshes only the immediate command. The wallet
+assigns its transaction nonce; `LaunchPlanV1.nonce` remains launch identity.
 
 See [runner configuration](examples/README.md), [limits and codecs](docs/reference.md),
 [release changes](CHANGELOG.md), and the [MIT license](LICENSE).

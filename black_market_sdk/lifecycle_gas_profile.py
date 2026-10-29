@@ -1,39 +1,29 @@
-"""Release-owned capacity bounds, never signing-gas sizing or execution proof."""
+"""Release-owned capacity budgets and pinned input checks, never execution proof."""
 from dataclasses import dataclass, replace
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
 
 from .auto_compound import is_auto_compound_profile
-from .launch import get_tick_at_sqrt_ratio
 from .lifecycle import (
-    LaunchPlanV1, LaunchSimulation, LifecycleFundingKind, LifecycleGasProfileEvidence,
+    LaunchPlanV1, LifecycleFundingKind, LifecycleGasProfile, LifecyclePlanningAssessment,
     LifecycleLaunchGasBounds, LifecycleOpeningBuyQuote, LifecyclePlanningError,
-    LifecycleRewardMode, LifecycleTokenKind, LifecycleTransaction,
-    _PROFILED_QUOTE_IDENTITIES, _execution_account, _forwarding_reserve,
-    _launch_simulation, _nitro_poster_gas_bound, _read_nitro_prices,
-    build_launch_transactions, build_lifecycle_calldata, compute_lifecycle_opening_buys,
-    decode_lifecycle_abyss_market_config, decode_lifecycle_pool_bound_v4_market_config,
+    LifecycleRewardMode, LifecycleTokenKind, LifecycleTransaction, LifecycleTransactionEstimate,
+    LifecycleFundingPrerequisite, _execution_account, _forwarding_reserve,
+    _nitro_poster_gas_bound, _read_nitro_prices, _read_lifecycle_gas_price,
+    _prepare_gas_estimate, _build_lifecycle_command, _LIFECYCLE_CAPACITY_PADDING_BPS,
+    compute_lifecycle_opening_buys, decode_lifecycle_abyss_market_config,
+    decode_lifecycle_pool_bound_v4_market_config,
 )
 from .lifecycle_buy_math import has_profiled_opening_math
-from .lifecycle_presets import get_known_lifecycle_profile
-from .lifecycle_rpc import (
-    LaunchBlock, LaunchExecutionLimits, LaunchRpcSimulation, pinned_rpc, quantity,
-    _read_lifecycle_account_code,
-)
-from .ufg import UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, build_ufg_launch_transactions
+from .lifecycle_rpc import LaunchBlock, LaunchExecutionLimits, pinned_rpc, quantity
+from .hmm import is_hmm_profile
+from .ufg import UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, is_ufg_profile
 
-_PROFILE_VERSION = "robinhood-4663-arbos61-v1"
+_PROFILE_VERSION = "robinhood-4663-capacity-v3"
 
 
 def _approval(transaction: LifecycleTransaction) -> bool:
     return transaction.kind in {"approve", "approve-reset"}
-
-
-def _covered(plan: LaunchPlanV1) -> bool:
-    return (plan.chain_id == 4663 and has_profiled_opening_math(plan)
-        and not any(is_auto_compound_profile(market.profile_id) for market in plan.markets)
-        and all(market.quote_asset.lower() in _PROFILED_QUOTE_IDENTITIES for market in plan.markets)
-        and all(funding.kind != LifecycleFundingKind.ERC20
-            or funding.input_asset.lower() in _PROFILED_QUOTE_IDENTITIES for funding in plan.funding))
 
 
 @dataclass(frozen=True)
@@ -42,23 +32,15 @@ class _MarketGas:
     hmm: bool
     ufg_hook: bool
     positions: int
-    spacing: int
-    opening_tick: int
-    ticks: frozenset[int]
 
 
 def _market_gas(plan: LaunchPlanV1) -> tuple[_MarketGas, ...]:
     result = []
     for market in plan.markets:
-        preset = get_known_lifecycle_profile(chain_id=plan.chain_id,
-            orchestrator=plan.orchestrator, profile_id=market.profile_id)
         abyss = market.config_version == 1
         config = decode_lifecycle_abyss_market_config(market.config) if abyss else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
-        price = config.opening_sqrt_price_x96 if abyss else config.sqrt_price_x96
-        spacing = (1 if config.fee == 100 else 10 if config.fee == 500 else 60 if config.fee == 3000 else 200) if abyss else config.tick_spacing
-        ticks = frozenset(tick for position in config.positions for tick in (position.tick_lower, position.tick_upper))
-        result.append(_MarketGas(abyss, "hmm" in preset.key.value, "ufg" in preset.key.value,
-            len(config.positions), spacing, get_tick_at_sqrt_ratio(price), ticks))
+        result.append(_MarketGas(abyss, is_hmm_profile(market.profile_id), is_ufg_profile(market.profile_id),
+            len(config.positions)))
     return tuple(result)
 
 
@@ -69,28 +51,20 @@ def _capacity_basis(plan: LaunchPlanV1, transaction: LifecycleTransaction,
         for value in (token.name, token.symbol, token.metadata_uri))
     creation = ((2_500_000 if token.kind == LifecycleTokenKind.ERC404 else 0)
         + (2_500_000 if token.reward_mode == LifecycleRewardMode.STAKING else 500_000 if token.reward_mode == LifecycleRewardMode.DIVIDENDS else 0)
-        + 22_000 * metadata_words)
-    gas = 19_500_000 + creation + (6_500_000 if ufg_route else 0) if atomic else 1_000_000
-    for index, market in enumerate(markets):
-        if not atomic:
-            gas += 2_500_000 + 1_600_000 * market.positions if market.abyss else 2_000_000 + 600_000 * market.positions
+        + 25_000 * metadata_words)
+    # Measured-max table shared with Node 0.15.1: native Abyss atomic21.584M,
+    # V4 fixed20.833M, HMM26.396M, UFG27.941M; fork Abyss32 activation39.72M.
+    gas = 22_000_000 + creation + (6_500_000 if ufg_route else 0) if atomic else 1_500_000 + (250_000 if ufg_route else 0)
+    for market in markets:
+        if atomic:
+            gas += (7_000_000 if market.hmm else 1_000_000 if market.ufg_hook else 500_000 if market.abyss else 0)
+            gas += (1_500_000 if market.abyss else 600_000) * (market.positions - 1)
         else:
-            first = 7_000_000 if market.hmm else 1_000_000 if market.ufg_hook else 500_000 if market.abyss else 0
-            later = 15_000_000 if market.hmm else 9_000_000 if market.ufg_hook else 8_000_000
-            gas += (first if index == 0 else later) + (1_500_000 if market.abyss else 600_000) * (market.positions - 1)
-        if not atomic and market.hmm:
-            gas += 6_000_000
-    ticks = [market.opening_tick for market in markets]
-    for quote in quotes:
-        market, before = markets[quote.market_index], ticks[quote.market_index]
-        after = get_tick_at_sqrt_ratio(quote.sqrt_price_after_x96)
-        low, high = min(before, after), max(before, after)
-        words = abs(after // (market.spacing * 256) - before // (market.spacing * 256)) + 2
-        crossings = sum(low <= tick <= high for tick in market.ticks)
-        gas += 300_000 + 8_000 * words + 80_000 * crossings
-        if token.kind == LifecycleTokenKind.ERC404:
-            gas += 70_000 * ((quote.token_out + token.nft_unit - 1) // token.nft_unit)
-        ticks[quote.market_index] = after
+            gas += (500_000 + 1_250_000 * market.positions if market.abyss else 250_000 + 500_000 * market.positions)
+            gas += 1_000_000 if market.hmm else 250_000 if market.ufg_hook else 0
+    gas += 500_000 * len(quotes)
+    if token.kind == LifecycleTokenKind.ERC404:
+        gas += sum(100_000 * ((quote.token_out + token.nft_unit - 1) // token.nft_unit) for quote in quotes)
     return gas + 24 * transaction.calldata_bytes + 100_000 * len(plan.fee_assets)
 
 
@@ -99,28 +73,29 @@ class _ProfiledLaunchCapacity:
     bounds: LifecycleLaunchGasBounds
     initial_buys: tuple[LifecycleOpeningBuyQuote, ...]
     headroom_bps: int
-    atomic: LifecycleTransaction
+    atomic: LifecycleTransaction | None
     activation: LifecycleTransaction
 
 
 def derive_lifecycle_launch_capacity(plan: LaunchPlanV1, *, predicted_token: str,
         ufg: UfgLaunchConfig | None = None, headroom_bps: int = 1500,
         opening_buys: Sequence[LifecycleOpeningBuyQuote] | None = None) -> _ProfiledLaunchCapacity | None:
-    if (not _covered(plan) or any(funding.kind == LifecycleFundingKind.SWAP for funding in plan.funding)
+    if (not has_profiled_opening_math(plan)
+            or any(is_auto_compound_profile(market.profile_id) for market in plan.markets)
             or (plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower()) != (ufg is not None)):
         return None
     if isinstance(headroom_bps, bool) or not isinstance(headroom_bps, int) or not 0 <= headroom_bps <= 10000:
         raise LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points")
     quotes = tuple(opening_buys) if opening_buys is not None else compute_lifecycle_opening_buys(plan, predicted_token=predicted_token)
-    atomic, = (build_launch_transactions(plan, mode="atomic") if ufg is None
-        else build_ufg_launch_transactions(plan, config=ufg, mode="atomic"))
-    activation = replace(atomic, step_id="activate", kind="activate", value=0,
-        data=build_lifecycle_calldata(plan, "activateLaunch"))
-    markets, reserve = _market_gas(plan), _forwarding_reserve(plan, "atomic")
+    atomic = None
+    if len(plan.markets) == 1 and not any(funding.kind == LifecycleFundingKind.SWAP for funding in plan.funding):
+        atomic = _build_lifecycle_command(plan, "atomic", ufg=ufg)
+    activation = _build_lifecycle_command(plan, "activate", ufg=ufg)
+    markets, reserve = _market_gas(plan), _forwarding_reserve(plan, "activate")
     def bound(transaction: LifecycleTransaction) -> int:
         basis = _capacity_basis(plan, transaction, markets, quotes, ufg is not None)
-        return max((basis * (10000 + headroom_bps) + 9999) // 10000, basis + reserve)
-    return _ProfiledLaunchCapacity(LifecycleLaunchGasBounds(bound(atomic), bound(activation)),
+        return max((basis * (10000 + max(_LIFECYCLE_CAPACITY_PADDING_BPS, headroom_bps)) + 9999) // 10000, basis + reserve)
+    return _ProfiledLaunchCapacity(LifecycleLaunchGasBounds(None if atomic is None else bound(atomic), bound(activation)),
         quotes, headroom_bps, atomic, activation)
 
 
@@ -131,79 +106,84 @@ def compute_launch_gas_bounds(plan: LaunchPlanV1, *, predicted_token: str,
     return None if capacity is None else capacity.bounds
 
 
-@dataclass(frozen=True)
-class _ProfiledLifecycleTransactions:
-    simulation: LaunchSimulation
-    profile_only: bool
-
-
-def profile_lifecycle_transactions(client, plan: LaunchPlanV1, transactions: Sequence[LifecycleTransaction], *,
+def assess_lifecycle_transactions(client, plan: LaunchPlanV1, transactions: Sequence[LifecycleTransaction], *,
         block: LaunchBlock, predicted: str, limits: LaunchExecutionLimits,
+        prerequisites: Sequence[LifecycleFundingPrerequisite] = (),
         reviewed_envelope: tuple[int, int] | None = None,
         opening_buys: Sequence[LifecycleOpeningBuyQuote] | None = None,
-        ufg: UfgLaunchConfig | None = None,
-        capacity: _ProfiledLaunchCapacity | None = None) -> _ProfiledLifecycleTransactions | None:
-    only_approvals = all(_approval(transaction) for transaction in transactions)
-    if plan.chain_id != 4663 or not only_approvals and (not _covered(plan) or limits.arb_os_version != 61):
-        return None
-    if _read_lifecycle_account_code(client, _execution_account(plan), plan.chain_id, block) != "0x":
-        return None
-    prices = _read_nitro_prices(client, block)
+        ufg: UfgLaunchConfig | None = None, capacity: _ProfiledLaunchCapacity | None = None,
+        data_fee_estimator: Callable[[Any, Mapping[str, Any], LaunchBlock], int] | None = None) -> LifecyclePlanningAssessment:
+    """Assess pinned inputs and deterministic capacity; never execute calldata."""
+    recommendation = _read_lifecycle_gas_price(client, block, plan.chain_id)
     balance = quantity(pinned_rpc(client, "eth_getBalance", [_execution_account(plan), block.tag], block))
+    prices = _read_nitro_prices(client, block) if limits.protocol == "nitro" else None
     base_fee, ceiling = block.base_fee_per_gas or 0, limits.compute_cap(block)
-    price = reviewed_envelope[1] if reviewed_envelope is not None else max(prices[5], base_fee * 2)
-    if reviewed_envelope is not None and not only_approvals and reviewed_envelope[0] != ceiling:
-        raise LifecyclePlanningError("STALE_REVIEWED_GAS", "Reviewed gas differs from the native transaction ceiling; review the launch again")
-    needs_buys = any(transaction.kind in {"atomic", "activate"} for transaction in transactions)
-    current = (capacity if capacity is not None and capacity.headroom_bps == limits.headroom_bps else
-        derive_lifecycle_launch_capacity(plan, predicted_token=predicted, ufg=ufg,
-            headroom_bps=limits.headroom_bps, opening_buys=opening_buys)) if needs_buys else None
-    if needs_buys and current is None:
-        return None
-    quotes, bounds = (current.initial_buys, current.bounds) if current is not None else ((), None)
-    profile_only = not any(funding.kind == LifecycleFundingKind.SWAP for funding in plan.funding) or not any(
-        transaction.kind in {"begin", "atomic", "activate"} for transaction in transactions)
-    for transaction in transactions:
-        if transaction.kind not in {"atomic", "activate"}:
-            continue
-        compute = bounds.atomic_compute_gas_upper_bound if transaction.kind == "atomic" else bounds.activation_compute_gas_upper_bound
-        if compute + _nitro_poster_gas_bound(transaction, prices)[0] > ceiling:
-            profile_only = False
+    required_price = max(recommendation, base_fee) if prices is not None else base_fee
+    price = reviewed_envelope[1] if reviewed_envelope is not None else max(recommendation, base_fee * 2)
+    if reviewed_envelope is not None and reviewed_envelope[0] != ceiling:
+        raise LifecyclePlanningError("STALE_REVIEWED_GAS", "Reviewed gas differs from the native transaction ceiling. Refresh the review before continuing.")
+    cancel_only = all(transaction.kind == "cancel" for transaction in transactions)
+    current = None if cancel_only else capacity if capacity is not None and capacity.headroom_bps == limits.headroom_bps else derive_lifecycle_launch_capacity(
+        plan, predicted_token=predicted, ufg=ufg, headroom_bps=limits.headroom_bps, opening_buys=opening_buys)
+    profile = None if current is None else LifecycleGasProfile(_PROFILE_VERSION, current.bounds, current.initial_buys)
+    assessment = LifecyclePlanningAssessment(True, block.number, block.block_hash, _execution_account(plan), plan.chain_id, limits, gas_profile=profile)
+    immediate = transactions[0] if transactions else None
     launch = next((transaction for transaction in transactions if not _approval(transaction)), None)
-    calldata_failure = next((transaction for transaction in transactions
-        if limits.calldata_cap() is not None and transaction.calldata_bytes > limits.calldata_cap()), None)
-    envelope_failure = launch is not None and ceiling > limits.gas_cap(block)
-    fee_failure = reviewed_envelope is not None and price < max(prices[5], base_fee)
-    affordability_failure = launch is not None and launch.value + ceiling * price > balance
-    semantic_failure = next((quote for quote in quotes if quote.token_out < plan.buys[quote.buy_index].min_token_out), None)
-    expired = block.timestamp > plan.deadline and any(transaction.kind != "cancel" for transaction in transactions)
-    refused = envelope_failure or calldata_failure is not None or fee_failure or affordability_failure or semantic_failure is not None or expired
-    category = constraint = failed_id = reason = None
-    if envelope_failure:
-        category, constraint, failed_id, reason = "capacity", "gas-envelope", launch.step_id, "Native transaction ceiling exceeds the supplied complete gas policy"
-    if calldata_failure is not None:
-        category, constraint, failed_id, reason = "capacity", "calldata", calldata_failure.step_id, "Encoded command exceeds the caller's calldata byte policy"
-    if affordability_failure:
-        category, failed_id, reason = "affordability", launch.step_id, "Creator native balance cannot reserve transaction value and the native gas ceiling"
-    if semantic_failure is not None:
-        category, failed_id, reason = "semantic", next((transaction.step_id for transaction in transactions if transaction.kind in {"atomic", "activate"}), None), "Opening curve output is below the committed minimum"
-    if expired:
-        category, failed_id, reason = "semantic", next((transaction.step_id for transaction in transactions if transaction.kind != "cancel"), None), "Launch deadline has expired at the pinned block"
-    if fee_failure:
-        failed_id, reason = transactions[0].step_id if transactions else None, "Reviewed gas price is below the pinned required fee"
-    bound = []
-    for index, transaction in enumerate(transactions):
-        if index > 0 or _approval(transaction):
-            bound.append(replace(transaction, gas_limit=None, gas_price=None))
+    def poster(transaction):
+        return 0 if prices is None else _nitro_poster_gas_bound(transaction, prices)[0]
+    def refuse(code, reason, category, constraint=None, failed=None):
+        return replace(assessment, ready=False, code=code, reason=reason,
+            failure_category=category, capacity_constraint=constraint, failed_transaction_id=failed)
+    if not cancel_only and current is None:
+        return refuse("UNKNOWN_GAS_PROFILE", "Gas budgets are unavailable for this launch profile. Use a supported profile or update the SDK.", "capacity")
+    if not cancel_only and current.bounds.activation_compute_gas_upper_bound + poster(current.activation) > ceiling:
+        return refuse("ACTIVATION_GAS_LIMIT", "Too many positions or pools for one activation. Reduce them to fit the native transaction ceiling.", "capacity", "activation", "activate")
+    for transaction in transactions:
+        if transaction.kind == "atomic" and (current is None or current.bounds.atomic_compute_gas_upper_bound is None or current.bounds.atomic_compute_gas_upper_bound + poster(transaction) > ceiling):
+            return refuse("STAGED_EXECUTION_REQUIRED", "This launch requires staged execution. Refresh the review before continuing.", "capacity", "gas-envelope", transaction.step_id)
+        if transaction.kind == "prepare" and ((sum(_prepare_gas_estimate(plan, index)
+                for index in range(transaction.first_market, transaction.first_market + transaction.market_count)) + 24 * transaction.calldata_bytes)
+                * (10000 + max(_LIFECYCLE_CAPACITY_PADDING_BPS, limits.headroom_bps)) + 9999) // 10000 + poster(transaction) > ceiling:
+            return refuse("PREPARATION_GAS_LIMIT", "This preparation batch exceeds the gas budget. Refresh the review to split it.", "capacity", "preparation", transaction.step_id)
+        if limits.calldata_cap() is not None and transaction.calldata_bytes > limits.calldata_cap():
+            return refuse("CALLDATA_LIMIT", "The launch exceeds the transaction data limit. Reduce its positions or pools.", "capacity", "calldata", transaction.step_id)
+    if launch is not None and ceiling > limits.gas_cap(block):
+        return refuse("GAS_POLICY_LIMIT", "The configured gas limit is below the chain's native transaction ceiling.", "capacity", "gas-envelope", launch.step_id)
+    if reviewed_envelope is not None and price < required_price:
+        return refuse("REVIEWED_FEE_TOO_LOW", "The reviewed gas price is below the current required fee. Refresh the review before continuing.", "semantic", failed=None if immediate is None else immediate.step_id)
+    if current is not None and any(quote.token_out < plan.buys[quote.buy_index].min_token_out for quote in current.initial_buys):
+        return refuse("BUY_MINIMUM_NOT_MET", "An opening buy is below its minimum output. Refresh the review before continuing.", "semantic")
+    if block.timestamp > plan.deadline and not cancel_only:
+        return refuse("PLAN_EXPIRED", "The launch deadline has passed. Cancel an unfinished launch to recover its funds.", "semantic")
+    inputs = {}
+    for prerequisite in prerequisites:
+        if prerequisite.allowance is None:
             continue
-        poster = _nitro_poster_gas_bound(transaction, prices)[0]
-        fee = ceiling * price
-        bound.append(replace(transaction, gas_limit=ceiling, gas_price=price,
-            execution_fee=fee, maximum_execution_fee=fee, data_fee=0, total_fee=fee,
-            poster_gas=poster, poster_fee=poster * price, data_fee_included_in_gas=True, confidence="profiled"))
-    profile = None if bounds is None else LifecycleGasProfileEvidence(_PROFILE_VERSION, bounds, tuple(quotes))
-    simulation = _launch_simulation(plan, limits, LaunchRpcSimulation("profiled", "profiled", block, ()),
-        bound, () if reason is None else (reason,), admitted=profile_only and not refused,
-        execution_proof="not-run", protocol_fit="profiled", unknown=limits.unknown_constraints(),
-        failure_category=category, capacity_constraint=constraint, failed_transaction_id=failed_id, gas_profile=profile)
-    return _ProfiledLifecycleTransactions(simulation, profile_only or refused)
+        key = prerequisite.funding.input_asset.lower()
+        required, available = inputs.get(key, (0, prerequisite.input_balance))
+        inputs[key] = required + prerequisite.required_input, available
+    if any(required > available for required, available in inputs.values()):
+        return refuse("INSUFFICIENT_FUNDING_BALANCE", "There are not enough tokens to fund this launch. Add funds or reduce the purchase.", "affordability")
+    if price >= 1 << 256 or launch is not None and launch.value + ceiling * price >= 1 << 256:
+        raise LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and native-ceiling fee must fit uint256")
+    native_reason = "There is not enough native currency for the launch amount and gas budget. Add funds or reduce the purchase."
+    if launch is not None and launch.value + ceiling * price > balance:
+        return refuse("INSUFFICIENT_NATIVE_BALANCE", native_reason, "affordability", failed=launch.step_id)
+    if immediate is not None and not _approval(immediate):
+        envelope = replace(immediate, gas_limit=ceiling, gas_price=price)
+        data_fee = 0 if prices is not None else None if data_fee_estimator is None else data_fee_estimator(getattr(client, "source", client), envelope.as_transaction(), block)
+        if data_fee is not None and (isinstance(data_fee, bool) or not isinstance(data_fee, int) or not 0 <= data_fee < 1 << 256):
+            raise LifecyclePlanningError("INVALID_DATA_FEE", "Data-fee estimate must be a nonnegative uint256 amount")
+        execution_fee = ceiling * price
+        required = immediate.value + execution_fee + (data_fee or 0)
+        if required >= 1 << 256:
+            raise LifecyclePlanningError("INVALID_GAS_ENVELOPE", "Transaction value and gas/data fee budget must fit uint256")
+        if required > balance:
+            return refuse("INSUFFICIENT_NATIVE_BALANCE", native_reason, "affordability", failed=immediate.step_id)
+        poster_gas = None if prices is None else poster(immediate)
+        estimate = LifecycleTransactionEstimate(ceiling, price, execution_fee, prices is not None,
+            "native-ceiling-only" if data_fee is None else "native-ceiling-and-data", data_fee,
+            None if data_fee is None else execution_fee + data_fee, poster_gas,
+            None if poster_gas is None else poster_gas * price)
+        assessment = replace(assessment, estimate=estimate)
+    return assessment

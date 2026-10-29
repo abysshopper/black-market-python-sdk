@@ -31,7 +31,7 @@ python examples/launch_erc20_abyss.py --broadcast
 ```
 
 The first command prints `DRY RUN — no transactions signed or broadcast.`, discovers
-profiles, derives prices/ranges, builds funding, and proves the protected plan.
+profiles, derives prices/ranges, builds funding, and assesses the protected plan.
 Review the full supply, aligned FDV, fees, buy output/share/minimum, and gas.
 Artifacts are saved in a printed `launch-results/<timestamp-case-random>/` directory.
 A successful dry run exits 0 with execution `dry-run`, chain `planned`, API `not-run`.
@@ -42,12 +42,11 @@ prompt. It builds a **fresh plan**, not the dry-run commitment. It stages metada
 executes, verifies canonical chain state, then publishes the activation hash.
 V4 wrappers select the fixed-fee profile; they do not switch to dynamic or HMM.
 
-The three-market examples estimate **75.5M** against the default **50M aggregate
-simulation window**. Two ordinary markets estimate 53.5M. Protected-buy planning
-requires activation inside that window; use a one-market starter. A larger
-integration needs a provider that supports the request and an explicit
-`LaunchExecutionLimits.rpc_total_simulation_gas_limit` override. The fixed runner
-has no environment variable for that aggregate limit.
+Planning uses deterministic capacity budgets and pinned inputs, with no launch
+simulation or aggregate simulation window, including conversion routes.
+Multi-market or conversion-funded cases use staged execution. Review the returned
+mode and `assessment.ready`; an unavailable or oversized activation budget refuses
+with an actionable reason rather than executing a fallback.
 
 ## Continue the original run
 

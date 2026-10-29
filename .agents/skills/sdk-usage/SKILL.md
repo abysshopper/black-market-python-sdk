@@ -19,7 +19,7 @@ description: Integrate the Abyss Python SDK using the correct deployment graph, 
   intended release. An old wheel, vendored package, environment override or saved
   plan can target an older immutable stack. Version/name alone is not graph identity.
 
-## Construct locally; prove against current state
+## Construct locally; assess pinned inputs
 
 1. Use `get_known_lifecycle_deployment`, `get_known_lifecycle_profile` and
    `list_known_lifecycle_profiles` for shipped construction metadata. Pure preset
@@ -33,21 +33,22 @@ description: Integrate the Abyss Python SDK using the correct deployment graph, 
 4. `build_launch_transactions(plan, mode=...)` compiles unsigned calldata only.
    It does not prove balances, fees, gas capacity, quote freshness or execution.
 5. Await `prepare_and_plan_lifecycle_launch(client, plan, account=..., mode=...)`
-   for unified bound-hook preparation and selected-mode proof. Call synchronous
-   `plan_launch` for an already-finalized plan. Review the final plan/commitment.
-6. Use `read_launch_progress` and the documented simulation/build-next operations
-   for canonical recovery and fresh proof of remaining work. Preserve the original
-   plan, mode, confirmation policy and actual included/replacement hashes.
+   for unified bound-hook preparation and deterministic capacity/input assessment.
+   Call synchronous `plan_launch` for an already-finalized plan. Review the final
+   plan/hash, returned mode, `assessment.ready` and any actionable refusal reason.
+6. Use `read_launch_progress` and `build_next_transaction` for canonical recovery
+   and fresh assessment of the next command. Preserve the original plan, mode,
+   confirmation policy and actual included/replacement hashes.
 
 Use synchronous Web3, not AsyncWeb3. `read_lifecycle_profiles`, `read_launch_progress`,
-`plan_launch`, `simulate_launch_plan` and `build_next_transaction` are synchronous;
+`plan_launch` and `build_next_transaction` are synchronous;
 `prepare_and_plan_lifecycle_launch` and `mine_pool_bound_hook_salt` are asynchronous.
 Do not translate Node calls mechanically or wrap unified preparation in another
-mining/admission loop. Release presets own profile/deployment wiring. Launch commands
+mining/planning loop. Release presets own profile/deployment wiring. Launch commands
 use the fixed preset native ceiling (32M total gas on 4663), not profile-sized gas,
-poster additions or held-gas substitutions. Profiles classify atomic versus staged.
-Aggregator-funded execution and consuming activation retain exact simulation at
-that same ceiling. Build-next handles only the immediate command.
+poster additions or held-gas substitutions. Multi-market or conversion funding is
+always staged. Unknown capacity refuses without an execution fallback. Planning
+never simulates calldata; build-next constructs only the immediate command.
 Chain identity is observed once per client session; the wallet assigns EOA nonces.
 Launch/domain nonces and receipt-confirmation policy remain unchanged.
 
@@ -70,8 +71,8 @@ native ceiling, not a template estimate or fixture-derived chain limit.
 - Quote/fee assets and direct ERC20/native-wrap funding are not a curated-token
   allowlist. Conversion inputs and target/spender roles have separate admission;
   inspect the pricing skill before integrating Kyber.
-- Separate pure estimates, execution proof, RPC submission preflight, wallet
-  submission, canonical activation and API publication.
+- Separate planning assessments and mathematical quotes from wallet submission,
+  canonical activation, actual receipt outputs and API publication.
 - Reuse exported AMM/lending ABIs/helpers. Indexed candidates are not executable
   calldata. Launch/oracle setup does not grant lending admission: mature history,
   liquidity, risk policy and governance remain separate. A lending-feed cutoff is
@@ -86,9 +87,9 @@ Code changes use `python -m pytest -q`; opt-in HTTP/chain paths require document
 disposable services. Documentation changes should exercise pure/read-only consumer
 paths, not funded launch runners. Keep package and `__version__` versions consistent.
 
-Reading, pricing, mining, simulation and compilation do not authorize signing,
-broadcasting, uploads or publication. A controlled fork must be explicitly
-owned/disposable and distinct from the source RPC. Preserve unrelated worktree changes.
+Reading, pricing, mining and compilation do not authorize signing, broadcasting,
+uploads or publication. Planning never executes launch transactions on any
+backend. Preserve unrelated worktree changes.
 
 Historical decisions and known regressions are in
 `../token-launch/references/audit-history.md`; current exports and deployed evidence
