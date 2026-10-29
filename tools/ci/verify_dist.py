@@ -31,6 +31,8 @@ EXPECTED_MODULES = {
     "black_market_sdk/ufg.py",
     "black_market_sdk/ufg_abis.py",
     "black_market_sdk/_ufg_release_20261021.json",
+    "black_market_sdk/auto_compound.py",
+    "black_market_sdk/_auto_compound_release_20261028.json",
     "black_market_sdk/_sdk_abi_data.json",
     "black_market_sdk/_lifecycle_release_20261008.json",
     "black_market_sdk/live.py",

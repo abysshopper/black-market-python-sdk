@@ -25,6 +25,7 @@ remain registered: filter by live admission. For another deployment, pass its ac
 | Dynamic V4 | `V4_DYNAMIC_FEE_POOL` | Zero LP/developer fee; set minimum, maximum, and sensitivity. Upward quote-per-token tick velocity raises the hook fee; quiet/falling prices use the minimum. |
 | HMM V2 | `V4_HMM_FIXED_POOL` / `V4_HMM_DYNAMIC_POOL` | Zero LP/developer fee, explicit bid cap and reference deviation; [configure HMM](#hmm-launch-configuration). |
 | UFG treasury | Canonical Abyss QUOTE variants or `V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` | ERC20 without rewards; quote fees become redeemable reserves. [Use the proxy route](#ufg-treasury-launches). |
+| Auto-compounding | `V4_AUTO_COMPOUND_STATIC_POOL` / `V4_AUTO_COMPOUND_DYNAMIC_POOL` | Zero LP/developer fee; compound 0–100% of net hook fees into locked full-range liquidity. [Configure compounding](#auto-compounding-launches). |
 
 Choose ERC20/ERC404 and no rewards/staking/dividends separately from the profile.
 ERC404 examples use 100 tokens per NFT unit. An oracle pool does not grant lending admission.
@@ -522,9 +523,9 @@ wrapped ETH can return as WETH. Spent gas is not refunded.
 
 For ordinary saved core plans, `examples/launch_submit.py` reads progress and emits
 unsigned next/cancel commands; `--receipts` accepts snake_case receipt-reference JSON.
-`launch_recipe.py` encodes bare V4 prefixes. These CLIs do **not construct UFG/HMM
-tails**: submit has no `ufg` option, and recipe has neither tail input. Use typed SDK
-integration for these offerings; an already complete HMM plan must retain its tail.
+`launch_recipe.py` encodes bare V4 prefixes. These CLIs do **not construct UFG/HMM/
+auto-compound tails**: submit has no `ufg` option, and recipe has no tail input.
+Use typed SDK integration for these offerings; complete plans must retain their tails.
 
 | Symptom | Cause | Next action |
 | --- | --- | --- |
@@ -565,6 +566,51 @@ Use `build_claim_developer_fees_transaction` for one hub/asset, or
 `assets=()` selects actual hub assets. Any caller can pay the live payout without a bounty.
 Decode with `decode_developer_claim_receipt(receipt, transaction=transaction)` and retry
 failed rows only; [claim statuses](reference.md#decode-author-claims) distinguish each outcome.
+
+## Auto-compounding launches
+
+Select `KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL` for a fixed maximum
+hook fee, or `V4_AUTO_COMPOUND_DYNAMIC_POOL` for the config6 minimum/maximum/
+sensitivity schedule. Both support `fee_mode=0` (InputToken) and `fee_mode=1`
+(QuoteOnly). Set **`lp_fee_pips=0` and `developer_fee_bps=0`**.
+
+Build `LifecyclePoolBoundV4MarketConfigV6` as above, copying treasury, denominator,
+beneficiary and terms from the **auto-compound preset's** envelope, and set its
+`auto_compound_config=AutoCompoundConfigV1(compound_share_bps=5000)`. Use your
+derived positions, opening price and registered oracle. Encode with
+`encode_lifecycle_pool_bound_v4_market_config`, and set the outer market's adapter
+and profile IDs from that same preset with `config_version=6`.
+
+```python
+from black_market_sdk import (
+    AutoCompoundConfigV1, KnownLifecycleProfile, get_known_lifecycle_profile,
+    encode_auto_compound_tail, decode_auto_compound_tail,
+)
+
+preset = get_known_lifecycle_profile(
+    chain_id=4663, orchestrator=addresses.orchestrator,
+    key=KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL,
+)
+assert preset is not None and preset.supported
+compound = AutoCompoundConfigV1(compound_share_bps=5000)
+assert decode_auto_compound_tail(encode_auto_compound_tail(compound)) == compound
+```
+
+The share is an integer in **0–10,000 bps** of net hook fees, not a trader tax.
+The hook owns a locked full-range position; fees outside the compounding share
+continue through the launch's ordinary token/quote fee-asset policies.
+Its canonical 64-byte suffix is mandatory even for a zero share. Do not combine
+it with HMM or UFG tails. The retired October profiles ending `1d68` / `e0d7`
+are not SDK offerings; rebuild unstarted plans with the current preset.
+
+Use normal unified preparation to mine the hook salt. Unlike HMM/UFG, the exact
+auto-compound tail is part of the salt-normalized constructor market commitment:
+changing the share changes the hook prediction and requires mining again.
+These new hooks have no calibrated profile-only gas-capacity bound; planning
+uses exact execution simulation rather than reusing another hook's gas profile.
+Every post-opening swap compounds in `afterSwap`. Let `eth_estimateGas` include
+that work; never cap swap gas below its estimate. Underfunded compounding reverts
+with `CompoundOutOfGas()` instead of silently skipping.
 
 ## UFG treasury launches
 

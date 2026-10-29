@@ -25,6 +25,8 @@ class KnownLifecycleProfile(str, Enum):
     V4_HMM_DYNAMIC_POOL = "v4-hmm-dynamic-pool"
     V4_UFG_FIXED_POOL = "v4-ufg-fixed-pool"
     V4_UFG_DYNAMIC_POOL = "v4-ufg-dynamic-pool"
+    V4_AUTO_COMPOUND_STATIC_POOL = "v4-auto-compound-static-pool"
+    V4_AUTO_COMPOUND_DYNAMIC_POOL = "v4-auto-compound-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
@@ -32,6 +34,8 @@ class KnownLifecycleHook(str, Enum):
     DYNAMIC_FEE_POOL_V1 = "dynamic-fee-pool-v1"
     HMM_FIXED_POOL_V2 = "hmm-fixed-pool-v2"
     HMM_DYNAMIC_POOL_V2 = "hmm-dynamic-pool-v2"
+    AUTO_COMPOUND_STATIC_V1 = "auto-compound-static-v1"
+    AUTO_COMPOUND_DYNAMIC_V1 = "auto-compound-dynamic-v1"
 
 # HMMLiquidityHookV2.sol:98-119 requires ~3.06M gas available before manager
 # calls (opening and buys), invisible in gasUsed/maxUsedGas. Robinhood fork
@@ -97,6 +101,12 @@ def _load_deployment() -> LifecycleDeploymentPreset:
         raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "UFG presets must bind to the canonical lifecycle deployment")
     data["adapters"].extend(ufg["adapters"])
     data["profiles"].extend(ufg["profiles"])
+    compound = json.loads(files("black_market_sdk").joinpath("_auto_compound_release_20261028.json").read_text())
+    if (compound["chainId"] != data["chainId"] or compound["orchestrator"].lower() != addresses["orchestrator"].lower()
+            or compound["registry"].lower() != addresses["registry"].lower()):
+        raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "Auto-compound presets must bind to the canonical lifecycle deployment")
+    data["adapters"].extend(compound["adapters"])
+    data["profiles"].extend(compound["profiles"])
     adapters = {row["id"]: LifecycleAdapterRegistration(row["address"], row["codehash"],
         row["capabilities"], row["configVersion"], True) for row in data["adapters"]}
     profiles = []

@@ -116,6 +116,7 @@ window. See [prepare and simulate](docs/launch-guide.md#prepare-and-simulate).
 | Dynamic V4 | Fee minimum, maximum, and tick-velocity sensitivity | [Choose an offering](docs/launch-guide.md#choose-an-offering) |
 | HMM V2 | Fixed/dynamic V4 plus fee-funded auxiliary liquidity | [HMM launch configuration](docs/launch-guide.md#hmm-launch-configuration) |
 | UFG treasury | ERC20 with quote-fee reserves and holder redemption | [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches) |
+| Auto-compounding | Static/dynamic V4 with fee-funded, hook-owned full-range liquidity | [Auto-compounding launches](docs/launch-guide.md#auto-compounding-launches) |
 
 ## Integrate and recover
 

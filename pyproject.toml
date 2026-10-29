@@ -40,6 +40,7 @@ packages = ["black_market_sdk"]
 "black_market_sdk/_sdk_abi_data.json" = "black_market_sdk/_sdk_abi_data.json"
 "black_market_sdk/_lifecycle_release_20261008.json" = "black_market_sdk/_lifecycle_release_20261008.json"
 "black_market_sdk/_ufg_release_20261021.json" = "black_market_sdk/_ufg_release_20261021.json"
+"black_market_sdk/_auto_compound_release_20261028.json" = "black_market_sdk/_auto_compound_release_20261028.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
