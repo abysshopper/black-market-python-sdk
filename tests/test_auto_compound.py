@@ -284,9 +284,10 @@ def test_live_factory_planning_and_reference_encoder(identity, fee_mode, tmp_pat
                     plan.markets[0].config[:-64] + bytes(64),
                     plan.markets[0].config[:-32] + (10001).to_bytes(32, "big")):
         invalid_plan = replace(plan, markets=(replace(plan.markets[0], config=invalid),))
-        with pytest.raises(LaunchRpcError, match="revert|execution"):
+        with pytest.raises(LaunchRpcError) as failure:
             _call(client, factory, POOL_FEE_COLLECTOR_FACTORY_CONFIG_V6_ABI, "decodeAndValidate",
                 [profile.adapter.implementation, token, _market_tuple(invalid_plan, 0)], block)
+        assert failure.value.method == "eth_call" and failure.value.code == 3
     assert read_block(client, block.number).block_hash == block.block_hash
     print(json.dumps({"profileId": identity, "feeMode": fee_mode, "blockNumber": block.number,
         "blockHash": block.block_hash, "predictedToken": token, "predictedHook": actual.predicted_hook,
