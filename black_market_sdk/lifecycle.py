@@ -3245,7 +3245,7 @@ def build_next_transaction(
                 candidate = _build_lifecycle_command(plan, "atomic" if selected == "atomic" else "begin", ufg=ufg)
             elif prepared < len(plan.markets):
                 if reviewed is not None and reviewed.kind == "prepare":
-                    span = re.fullmatch(r"prepare:(\\d+):(\\d+)", reviewed.step_id)
+                    span = re.fullmatch(r"prepare:(\d+):(\d+)", reviewed.step_id)
                     if span is None or int(span[1]) != prepared:
                         raise LifecyclePlanningError("REVIEWED_TRANSACTION_MISMATCH", "Reviewed preparation does not start at the unfinished market")
                     count = int(span[2])

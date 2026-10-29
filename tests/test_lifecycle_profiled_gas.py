@@ -159,6 +159,28 @@ def test_conversion_recovery_assesses_only_next_command_without_full_replanning(
     assert_no_execution(client)
 
 
+@pytest.mark.parametrize("prepared", [0, 2])
+@pytest.mark.parametrize("wire_review", [False, True])
+def test_reviewed_preparation_round_trips_the_next_contiguous_span(prepared, wire_review):
+    draft, provider, client = scenario(ordinary_bound_draft(3))
+    launch = prepare(client, draft)
+    assert launch.assessment.ready
+    provider.plan = launch.plan
+    provider.latest_phase = provider.confirmed_phase = 1
+    provider.prepared = prepared
+    preparation = build_next_transaction(client, launch)
+    assert preparation.kind == "prepare" and preparation.first_market == prepared
+    assert preparation.market_count == (2 if prepared == 0 else 1)
+    wire = preparation.as_transaction()
+    reviewed = ({"id": preparation.step_id, "kind": preparation.kind, **wire}
+        if wire_review else preparation)
+    current = build_next_transaction(client, launch, reviewed_transaction=reviewed)
+    assert current.step_id == preparation.step_id
+    assert current.as_transaction() == wire
+    assert current.assessment.ready
+    assert_no_execution(client)
+
+
 def test_native_balance_refusal_does_not_fabricate_a_signing_envelope():
     draft, provider, client = scenario(balance=1_000_000)
     launch = prepare(client, draft)
