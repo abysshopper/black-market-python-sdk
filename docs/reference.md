@@ -85,10 +85,21 @@ canonical Abyss UFG config1 has no tail. `encode_ufg_launch_config` encodes one
 dynamic `(uint16,uint16,address[])` tuple, including its leading `0x20` offset.
 `hash_ufg_launch_config` hashes those bytes; the decoder rejects noncanonical bytes.
 
-Salt mining preserves tails. The full plan hash commits them; the hook constructor
-commitment uses the salt-normalized prefix only. The pool-bound V2 constructor
-remains twenty words / 640 bytes. `launch_recipe.py` only encodes a bare prefix;
-`launch_submit.py` neither builds tails nor accepts a UFG planner config.
+Auto-compound config6 uses `auto_compound_config=AutoCompoundConfigV1(share_bps)`.
+`encode_auto_compound_tail` / `decode_auto_compound_tail` encode exactly **64 bytes**:
+`abi.encode(bytes32 version, uint16 compoundShareBps)`, with
+`version=AUTO_COMPOUND_CONFIG_VERSION=keccak256("black-market.auto-compound.config.v1")`.
+The decoder requires that version, canonical integer padding and no missing/extra
+bytes. Shares must be integers in 0–10,000; LP/developer fees must be zero.
+Use `is_auto_compound_profile` or the known-profile keys rather than detecting
+auto-compounding from config6 alone. Both InputToken and QuoteOnly are supported.
+
+Salt mining preserves tails. The full plan hash commits them. HMM/UFG constructors
+commit the salt-normalized prefix only; **auto-compound constructors commit the
+normalized prefix plus their entire 64-byte tail**. Changing a compound share
+therefore changes initcode and the hook address. The V2 constructor remains twenty
+words / 640 bytes. `launch_recipe.py` only encodes a bare prefix; `launch_submit.py`
+neither builds tails nor accepts a UFG planner config.
 
 **HMM V1 → V2 migration:** rebuild unstarted HMM plans with current generic profile
 keys, explicit `max_bid_quote` / `reference_deviation`, and 512-byte tails.
@@ -99,6 +110,35 @@ Use `launch_plan_to_dict` / `launch_plan_from_dict` for portable plans (Solidity
 camelCase keys and decimal strings for wide integers). `encode_launch_plan`,
 `hash_launch_plan`, and `launch_id_of` operate on that exact commitment.
 Offline builders/encoding do not establish live funding or execution admission.
+
+### Auto-compound deployment evidence
+
+The static/dynamic presets expose `AUTO_COMPOUND_STATIC_V1_PROFILE_ID` /
+`AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID` and are generated from the October 28
+readmission evidence plus Robinhood L2 block **100,485,106**
+(`0x0f4c7b95e02b8258e57cb6dbabf306087f182e00efdb50562130b418e2d799f5`).
+`tests/fixtures/auto-compound-registry-readback.json` preserves the four registry
+responses, adapter getters, module identity/hash, creation-code chunks and mined
+admission receipts. The retired profiles ending `1d68` / `e0d7` are excluded.
+
+Regenerate against the read-only black-market reference checkout (PR #29,
+`8d958b6`; pass its `contracts/` directory). `--block` selects an available L2 pin;
+without it the generator records the latest header and pins every subsequent read:
+
+```sh
+python tools/ci/import_auto_compound_release.py /path/to/black-market/contracts
+AUTO_COMPOUND_RPC_URL=https://rpc.mainnet.chain.robinhood.com \
+BLACK_MARKET_REFERENCE_ROOT=/path/to/black-market \
+python -m pytest -q -s tests/test_auto_compound.py -k live_factory
+```
+
+The opt-in test uses only chain reads/`eth_call`: it predicts a token, mines each
+profile's hook salt, compares the SDK constructor/prediction with live factory
+metadata, checks factory acceptance/rejection, and compares the **entire market**
+and tail bytes with `scripts/auto_compound_config.py`. Ordinary pytest stays offline.
+These hooks are intentionally outside the existing profile-only gas-capacity
+calibration; exact simulation is required. After opening, compounding executes
+inside `afterSwap`, so never cap swap gas below `eth_estimateGas`'s result.
 
 ## Configure HMM controls
 

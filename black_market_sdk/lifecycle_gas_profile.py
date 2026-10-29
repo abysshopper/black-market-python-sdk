@@ -2,6 +2,7 @@
 from dataclasses import dataclass, replace
 from collections.abc import Sequence
 
+from .auto_compound import is_auto_compound_profile
 from .launch import get_tick_at_sqrt_ratio
 from .lifecycle import (
     LaunchPlanV1, LaunchSimulation, LifecycleFundingKind, LifecycleGasProfileEvidence,
@@ -29,6 +30,7 @@ def _approval(transaction: LifecycleTransaction) -> bool:
 
 def _covered(plan: LaunchPlanV1) -> bool:
     return (plan.chain_id == 4663 and has_profiled_opening_math(plan)
+        and not any(is_auto_compound_profile(market.profile_id) for market in plan.markets)
         and all(market.quote_asset.lower() in _PROFILED_QUOTE_IDENTITIES for market in plan.markets)
         and all(funding.kind != LifecycleFundingKind.ERC20
             or funding.input_asset.lower() in _PROFILED_QUOTE_IDENTITIES for funding in plan.funding))

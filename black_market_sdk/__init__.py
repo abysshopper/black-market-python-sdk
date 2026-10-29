@@ -386,6 +386,12 @@ from .lifecycle import (
     to_launch_plan_tuple,
     valid_pool_bound_hook_address,
 )
+from .auto_compound import (
+    AutoCompoundConfigV1, AUTO_COMPOUND_CONFIG_VERSION, AUTO_COMPOUND_TAIL_LENGTH,
+    AUTO_COMPOUND_CONFIG_ABI_TYPE, AUTO_COMPOUND_STATIC_V1_PROFILE_ID,
+    AUTO_COMPOUND_DYNAMIC_V1_PROFILE_ID, is_auto_compound_profile,
+    encode_auto_compound_tail, decode_auto_compound_tail, validate_auto_compound_config,
+)
 from .hmm import (
     HmmStrategyConfig, HmmLaunchConfig, HMM_FIXED_PROFILE_ID, HMM_DYNAMIC_PROFILE_ID,
     HMM_LAUNCH_TAIL_LENGTH, HMM_LAUNCH_ABI_TYPE, encode_hmm_launch_tail, decode_hmm_launch_tail,

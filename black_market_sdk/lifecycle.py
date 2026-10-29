@@ -25,6 +25,10 @@ from .addresses import ROBINHOOD_MAINNET_CHAIN_ID, ROBINHOOD_MULTICALL3
 from .abyss import ABYSS_FEE_TIERS
 from .auction import AUCTION_QUOTE_OPTIONS as _AUCTION_QUOTE_OPTIONS
 from .launch import assert_launch_topology_coverage, get_tick_at_sqrt_ratio
+from .auto_compound import (
+    AutoCompoundConfigV1, decode_auto_compound_tail, encode_auto_compound_tail,
+    is_auto_compound_profile, validate_auto_compound_config,
+)
 from .hmm import (
     HMM_FIXED_PROFILE_ID, HmmLaunchConfig, decode_hmm_launch_tail, encode_hmm_launch_tail,
     is_hmm_profile, validate_hmm_launch_config,
@@ -331,6 +335,7 @@ class LifecyclePoolBoundV4MarketConfigV6:
     positions: tuple[LifecycleV4Position, ...]
     hmm_launch_config: HmmLaunchConfig | None = None
     ufg_launch_config: UfgLaunchConfig | None = None
+    auto_compound_config: AutoCompoundConfigV1 | None = None
 
 
 LifecyclePoolBoundV4MarketConfig = LifecyclePoolBoundV4MarketConfigV5 | LifecyclePoolBoundV4MarketConfigV6
@@ -1023,10 +1028,23 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
         validate_pool_bound_hook_fees(config)
     else:
         _v1_fee_shape(config)
-    prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
+    prefix_config = ({key: value for key, value in config.items() if key != "autoCompoundConfig"}
+        if isinstance(config, Mapping) and "autoCompoundConfig" in config else config)
+    prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, prefix_config)])
     profile_id = config["profileId"] if isinstance(config, Mapping) else config.profile_id
     hmm = config.get("hmmLaunchConfig") if isinstance(config, Mapping) else getattr(config, "hmm_launch_config", None)
     ufg = config.get("ufgLaunchConfig") if isinstance(config, Mapping) else getattr(config, "ufg_launch_config", None)
+    compound = config.get("autoCompoundConfig") if isinstance(config, Mapping) else getattr(config, "auto_compound_config", None)
+    if is_auto_compound_profile(profile_id):
+        if version != 6 or compound is None or hmm is not None or ufg is not None:
+            raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require config6 and only an explicit auto-compound tail")
+        lp_fee = config["lpFeePips"] if isinstance(config, Mapping) else config.lp_fee_pips
+        developer_fee = config["developerFeeBps"] if isinstance(config, Mapping) else config.developer_fee_bps
+        if lp_fee != 0 or developer_fee != 0:
+            raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require zero LP and developer fees")
+        return prefix + encode_auto_compound_tail(compound)
+    if compound is not None:
+        raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Only auto-compound profiles accept an auto-compound tail")
     if is_ufg_profile(profile_id):
         if version != 6 or ufg is None or hmm is not None:
             raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG profiles require config6 and only an explicit UFG launch tail")
@@ -1068,6 +1086,10 @@ def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_
         if version != 6 or raw[:len(prefix)] != prefix:
             raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG profiles require an exact canonical config6 prefix")
         config = replace(config, ufg_launch_config=decode_ufg_launch_config(raw[len(prefix):]))
+    elif is_auto_compound_profile(config.profile_id):
+        if version != 6 or raw[:len(prefix)] != prefix:
+            raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require an exact canonical config6 prefix")
+        config = replace(config, auto_compound_config=decode_auto_compound_tail(raw[len(prefix):]))
     if encode_lifecycle_pool_bound_v4_market_config(config) != raw:
         raise LifecyclePlanningError("INVALID_BOUND_MARKET", "Pool-bound config is not canonical for its explicit schema")
     return config
@@ -1109,7 +1131,7 @@ def build_pool_bound_hook_parameters(
 
 
 def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: str, market_index: int) -> str:
-    """Commit the canonical market prefix, normalizing salt and excluding launch tails."""
+    """Commit normalized economics, including the auto-compound tail where required."""
     _uint(market_index, 32, "marketIndex")
     if market_index >= len(plan.markets):
         raise ValueError("market_index is outside the economic plan")
@@ -1120,8 +1142,11 @@ def pool_bound_market_commitment(plan: LaunchPlanV1, *, token: str, registrar: s
     if hex_bytes(config.profile_id) != hex_bytes(market.profile_id):
         raise ValueError("inner reviewed profileId differs from its outer market binding")
     normalized = replace(config, hook_salt=ZERO_HASH)
-    config_hash = keccak(abi_encode([_tuple_type(_bound_components(config.version))],
-                                  [_struct_tuple(_bound_components(config.version), normalized)]))
+    normalized_bytes = (encode_lifecycle_pool_bound_v4_market_config(normalized)
+        if is_auto_compound_profile(config.profile_id) else abi_encode(
+            [_tuple_type(_bound_components(config.version))],
+            [_struct_tuple(_bound_components(config.version), normalized)]))
+    config_hash = keccak(normalized_bytes)
     return hex_bytes(keccak(abi_encode(
         ["bytes32", "uint256", "address", "address", "address", "bytes32", "bytes32", "address", "uint256", "uint32", "bytes32"],
         [V4_POOL_BOUND_MARKET_ECONOMICS_DOMAIN, _uint(plan.chain_id, 256, "chainId"),
@@ -1440,6 +1465,13 @@ def validate_v4_lifecycle_market(*, market: LifecycleMarketConfig, config: Lifec
         if config.version != 6 or ufg is None or config.lp_fee_pips != 0 or config.fee_mode != 1:
             raise LifecyclePlanningError("INVALID_UFG_PLAN", "UFG requires config6, an explicit treasury config, QuoteOnly and zero LP fees")
         validate_ufg_launch_config(ufg)
+    if is_auto_compound_profile(config.profile_id):
+        compound = getattr(config, "auto_compound_config", None)
+        if (config.version != 6 or compound is None or config.lp_fee_pips != 0
+                or config.developer_fee_bps != 0 or getattr(config, "hmm_launch_config", None) is not None
+                or getattr(config, "ufg_launch_config", None) is not None):
+            raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require config6, an exclusive compound tail and zero LP/developer fees")
+        validate_auto_compound_config(compound)
     envelope, terms, ceiling = profile.envelope, profile.developer_terms, profile.protocol_maximum_developer_fee_bps
     expected_schema = V4_LIFECYCLE_CONFIG_SCHEMA if config.version == 4 else pool_bound_v4_lifecycle_config_schema(config.version)
     if envelope is None or terms is None or ceiling is None or not terms.enabled or profile.topology.hook_topology != (1 if config.version == 4 else 2) or market.config_version != config.version or profile.topology.config_version != config.version or profile.adapter.config_version != config.version or envelope.topology != profile.topology.hook_topology or envelope.config_version != config.version or envelope.economic_version != 3 or profile.registration.config_schema.lower() != hex_bytes(expected_schema) or hex_bytes(market.adapter_id) != profile.registration.adapter_id.lower() or hex_bytes(market.profile_id) != profile.id.lower() or hex_bytes(config.profile_id) != profile.id.lower() or terms.adapter.lower() != profile.adapter.implementation.lower() or hex_bytes(config.terms_digest) != hex_bytes(envelope.terms_digest) or hex_bytes(config.terms_digest) != hex_bytes(terms.terms_digest) or config.developer_beneficiary.lower() != envelope.beneficiary.lower() or config.developer_beneficiary.lower() != terms.beneficiary.lower() or int(config.developer_beneficiary, 16) == 0 or config.developer_beneficiary.lower() in (token.lower(), market.quote_asset.lower()):
