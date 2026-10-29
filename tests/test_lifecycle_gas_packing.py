@@ -1,18 +1,25 @@
-"""Native-ceiling execution, bounded proof coverage and preparation packing."""
-
+"""Deterministic preparation packing and indivisible activation budgets."""
+import asyncio
 from dataclasses import replace
 
 import pytest
-from eth_utils import keccak
 
 from black_market_sdk import (
-    KnownLifecycleProfile, LaunchExecutionLimits, LifecyclePhase,
-    build_launch_transactions, build_next_transaction,
-    encode_lifecycle_pool_bound_v4_market_config, get_known_lifecycle_profile,
+    KnownLifecycleProfile, LifecycleAbyssMarketConfig, LifecycleAbyssPosition,
+    LifecycleAssetFunding, LifecycleFeeAssetPolicy, LifecycleInitialBuy, LifecycleV4Position,
+    LifecyclePlanningError, ROBINHOOD_WETH, build_launch_transactions,
+    build_next_transaction, derive_launch_position_ranges,
+    decode_lifecycle_pool_bound_v4_market_config,
+    encode_lifecycle_abyss_market_config, encode_lifecycle_pool_bound_v4_market_config,
+    get_known_lifecycle_profile, get_sqrt_ratio_at_tick, prepare_and_plan_lifecycle_launch,
 )
 from black_market_sdk.lifecycle import _groups
 from test_hmm import CORE, hmm_config
-from test_lifecycle import plan, topology_plan, wire_planning
+from test_lifecycle import plan
+from test_lifecycle_profiled_gas import assert_no_execution
+from test_lifecycle_read_counts import CountingTransport
+from test_lifecycle_read_reduction import ResumeScenario, ordinary_bound_draft
+from test_ufg import PRINCIPAL, TOKEN, ZERO
 
 
 def hmm_plan(count, *, dynamic=False):
@@ -32,270 +39,152 @@ def hmm_plan(count, *, dynamic=False):
         markets=tuple(markets), funding=(), buys=())
 
 
-@pytest.mark.parametrize("count,batches", [(1, [1]), (2, [2]), (3, [2, 1]), (5, [2, 2, 1])])
-def test_staged_preparation_is_greedily_packed_before_exact_proof(monkeypatch, count, batches):
+def taze_shape():
+    """Node's synthetic holders-earn shape, not a native execution observation."""
+    draft = ordinary_bound_draft(3)
+    quotes = ("0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ROBINHOOD_WETH,
+        "0xffffffffffffffffffffffffffffffffffffffff")
+    unit = 10**18
+    budgets = (700_000_000 * unit, 150_000_000 * unit, 150_000_000 * unit)
+    markets = []
+    for index, market in enumerate(draft.markets):
+        ranges = derive_launch_position_ranges(launch_sqrt_price_x96=1 << 96,
+            launched_token_is_quote=int(TOKEN, 16) < int(quotes[index], 16), token_budget=budgets[index], tick_spacing=60,
+            venue="abyss" if index == 0 else "uniswap-v4", distribution_preset="staircase",
+            position_count=8, position_gaps="adjacent")
+        if index == 0:
+            preset = get_known_lifecycle_profile(chain_id=4663, orchestrator=CORE, key=KnownLifecycleProfile.ABYSS_3)
+            positions = tuple(LifecycleAbyssPosition(position.tick_lower, position.tick_upper,
+                position.liquidity, position.max_token_amount) for position in ranges.positions)
+            config = encode_lifecycle_abyss_market_config(LifecycleAbyssMarketConfig(3, 3000,
+                (9).to_bytes(32, "big"), 1 << 96, positions))
+            version = 1
+        else:
+            preset = get_known_lifecycle_profile(chain_id=4663, orchestrator=CORE,
+                key=KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL)
+            envelope = preset.profile.envelope
+            config = decode_lifecycle_pool_bound_v4_market_config(market.config)
+            positions = tuple(LifecycleV4Position(position.tick_lower, position.tick_upper,
+                position.liquidity, bytes(32), position.max_token_amount) for position in ranges.positions)
+            config = encode_lifecycle_pool_bound_v4_market_config(replace(config,
+                profile_id=preset.profile.id, lp_fee_pips=0, tick_spacing=60, sqrt_price_x96=1 << 96,
+                hook_fee_pips=100000, minimum_hook_fee_pips=10000, fee_sensitivity_pips_seconds_per_tick=6000,
+                fee_mode=1, protocol_fee_denominator=envelope.protocol_fee_denominator,
+                treasury=envelope.protocol_treasury, external_liquidity_disabled=False,
+                oracle_config_id=(9).to_bytes(32, "big"), terms_digest=envelope.terms_digest,
+                developer_beneficiary=envelope.beneficiary, developer_fee_bps=0,
+                hook_salt=bytes(32), positions=positions))
+            version = 6
+        markets.append(replace(market, adapter_id=preset.profile.registration.adapter_id,
+            profile_id=preset.profile.id, quote_asset=quotes[index], token_budget=budgets[index],
+            config_version=version, config=config))
+    buys = tuple(LifecycleInitialBuy(index, 900000000000000 if index == 1 else unit, 1, PRINCIPAL,
+        get_sqrt_ratio_at_tick(887272) - 1 if index == 0 else 0)
+        for index in range(3))
+    funding = tuple(sorted((LifecycleAssetFunding(quote, buys[index].quote_amount_in,
+        1 if index == 1 else 2, quote if index == 1 else ZERO,
+        (4200000000000000, 900000000000000, 900000000000000)[index],
+        ZERO if index == 1 else "0x8888888888888888888888888888888888888888",
+        b"" if index == 1 else b"\x12\x34") for index, quote in enumerate(quotes)),
+        key=lambda item: int(item.asset, 16)))
+    policies = tuple(LifecycleFeeAssetPolicy(asset, 8000, 2000, 0)
+        for asset in sorted((TOKEN, *quotes), key=lambda item: int(item, 16)))
+    return replace(draft, token=replace(draft.token, reward_mode=2, supply=1_000_000_000 * unit,
+        burn_on_cancel=True), fee_assets=policies, markets=tuple(markets), buys=buys,
+        funding=funding, deadline=253402300799, executor_fee_bps=10)
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 5])
+def test_hmm_preparation_headroom_keeps_each_market_inside_the_native_cap(count):
     request = hmm_plan(count)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"prepare_gas_per_market": 14_000_000})
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert planned.admitted
-    prepares = [transaction for transaction in planned.transactions if transaction.kind == "prepare"]
-    assert [transaction.market_count for transaction in prepares] == batches
-    assert [transaction.first_market for transaction in prepares] == [sum(batches[:index]) for index in range(len(batches))]
-    first_measurement = provider.simulations[0]["blockStateCalls"]
-    measured_batches = [provider.command(block["calls"][0])[1][2] for block in first_measurement
-                        if provider.command(block["calls"][0])[0] == "prepare"]
-    assert measured_batches == batches[:len(measured_batches)]
+    assert _groups(request, 0, 32_000_000) == [(index, 1) for index in range(count)]
+    assert _groups(request, 0, 32_000_000, 0) == [(index, 1) for index in range(count)]
 
 
-def test_mixed_profile_packing_preserves_contiguous_order_and_offline_explicit_batches():
+def test_preparation_rejects_an_individually_oversized_market_without_splitting_its_positions():
+    with pytest.raises(LifecyclePlanningError) as failure:
+        _groups(hmm_plan(1), 0, 1_000_000)
+    assert failure.value.code == "PREPARATION_GAS_LIMIT"
+
+
+def test_pure_compiler_keeps_explicit_ordered_batches_and_indivisible_activation():
     request = hmm_plan(5)
-    request = replace(request, markets=tuple(replace(market, profile_id=bytes(32)) if index in (1, 3) else market
-                                            for index, market in enumerate(request.markets)))
-    assert _groups(request, 0, 32_000_000) == [(0, 2), (2, 2), (4, 1)]
-    assert _groups(request, 0, 30_000_000) == [(0, 1), (1, 1), (2, 1), (3, 1), (4, 1)]
-    transactions = build_launch_transactions(hmm_plan(5), mode="staged", preparation_batches=[1, 3, 1])
-    assert [transaction.market_count for transaction in transactions if transaction.kind == "prepare"] == [1, 3, 1]
+    commands = build_launch_transactions(request, mode="staged", preparation_batches=(1, 3, 1))
+    assert [(command.first_market, command.market_count) for command in commands if command.kind == "prepare"] == [(0, 1), (1, 3), (4, 1)]
+    assert [command.kind for command in commands].count("activate") == 1
+    assert all(command.gas_limit is command.gas_price is command.assessment is None for command in commands)
 
 
-@pytest.mark.parametrize("error", ["DeploymentFailed", "InvalidConfiguration", None])
-def test_underestimated_packed_prepare_splits_at_near_ceiling_for_any_error(monkeypatch, error):
-    request = hmm_plan(2)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"prepare_gas_per_market": 18_000_000})
-    original = provider.make_request
-    def respond(method, params):
-        response = original(method, params)
-        if method == "eth_simulateV1" and not provider.is_probe(params[0]) and error is not None:
-            for block, result in zip(params[0]["blockStateCalls"], response["result"]):
-                kind, args = provider.command(block["calls"][0])
-                if kind == "prepare" and args[2] > 1:
-                    result["calls"][0].update(returnData="0x" + keccak(text=error + "()")[:4].hex(),
-                        error={"code": 3, "message": "execution reverted"})
-        return response
-    monkeypatch.setattr(provider, "make_request", respond)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert planned.admitted
-    assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [1, 1]
-    assert [payload["validation"] for payload in provider.simulations] == [True, True]
+def test_taze_shape_is_staged_with_two_one_batches_and_zero_launch_execution():
+    draft = taze_shape()
+    provider = ResumeScenario(draft)
+    client = CountingTransport(provider)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft,
+        account=PRINCIPAL, mode="atomic", buy_slippage_bps=50))
+    assert launch.assessment.ready, launch.assessment.reason
+    assert launch.mode == "staged"
+    assert [(command.first_market, command.market_count) for command in launch.transactions
+        if command.kind == "prepare"] == [(0, 2), (2, 1)]
+    assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound is None
+    assert all(buy.min_token_out > 1 for buy in launch.plan.buys)
+    from black_market_sdk import launch_plan_to_dict
+    assert launch_plan_to_dict(launch.plan)["funding"] == launch_plan_to_dict(draft)["funding"]
+    assert launch.transactions[0].gas_limit == 32_000_000
+    provider.plan = launch.plan
+    provider.latest_phase = provider.confirmed_phase = 1
+    next_command = build_next_transaction(client, launch)
+    assert (next_command.first_market, next_command.market_count) == (0, 2)
+    provider.prepared = 2
+    next_command = build_next_transaction(client, launch)
+    assert (next_command.first_market, next_command.market_count) == (2, 1)
+    assert_no_execution(client)
 
 
-@pytest.mark.parametrize("cumulative_cap", [False, True])
-def test_exact_proof_distinguishes_aggregate_policy_from_semantic_failure(monkeypatch, cumulative_cap):
-    request = hmm_plan(1)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"compute_gas_by_kind": {"begin": 12_000_000 if cumulative_cap else 8_000_000,
-            "prepare": 20_000_000 if cumulative_cap else 14_000_000, "activate": 3_000_000}})
-    original = provider.make_request
-    def respond(method, params):
-        response = original(method, params)
-        if method == "eth_simulateV1" and not provider.is_probe(params[0]) and provider.command(params[0]["blockStateCalls"][-1]["calls"][0])[0] == "activate":
-            result = response["result"][-1]["calls"][0]
-            result.update(status="0x0",
-                returnData="0x" if cumulative_cap else "0x" + keccak(text="SlippageExceeded()")[:4].hex(),
-                error={"code": -32000 if cumulative_cap else 3,
-                    "message": "out of gas" if cumulative_cap else "execution reverted"})
-        return response
-    monkeypatch.setattr(provider, "make_request", respond)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
-        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=34_000_000 if cumulative_cap else 50_000_000))
-    if cumulative_cap:
-        assert not planned.admitted
-        assert planned.simulation.execution_proof == "unavailable"
-        assert planned.simulation.capacity_constraint == "simulation-gas"
-        assert planned.simulation.failure_category == "source"
-    else:
-        assert not planned.admitted
-        assert planned.simulation.execution_proof == "failed"
-        assert planned.simulation.failed_transaction_id == "activate"
-        assert planned.simulation.failure_category == "semantic"
-        assert planned.simulation.evidence.calls[-1].decoded_error == "SlippageExceeded"
-        assert len(provider.simulations) == 1
+def test_measured_abyss_preparation_cost_and_calldata_padding_prevent_three_market_batch():
+    draft = taze_shape()
+    config = LifecycleAbyssMarketConfig(3, 3000, (9).to_bytes(32, "big"), 1 << 96,
+        (LifecycleAbyssPosition(0, 887220, 10**18, draft.markets[0].token_budget),))
+    first = replace(draft.markets[0], config=encode_lifecycle_abyss_market_config(config))
+    markets = tuple(replace(first, quote_asset=market.quote_asset,
+        config=encode_lifecycle_abyss_market_config(replace(config, positions=tuple(
+            replace(position, tick_lower=-position.tick_upper, tick_upper=-position.tick_lower)
+            for position in config.positions))) if int(market.quote_asset, 16) < int(TOKEN, 16) else first.config)
+        for market in draft.markets)
+    draft = replace(draft, markets=markets,
+        token=replace(draft.token, supply=sum(market.token_budget for market in markets)), buys=(), funding=())
+    provider = ResumeScenario(draft)
+    client = CountingTransport(provider)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=PRINCIPAL, mode="staged"))
+    assert launch.assessment.ready, launch.assessment.reason
+    assert [command.market_count for command in launch.transactions if command.kind == "prepare"] == [2, 1]
+    # Native one-position Abyss preparation observed9,723,187 compute. The
+    # budget must reserve this measured cost before at least25% padding.
+    from black_market_sdk.lifecycle import _prepare_gas_estimate
+    assert _prepare_gas_estimate(launch.plan, 0) >= 9_723_187
+    assert_no_execution(client)
 
 
-def test_no_default_aggregate_cap_proves_whole_sequence_and_retains_unsigned_suffix(monkeypatch):
-    request = hmm_plan(3)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"prepare_gas_per_market": 14_000_000, "compute_gas_by_kind": {"begin": 8_500_000, "activate": 18_000_000}})
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert planned.admitted and planned.limits.rpc_total_simulation_gas_limit is None
-    assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
-    assert planned.simulation.deferred_transaction_ids == ()
-    assert [len(payload["blockStateCalls"]) for payload in provider.simulations] == [4]
-    assert planned.simulation.evidence.complete
-    assert planned.transactions[0].admission.admitted
-    for transaction in planned.transactions[1:]:
-        assert transaction.gas_limit is transaction.gas_price is transaction.estimate is transaction.admission is None
-    assert all(step.provisional for step in planned.simulation.steps[1:])
-    provider.latest_phase = provider.confirmed_phase = LifecyclePhase.READY
-    immediate = build_next_transaction(client, planned)
-    assert immediate.kind == "activate" and immediate.admission.admitted
-    assert immediate.gas_limit == 32_000_000
-
-
-def test_explicit_aggregate_override_can_prove_whole_sequence(monkeypatch):
-    request = hmm_plan(3)
-    lifecycle, _, _, client = wire_planning(monkeypatch, request=request)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged",
-        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=100_000_000))
-    assert planned.admitted and planned.simulation.deferred_transaction_ids == ()
-    assert planned.transactions[0].admission.admitted
-    assert all(transaction.admission is None for transaction in planned.transactions[1:])
-    assert all(step.success and step.provisional for step in planned.simulation.steps[1:])
-
-
-@pytest.mark.parametrize("count,compute_cap,rpc_cap", [
-    (2, 32_000_000, 50_000_000), (1, 64_000_000, 30_000_000),
-])
-def test_static_forecasts_do_not_refuse_actual_atomic_execution(monkeypatch, count, compute_cap, rpc_cap):
-    request = hmm_plan(count)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"tx_cap": compute_cap, "block_cap": compute_cap})
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic",
-        limits=LaunchExecutionLimits(rpc_total_simulation_gas_limit=rpc_cap))
-    assert planned.admitted and planned.mode == "atomic"
-    assert planned.simulation.execution_proof == planned.simulation.protocol_fit == "proved"
-    assert planned.simulation.deferred_transaction_ids == ()
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-
-
-def test_plain_planning_pins_once_then_exactly_validates_native_ceiling(monkeypatch):
-    request = hmm_plan(1)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="atomic")
-    assert planned.admitted
-    assert provider.operations.count("eth_chainId") == 1
-    assert provider.operations.count("eth_getBlockByNumber") == 1
-    assert provider.operations.count("eth_simulateV1") == 2
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-
-
-def test_low_gas_semantic_prepare_failure_is_not_split(monkeypatch):
-    request = hmm_plan(2)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
-    original = provider.make_request
-    def respond(method, params):
-        response = original(method, params)
-        if method == "eth_simulateV1" and not provider.is_probe(params[0]):
-            for block, output in zip(params[0]["blockStateCalls"], response["result"]):
-                if provider.command(block["calls"][0])[0] == "prepare":
-                    output["calls"][0].update(status="0x0", gasUsed=hex(1_000_000), maxUsedGas=hex(1_000_000),
-                        returnData="0x" + keccak(text="InvalidConfiguration()")[:4].hex(),
-                        error={"code": 3, "message": "execution reverted"})
-        return response
-    monkeypatch.setattr(provider, "make_request", respond)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    assert not planned.admitted and planned.simulation.failure_category == "semantic"
-    assert planned.simulation.failed_transaction_id == "prepare:0:2"
-    assert len(provider.simulations) == 1
-    assert [transaction.market_count for transaction in planned.transactions if transaction.kind == "prepare"] == [2]
-
-
-def test_reviewed_prepare_preserves_held_span_without_batch_rediscovery(monkeypatch):
-    request = hmm_plan(2)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request,
-        scenario_options={"prepare_gas_per_market": 18_000_000})
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    provider.latest_phase = provider.confirmed_phase = LifecyclePhase.PREPARING
-    original = provider.make_request
-    def respond(method, params):
-        return {"result": "0x1"} if method == "eth_getTransactionCount" else original(method, params)
-    monkeypatch.setattr(provider, "make_request", respond)
-    held = build_next_transaction(client, planned)
-    assert held.kind == "prepare" and held.market_count == 1
-    provider.prepare_gas_per_market = 14_000_000
-    provider.simulations.clear()
-    current = build_next_transaction(client, planned, reviewed_transaction=held)
-    assert current.as_transaction() == held.as_transaction()
-    assert current.admission.admitted
-    assert [payload["validation"] for payload in provider.simulations] == [True]
-    assert len(provider.simulations[0]["blockStateCalls"]) == 1
-    _, args = provider.command(provider.simulations[0]["blockStateCalls"][0]["calls"][0])
-    assert args[1:] == (0, 1)
-
-
-@pytest.mark.parametrize("reviewed", [False, True])
-@pytest.mark.parametrize("execution_succeeds", [False, True])
-def test_fixed_ceiling_generic_owned_fork_executes_once_without_estimation_or_backend_switch(monkeypatch, execution_succeeds, reviewed):
-    from types import SimpleNamespace
-    from black_market_sdk import ControlledLaunchFork, build_lifecycle_calldata
-    from test_lifecycle import TRANSACTION_HASH
-    lifecycle, request, provider, client = wire_planning(monkeypatch)
-    planned = lifecycle.plan_launch(client, request, account=request.creator, mode="staged")
-    held = planned.transactions[0]
-    provider.simulations.clear()
-    class OwnedFork:
-        endpoint_uri = "http://127.0.0.1:19993"
-        def __init__(self):
-            self.operations = []
-            self.last_transaction = None
-        def make_request(self, method, params):
-            self.operations.append(method)
-            if method in {"eth_chainId", "eth_getBlockByNumber", "eth_getTransactionCount"}:
-                return provider.make_request(method, params)
-            if method == "evm_snapshot":
-                value = "0x1"
-            elif method == "evm_revert":
-                value = True
-            elif method == "eth_sendTransaction":
-                self.last_transaction = params[0]
-                value = TRANSACTION_HASH
-            elif method == "eth_getTransactionReceipt":
-                value = {"status": hex(int(execution_succeeds)), "gasUsed": hex(100_000),
-                         "logs": provider.logs(self.last_transaction) if execution_succeeds else []}
-            elif method == "eth_call":
-                value = provider.return_data({"data": build_lifecycle_calldata(request, "beginLaunch")})
-            else:
-                raise AssertionError(f"Unexpected disposable fork request: {method}")
-            return {"result": value}
-    fork_provider = OwnedFork()
-    fork = ControlledLaunchFork(client=SimpleNamespace(provider=fork_provider), isolated=True,
-        source_rpc_url=provider.endpoint_uri)
-    if execution_succeeds:
-        current = build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None, fork=fork)
-        assert current.as_transaction() == held.as_transaction() and current.admission.admitted
-    else:
-        with pytest.raises(ValueError) as failure:
-            build_next_transaction(client, planned, reviewed_transaction=held if reviewed else None, fork=fork)
-        assert failure.value.code == "PLAN_NOT_ADMITTED"
-        assert failure.value.simulation.backend == "controlled-fork"
-    assert provider.simulations == []
-    assert "eth_estimateGas" not in fork_provider.operations
-    assert fork_provider.operations.count("eth_sendTransaction") == 1
-    assert fork_provider.operations[-1] == "evm_revert"
-    assert int(fork_provider.last_transaction["gas"], 16) == held.gas_limit
-    assert int(fork_provider.last_transaction["gasPrice"], 16) == held.gas_price
-
-
-def test_hmm_capacity_and_packing_costs_are_global_but_unknown_profiles_get_no_reserve():
-    from black_market_sdk.lifecycle import _prepare_gas_estimate, _forwarding_reserve
-    request = replace(hmm_plan(3), chain_id=31337, orchestrator="0x" + "12" * 20)
-    assert [_prepare_gas_estimate(request, index) for index in range(3)] == [14_500_000] * 3
-    assert _forwarding_reserve(request, "activate") == 5_250_000
-    assert _groups(request, 0, 32_000_000) == [(0, 2), (2, 1)]
-    unknown = replace(request, markets=tuple(replace(market, profile_id=bytes(32)) for market in request.markets))
-    assert [_prepare_gas_estimate(unknown, index) for index in range(3)] == [16_000_000] * 3
-    assert _forwarding_reserve(unknown, "activate") == _forwarding_reserve(unknown, "atomic") == 0
-
-
-def test_unified_preparation_reuses_initial_pin_after_mining(monkeypatch):
-    import asyncio
-    from black_market_sdk.lifecycle import _known_bound_deployment, PoolBoundLifecycleDeployment
-    from test_lifecycle import ORPHAN_HASH
-    request = hmm_plan(1)
-    lifecycle, _, provider, client = wire_planning(monkeypatch, request=request)
-    def metadata(_client, current, token, _block):
-        provider.plan = current
-        deployment, _ = _known_bound_deployment(current, 0, token)
-        return (), (PoolBoundLifecycleDeployment(deployment.deployer, deployment.init_code_hash,
-            deployment.salt, deployment.predicted_hook, 0),), ()
-    monkeypatch.setattr(lifecycle, "_read_plan_metadata", metadata)
-    def advance(_progress):
-        provider.block_number = 52
-        provider.block_hash = ORPHAN_HASH
-    planned = asyncio.run(lifecycle.prepare_and_plan_lifecycle_launch(client, request,
-        account=request.creator, mode="atomic", on_progress=advance))
-    assert planned.admitted and planned.progress.head_block.number == 51
-    assert provider.operations.count("eth_chainId") == 1
-    assert provider.operations.count("eth_getBlockByNumber") == 1
-
+def test_oversized_indivisible_activation_refuses_before_begin_without_execution():
+    from black_market_sdk import decode_lifecycle_abyss_market_config
+    draft = taze_shape()
+    market = draft.markets[0]
+    config = decode_lifecycle_abyss_market_config(market.config)
+    positions = tuple(replace(position, liquidity=position.liquidity // 4,
+        token_amount_maximum=position.token_amount_maximum // 4)
+        for _ in range(4) for position in config.positions)
+    missing = market.token_budget - sum(position.token_amount_maximum for position in positions)
+    positions = (*positions[:-1], replace(positions[-1], token_amount_maximum=positions[-1].token_amount_maximum + missing))
+    market = replace(market, config=encode_lifecycle_abyss_market_config(replace(config, positions=positions)))
+    draft = replace(draft, markets=(market,), token=replace(draft.token, supply=market.token_budget), funding=(), buys=())
+    provider = ResumeScenario(draft)
+    client = CountingTransport(provider)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=PRINCIPAL, mode="atomic"))
+    assert not launch.assessment.ready
+    assert launch.assessment.code == "ACTIVATION_GAS_LIMIT"
+    assert launch.assessment.capacity_constraint == "activation"
+    assert "Reduce" in launch.assessment.reason
+    provider.plan = launch.plan
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch)
+    assert failure.value.code == "ACTIVATION_GAS_LIMIT"
+    assert_no_execution(client)

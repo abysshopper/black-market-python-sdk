@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.15.0** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.15.1** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -55,7 +55,7 @@ Selectors return `None`/an empty tuple for an unknown deployment. A supported
 preset supplies construction fields, not current permission to execute.
 `read_lifecycle_profiles(client, orchestrator=addresses.orchestrator)` is available
 for explicit live discovery. Normal known-profile planning uses release presets;
-on-chain enforcement and the final exact-calldata simulation determine execution.
+the wallet and on-chain enforcement determine execution. Planning is not execution proof.
 
 ## Price the launch
 
@@ -181,11 +181,11 @@ quote-denominated FDV; spend alone does not describe the allocation.
 | `estimate_launch_initial_buy` | Pure **first-band** estimate; excludes later bands, earlier ordered buys, and hook effects. Do not derive executable minima from it alone. |
 | `compute_lifecycle_opening_buys(plan, predicted_token=...)` | Exact ordered unopened release-template curves, including band crossings and hook fees. Not a live quote or execution proof. |
 | `derive_launch_buy_sqrt_price_limit_x96` | Directional **price guard**; a tight guard can truncate a buy. It is not a token-output minimum. |
-| `buy_slippage_bps=50` | Planner commits ordered exact local quote minima for known curves; conversion-funded reviews still receive final exact simulation. |
+| `buy_slippage_bps=50` | Commits ordered exact local quote minima for supported curves, including conversion-funded plans. |
 
 `min_token_out = quoted_token_out * (10000 - buy_slippage_bps) // 10000`.
 For illustrative output 123456789 and 50 bps, the minimum is **122839505**.
-Conversion-funded reviews require activation inside the exact simulated sequence.
+Conversion routes rely on their committed calldata output floor and deadline.
 A conversion floor protects ETH→quote, not quote→launch token. A minimum of
 **1 wei is unprotected**.
 
@@ -291,7 +291,7 @@ now + 300 seconds**. Conversion validation permits at most 1200 seconds and cann
 exceed the plan deadline. A long staged run can outlive its route while the plan
 is still valid; increasing gas does not refresh the committed conversion.
 
-## Prepare and simulate
+## Prepare and assess
 
 Use synchronous `Web3` clients. Unified preparation is asynchronous:
 
@@ -303,8 +303,8 @@ async def prepare_first_launch(client, draft):
         client, draft, account=draft.creator, mode="atomic",
         buy_slippage_bps=50, confirmations=1,
     )
-    if not launch.admitted:
-        raise RuntimeError(launch.simulation.reasons)
+    if not launch.assessment.ready:
+        raise RuntimeError(launch.assessment.reason)
     return launch
 ```
 
@@ -312,12 +312,12 @@ Use `asyncio.run(prepare_first_launch(client, draft))` from a synchronous progra
 or `await` it in an existing event loop. Keep the returned `launch.plan`, hash,
 mode, and confirmation policy: V4 salts and calibrated minima may change the draft.
 Preparation mines bound-hook salts with the preset's deployed miner, verifies the
-returned CREATE2 addresses locally, reads funding, and computes the applicable
-profiled admission or exact conversion-funded execution proof.
+returned CREATE2 addresses locally, reads funding, and assesses deterministic
+capacity and pinned inputs. It never executes launch calldata or a conversion.
 Without a configured miner it uses local mining. `plan_launch` is synchronous for
 an already-finalized plan.
 
-An admitted immediate launch command includes gas and gas price; an approval
+A ready immediate launch command includes gas and gas price; an approval
 omits both for wallet preparation. Neither supplies a wallet transaction nonce.
 The wallet assigns it; `LaunchPlanV1.nonce` remains committed launch identity,
 including UFG principal namespacing. Optional
@@ -328,36 +328,29 @@ transaction, reconciliation refuses it with `RECEIPT_NONCE`; it is not overwritt
 Use the immediate envelope for review instead of another unreviewed planning pass.
 Before signing, call
 `build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])`
-once for fresh canonical progress and envelope admission. The wallet must verify
+once for fresh canonical progress and envelope assessment. The wallet must verify
 its active account/chain; the SDK's chain observation is cached per client session.
 Canonical launch progress and included/replacement receipt confirmations remain;
 unrelated global mempool activity is not a launch-confirmation gate.
 
-Build-next handles only the immediate command, retaining original preparation
-boundaries without repeating profile discovery or proving the remaining suffix.
-Known internal commands use explicit versioned capacity profiles and exact local
-curves. They return `confidence=\"profiled\"`, `execution_proof=\"not-run\"`,
-`protocol_fit=\"profiled\"` and no simulated `steps`. `simulation.gas_profile` holds
-mode/capacity `bounds` and ordered opening quotes, not transaction gas estimates.
-This is not a claim that a contract executed successfully.
-`simulate_launch_plan` is an explicit request for real execution, so it does not
-return a profile-only outcome even for a covered template.
-The v1 profile covers released assets/templates on Robinhood ArbOS61 for direct
-EOAs. Other supported inputs use exact simulation; coverage is not an asset ban.
-At the pinned block, expired non-cancel commands are refused; cancellation remains
-available after expiry.
-A refused complete review cannot be used to start funding approvals or begin a
-launch. Pass the admitted `PlannedLaunch`; next-only construction does not replan
-its remaining sequence. Already-started recovery and cancellation remain available.
-An unstarted raw `LaunchPlanV1` is no longer accepted by `build_next_transaction`.
-First obtain an admitted `PlannedLaunch` with the planning API. Raw plans remain
-supported for already-started recovery, cancellation and terminal reads.
+Build-next constructs only the immediate command without repeating profile
+discovery or executing a suffix. It recomputes complete activation capacity,
+ordered local buy floors, deadline and aggregate funding requirements before
+starting a launch or approving funding. A cached ready flag is display state,
+not authority: refreshed inputs can refuse a previously ready plan or permit
+one whose earlier affordability refusal has been resolved.
 
-Conversion-funded planning proves the stateful sequence through activation in one
-`eth_simulateV1` request. Internal preparation calls in that request are state
-prerequisites, not extra simulation RPCs. Only the immediate envelope is final;
-suffix envelopes remain provisional. At its turn, a known internal preparation
-uses profile admission, while the consuming activation receives fresh exact proof.
+`launch.assessment` is a `LifecyclePlanningAssessment`: `ready`, the L2 pin and
+account/chain, resolved `limits`, optional immediate `estimate`, and a versioned
+`gas_profile` with capacity bounds and exact ordered opening quotes. Refusals
+include a stable `code`, user-safe actionable `reason`, failure category and any
+capacity constraint. These fields do not claim successful contract execution.
+Unknown budgets refuse with `UNKNOWN_GAS_PROFILE`, without a simulation fallback.
+Expired non-cancel commands refuse; cancellation remains available after expiry.
+
+Pass a `PlannedLaunch` before starting an unstarted plan. Raw `LaunchPlanV1`
+remains available only for already-started recovery, cancellation and terminal
+reads. No next-only call implicitly replans the whole sequence.
 
 Launch commands use the preset's native transaction ceiling: 32M total gas on
 Robinhood, including poster gas. Profiles classify atomic versus staged; they do
@@ -371,21 +364,18 @@ Approval commands omit gas so the wallet can prepare their envelopes.
 | `staged` | Begin → packed preparation transactions → one activation | Preparation is split; activation still mints, locks, buys, and opens every market together. |
 
 Staging is not rollback: an expired begun launch remains begun until cancelled.
-Select the mode preference explicitly and review `launch.mode`: an atomic
-preference can select staged execution; explicit staging remains staged.
-The SDK does not shrink the native ceiling to fit a payer's balance.
+Select the mode preference explicitly and review `launch.mode`. Every multi-market
+or conversion-funded plan is staged. Atomic is eligible only for one market
+without conversion when its known budget fits the native ceiling. Explicit staged
+execution remains staged. Contiguous preparation batches reserve poster gas and
+compute headroom; activation is indivisible. An activation that exceeds its budget
+refuses with `ACTIVATION_GAS_LIMIT`: reduce positions or pools before launching.
+Unavailable gas budgets never trigger an execution backend.
 
-There is no invented default aggregate simulation cap. Direct-funded known-template
-profiles need no simulation window. Conversion-funded reviews require the stateful
-sequence through activation in one request; the native provider decides actual
-aggregate availability unless explicit caller policy tightens it. A request that
-cannot include required activation refuses the unproved sequence, not admits a
-prefix as complete feasibility. Profile estimates are not measured gas.
-
-Deferred work never supplies a signing envelope. Use optional
-`LaunchExecutionLimits(rpc_total_simulation_gas_limit=...)` only for an actual
-provider/account policy. The Python runner has no environment override for that
-policy. A generic Anvil fork cannot prove Robinhood's native Nitro metering.
+Kyber conversions rely on their exact calldata amountOutMinimum and deadline.
+Ordered opening-buy output floors use exact local math and `buy_slippage_bps`.
+The SDK does not shrink the native ceiling to fit a payer's balance, bump a held
+price, assign a wallet nonce or request a signature.
 
 ## Sign and confirm
 
@@ -394,7 +384,7 @@ reviewed transaction when one is held. Review and sign only the returned exact
 `as_transaction()` envelope. The wallet owns its active account/chain, nonce and
 balance checks. Track actual submitted nonces and replacements locally; an unknown
 wallet-session nonce may be recovered once, not reread at every planning stage.
-SDK admission does not replace wallet authority. Deferred commands cannot be signed.
+Planning readiness does not replace wallet authority. Unsigned future commands cannot be signed.
 
 This loop **spends funds when called** with your authorized, exclusively used
 `eth-account` local wallet and chain-bound client. Supply `persist`, your durable
@@ -515,7 +505,7 @@ to continue a partially executed plan.
 | Cancelled | Terminal. Inspect refunds and inactive inventory disposition before planning anything else. |
 
 `build_next_transaction(client, original_plan, account=creator, mode="staged",
-action="cancel", receipts=references)` produces the currently proved cancellation
+action="cancel", receipts=references)` produces the currently assessed cancellation
 command. Cancellation still works after the profile stops being admitted.
 Before activation, inventory goes to the committed `inventory_recipient` or burns
 according to `burn_on_cancel`; it remains inactive. Escrow refunds remaining assets;
@@ -529,13 +519,13 @@ Use typed SDK integration for these offerings; complete plans must retain their 
 
 | Symptom | Cause | Next action |
 | --- | --- | --- |
-| HTTP 403/429 on chain ID, balance, or `eth_simulateV1` | RPC throttling | Wait or change RPC, then resume the same run. A 429 is not a revert. |
+| HTTP 403/429 on chain ID, balance or a batched read | RPC throttling | Wait or change RPC, then resume the same run. A 429 is not a revert. |
 | Begun launch past deadline | Interrupted staged run | Cancel the original launch; do not expect a fresh run to continue it. |
 | `eth_getLogs` range error | Genesis scan exceeds the provider's 10M-block range | Start at deployment block 82,880,313 and query chunks ≤10M blocks. |
 | `KYBER_UNAVAILABLE` / invalid WETH route | Swap requested for ETH→WETH | Use NativeWrap; reserve Kyber for other quotes. |
 | `INVALID_KYBER_INTENT` | Conversion expiry exceeds 1200 seconds or reused plan deadline | Build unstarted funding with its separate 300-second clock. |
-| `PLAN_NOT_ADMITTED` gas | Stale transaction envelope | Rebuild with `build_next_transaction`; do not force the old gas. |
-| `ECONOMIC_REVIEW_REQUIRED` hash mismatch | Hash belongs to another invocation | Review/admit the same saved plan. |
+| `STALE_REVIEWED_GAS` / `REVIEWED_FEE_TOO_LOW` | Stale reviewed envelope | Refresh the review; never silently replace held gas or price. |
+| `ECONOMIC_REVIEW_REQUIRED` hash mismatch | Hash belongs to another invocation | Review the same saved plan. |
 | `PUBLISH_TIMEOUT`, `API_INDEX_TIMEOUT`, or image URL failure after activation | Publication/indexing failure | Token is live; resume publication, not deployment. |
 
 ## After launch
@@ -568,6 +558,9 @@ Decode with `decode_developer_claim_receipt(receipt, transaction=transaction)` a
 failed rows only; [claim statuses](reference.md#decode-author-claims) distinguish each outcome.
 
 ## Auto-compounding launches
+
+Configuration and codec support is available, but planning currently refuses
+these profiles with `UNKNOWN_GAS_PROFILE`: no reviewed capacity budget exists.
 
 Select `KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL` for a fixed maximum
 hook fee, or `V4_AUTO_COMPOUND_DYNAMIC_POOL` for the config6 minimum/maximum/
@@ -606,8 +599,8 @@ are not SDK offerings; rebuild unstarted plans with the current preset.
 Use normal unified preparation to mine the hook salt. Unlike HMM/UFG, the exact
 auto-compound tail is part of the salt-normalized constructor market commitment:
 changing the share changes the hook prediction and requires mining again.
-These new hooks have no calibrated profile-only gas-capacity bound; planning
-uses exact execution simulation rather than reusing another hook's gas profile.
+These hooks have no reviewed gas-capacity bound. Planning refuses
+`UNKNOWN_GAS_PROFILE` rather than executing a fallback or reusing another hook's budget.
 Every post-opening swap compounds in `afterSwap`. Let `eth_estimateGas` include
 that work; never cap swap gas below its estimate. Underfunded compounding reverts
 with `CompoundOutOfGas()` instead of silently skipping.

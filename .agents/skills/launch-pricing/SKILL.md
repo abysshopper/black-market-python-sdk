@@ -129,16 +129,15 @@ print({"fdv_x18": str(fdv_x18), "positions": bands.positions})
    guard, separately from token-output slippage. A tight guard can truncate a large
    or multi-band purchase; review actual spend/output and leftover quote.
 4. On an unstarted launch, await `prepare_and_plan_lifecycle_launch` with explicit
-   `buy_slippage_bps`. The SDK diagnoses every ordered buy, sets each minimum to
-   `floor(actual_output * (10000 - bps) / 10000)` and proves the final protected
-   commitment. Do not sign diagnostic candidates. Omission retains existing minima.
-   Executable minima must be positive. A floored zero requires refusal or a resized,
-   reproved buy; do not silently set `1` merely to pass validation.
+   `buy_slippage_bps`. Exact local curve math quotes every ordered buy and commits
+   `floor(quoted_output * (10000 - bps) / 10000)` as its minimum. No diagnostic
+   candidate or execution pass exists. Omission retains existing minima. A floored
+   zero refuses; do not silently set `1` merely to pass validation.
 5. A desired percentage purchase needs actual net-output sizing against retained
    supply, fees and previous buys. $250 at $5,000 FDV is not automatically 5% of
    supply purchased along an AMM curve.
 6. Review the final plan/hash, conversion floor, escrow per quote, each buy's net
-   output/spend, refunds and gas/data costs. Sign only its freshly proved immediate
+   output/spend, refunds and gas/data costs. Sign only its freshly assessed immediate
    envelope; never change reviewed gas/price or submitted economics/salts/minima.
 
 ## 5. Put Kyber conversion inside lifecycle funding
@@ -192,11 +191,11 @@ native Swap instead has zero `input_asset`. Never mix their field shapes.
 Funding outputs are sorted and unique: aggregate buys sharing a quote; do not add
 duplicate funding rows or assume a single route build funds several quote assets.
 
-Build late enough to avoid expiry, then statefully prove the complete selected
-execution mode with conversion and buys. Changed calldata before submission means
-rebuild/review an unstarted commitment. After begin/submission, recover the exact
-original plan; an expired staged conversion can require cancellation, not a silent
-refresh. Do not ask Kyber to route into a predicted inactive token or replace the
-committed first buy with an unrequested post-launch wallet swap.
+Build late enough to avoid expiry, then assess the complete committed plan.
+Conversions rely on their calldata amountOutMinimum/deadline, never a simulated
+output. Multi-market or conversion funding is staged. Changed calldata before
+submission means rebuild/review an unstarted commitment. After begin/submission,
+recover the exact original plan; expiry may require cancellation, not a silent
+refresh. Never replace the committed first buy with a post-launch wallet swap.
 
 Source/evidence map: `../token-launch/references/audit-history.md`.

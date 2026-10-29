@@ -31,12 +31,11 @@ from black_market_sdk import (
     LaunchBlock, LaunchExecutionLimits, LaunchPlanV1, LaunchPublishPending, LifecycleTokenConfig,
     LaunchApiError, KnownLifecycleProfile, get_known_lifecycle_profile, get_launch_addresses,
     predict_launch_token, to_launch_plan_tuple,
-    LAUNCH_RECEIPT_COMPONENTS_V1,
 )
 from black_market_sdk import lifecycle
 from examples import launch_api_lifecycle as api_example
 from black_market_sdk import LaunchSessionCreateMetadata, LaunchApiClient, LaunchApiConfig, LaunchApiResponse
-from black_market_sdk.lifecycle_rpc import LaunchRpcError, LaunchRpcSimulation
+from black_market_sdk.lifecycle_rpc import LaunchRpcError
 
 CREATOR = "0x0000000000000000000000000000000000000001"
 TOKEN = "0x0000000000000000000000000000000000000002"
@@ -585,12 +584,12 @@ def test_native_simulation_is_allowed_without_source_broadcast(tmp_path, monkeyp
 
 def test_unavailable_native_admission_retains_failure_without_sign_or_api(construct_case, monkeypatch):
     case, plan, predicted, artifacts = construct_case("launch_erc20_v4.py")
-    refused = SimpleNamespace(admitted=False, confidence="provisional", plan=plan,
-                              plan_hash=lifecycle.hash_launch_plan(plan), launch_id=lifecycle.launch_id_of(plan),
-                              mode=case["mode"], predicted_token=predicted,
-                              simulation=SimpleNamespace(backend=None, reasons=("eth_simulateV1 unavailable",)),
-                              profiles=(), hook_deployments=(), limits=None,
-                              token_factory=None, token_factory_code_hash=None)
+    refused = SimpleNamespace(plan=plan,
+        plan_hash=lifecycle.hash_launch_plan(plan), launch_id=lifecycle.launch_id_of(plan),
+        mode=case["mode"], predicted_token=predicted,
+        assessment=SimpleNamespace(ready=False, code="ACTIVATION_GAS_LIMIT",
+            reason="Reduce positions or pools.", limits=None),
+        profiles=(), hook_deployments=(), token_factory=None, token_factory_code_hash=None)
     calls = []
 
     async def refuse(_client, plan, **kwargs):
@@ -601,12 +600,12 @@ def test_unavailable_native_admission_retains_failure_without_sign_or_api(constr
     for name in ("stage_metadata", "build_next_transaction", "api_client"):
         monkeypatch.setattr(example, name, no_call)
     with pytest.raises(ExampleFailure) as failure:
-        example.admit_plan(None, plan, case, artifacts, example.Cancellation())
+        example.assess_plan(None, plan, case, artifacts, example.Cancellation())
     artifacts.finish(failure.value)
-    assert failure.value.code == "LAUNCH_NOT_ADMITTED"
+    assert failure.value.code == "ACTIVATION_GAS_LIMIT"
     assert len(calls) == 1 and "fork" not in calls[0][1] and calls[0][1]["mode"] == "atomic"
     assert artifacts.result["chain"]["transactions"] == []
-    assert "eth_simulateV1 unavailable" in (artifacts.directory / "admission.json").read_text()
+    assert "Reduce positions or pools." in (artifacts.directory / "assessment.json").read_text()
 
 
 def test_unified_admission_retains_actual_final_planned_launch(construct_case, monkeypatch):
@@ -626,15 +625,13 @@ def test_unified_admission_retains_actual_final_planned_launch(construct_case, m
         canonical=canonical, head=canonical, confirmation_depth=1,
         confirmation_safe=True,
     )
-    simulation = lifecycle.LaunchSimulation(
-        "stateful", True, block, "eth_simulateV1", (), (), LaunchRpcSimulation("stateful", "eth_simulateV1", block, ()),
-        execution_proof="proved", protocol_fit="proved",
-    )
+    assessment = lifecycle.LifecyclePlanningAssessment(
+        True, block.number, block.block_hash, final.creator, final.chain_id, LaunchExecutionLimits())
     deployment = get_launch_addresses(final.chain_id)
     planned = lifecycle.PlannedLaunch(
         plan=final, plan_hash=fields["plan_hash"], launch_id=fields["launch_id"], predicted_token=predicted,
         chain_id=final.chain_id, account=final.creator, mode=case["mode"], transactions=(), approvals=(),
-        progress=progress, simulation=simulation, limits=LaunchExecutionLimits(),
+        progress=progress, assessment=assessment, limits=LaunchExecutionLimits(),
         irreversible_costs=(), token_factory=deployment.token_factory, token_factory_code_hash="0x" + "56" * 32,
     )
     calls = []
@@ -644,7 +641,7 @@ def test_unified_admission_retains_actual_final_planned_launch(construct_case, m
         return planned
 
     monkeypatch.setattr(example, "prepare_and_plan_lifecycle_launch", prepare)
-    result = example.admit_plan(None, draft, case, artifacts, example.Cancellation())
+    result = example.assess_plan(None, draft, case, artifacts, example.Cancellation())
     assert result is planned and result.plan != draft
     assert calls[0][0] is draft
     assert calls[0][1]["mode"] == case["mode"] and calls[0][1]["account"] == draft.creator
@@ -738,7 +735,7 @@ def test_fixed_example_guard_preserves_unknown_policy_and_nitro_total_envelope(m
                         hex(request.chain_id) if method == "eth_chainId" else "0x0" if method == "eth_getTransactionCount" else no_call())
     transaction = {"chainId": request.chain_id, "from": request.creator, "to": request.orchestrator,
                    "nonce": 0, "value": 0, "data": "0x0102", "gas": 34_500_000, "gasPrice": 1}
-    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000, arb_os_version=50)
+    limits = LaunchExecutionLimits(protocol="nitro", execution_gas_ceiling=32_000_000)
     with pytest.raises(ExampleFailure) as native_failure:
         example.validate_envelope(None, transaction, request, limits)
     assert native_failure.value.code == "TRANSACTION_LIMIT_MISMATCH"
@@ -1070,26 +1067,21 @@ def test_api_snapshot_identity_and_bounded_selection_rejects(changed):
         example.validate_price_snapshot(snapshot, api_origin=API_ORIGIN, retrieved_at=PRICE_RETRIEVED_AT)
 
 
-def proved_review_launch(plan):
-    # Real receipt wire shape exercises the public decoder and intent binding.
-    abi_type = "(" + ",".join(component["type"] for component in LAUNCH_RECEIPT_COMPONENTS_V1) + ")"
-    values = (bytes.fromhex(lifecycle.launch_id_of(plan)[2:]), bytes.fromhex(example.hash_launch_plan(plan)[2:]),
-              TOKEN, plan.creator, example.ZERO_ADDRESS, len(plan.markets),
-              sum(len(lifecycle.decode_lifecycle_pool_bound_v4_market_config(m.config).positions)
-                  if m.config_version == 6 else len(lifecycle.decode_lifecycle_abyss_market_config(m.config).positions)
-                  for m in plan.markets),
-              tuple(b.quote_amount_in for b in plan.buys),
-              tuple(350 * 10**18 * b.quote_amount_in // 10**15 for b in plan.buys))
-    call = SimpleNamespace(success=True, return_data="0x" + encode([abi_type], [values]).hex())
-    return SimpleNamespace(plan=plan, plan_hash=example.hash_launch_plan(plan), mode="atomic",
-                           simulation=SimpleNamespace(confidence="stateful", transactions=[SimpleNamespace(kind="atomic")],
-                                                      evidence=SimpleNamespace(calls=[call])))
+def assessed_review_launch(plan):
+    quotes = tuple(lifecycle.LifecycleOpeningBuyQuote(index, buy.market_index,
+        buy.quote_amount_in, buy.quote_amount_in,
+        350 * 10**18 * buy.quote_amount_in // 10**15, 1 << 96)
+        for index, buy in enumerate(plan.buys))
+    return SimpleNamespace(plan=plan, plan_hash=example.hash_launch_plan(plan), mode="atomic", predicted_token=TOKEN,
+        assessment=SimpleNamespace(ready=True, limits=None, code=None, reason=None,
+            gas_profile=lifecycle.LifecycleGasProfile("quote-fixture",
+                lifecycle.LifecycleLaunchGasBounds(0, 0), quotes)))
 
 
 def test_economic_review_retains_hash_as_provenance_and_reports_proved_all_in_price(construct_case, monkeypatch, capsys):
     _, plan, _, artifacts = construct_case("launch_erc20_v4.py")
     artifacts.redact.remember_url(API_ORIGIN)
-    launch = proved_review_launch(plan)
+    launch = assessed_review_launch(plan)
     monkeypatch.setattr("builtins.input", no_call)
     monkeypatch.setattr(example.sys, "stdin", SimpleNamespace(isatty=lambda: True))
     review, digest = example.review_economics(launch, artifacts, example.Cancellation())
@@ -1147,7 +1139,7 @@ def test_unchanged_api_price_preserves_explicit_review_and_allows_signer(constru
     plan = replace(plan, creator=account.address)
     configuration = {"chainId": 4663, "quoteAsset": plan.markets[0].quote_asset, "apiUrl": API_ORIGIN}
     client = SimpleNamespace(provider=SimpleNamespace(endpoint_uri="https://reviewed.invalid"))
-    launch = proved_review_launch(plan)
+    launch = assessed_review_launch(plan)
     monkeypatch.setattr("builtins.input", no_call)
     review, digest = example.review_economics(launch, artifacts, example.Cancellation())
     original_quote = dict(review["quotes"][0])
@@ -1295,9 +1287,8 @@ def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(
         buy.quote_amount_in, buy.quote_amount_in, 10**18, 1 << 96)
         for index, buy in enumerate(plan.buys)) if complete else ()
     launch = SimpleNamespace(plan=plan, predicted_token=predicted,
-        simulation=SimpleNamespace(confidence="profiled",
-            gas_profile=lifecycle.LifecycleGasProfileEvidence("test-profile", lifecycle.LifecycleLaunchGasBounds(0, 0), quotes),
-            transactions=(), evidence=SimpleNamespace(calls=())))
+        assessment=SimpleNamespace(
+            gas_profile=lifecycle.LifecycleGasProfile("test-profile", lifecycle.LifecycleLaunchGasBounds(0, 0), quotes)))
     if complete:
         rows = example.opening_buy_review(launch, artifacts.economic_pricing)
         assert len(rows) == len(plan.buys)
@@ -1306,5 +1297,5 @@ def test_profiled_economic_review_uses_real_curve_quotes_without_a_fake_receipt(
     else:
         with pytest.raises(ExampleFailure) as failure:
             example.opening_buy_review(launch, artifacts.economic_pricing)
-        assert failure.value.code == "INVALID_ECONOMIC_PROOF"
+        assert failure.value.code == "INVALID_ECONOMIC_REVIEW"
     artifacts.finish()

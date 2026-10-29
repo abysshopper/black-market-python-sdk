@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.15.0**.
+for SDK **0.15.1**.
 
 ## Resolve deployment addresses
 
@@ -33,7 +33,7 @@ requests to the provider's block-range limit (the public RPC permits ≤10M).
 Use `get_known_lifecycle_deployment`, `get_known_lifecycle_profile`, and
 `list_known_lifecycle_profiles` for release-owned construction metadata.
 `read_lifecycle_profiles` remains an explicit live audit, not a planning prerequisite.
-Final simulation and on-chain enforcement determine execution eligibility.
+Planning reports pinned-input and capacity readiness; the wallet and on-chain enforcement determine execution.
 
 ## Check plan limits
 
@@ -136,8 +136,9 @@ The opt-in test uses only chain reads/`eth_call`: it predicts a token, mines eac
 profile's hook salt, compares the SDK constructor/prediction with live factory
 metadata, checks factory acceptance/rejection, and compares the **entire market**
 and tail bytes with `scripts/auto_compound_config.py`. Ordinary pytest stays offline.
-These hooks are intentionally outside the existing profile-only gas-capacity
-calibration; exact simulation is required. After opening, compounding executes
+These hooks have no reviewed launch capacity budget. Planning refuses them with
+`UNKNOWN_GAS_PROFILE` rather than inventing capacity or executing a fallback.
+Their configuration codecs, presets and pure builders remain available. After opening, compounding executes
 inside `afterSwap`, so never cap swap gas below `eth_estimateGas`'s result.
 
 ## Configure HMM controls
@@ -188,84 +189,75 @@ its selected profile's fee bounds, mode, oracle, and external-liquidity policy.
 ## Account for Nitro gas
 
 On chain4663, the deployment preset supplies the fixed **32M total-gas ceiling**,
-including poster gas. `ArbSys.arbOSVersion()` at `0x64` selects the capacity epoch;
-subtract its returned version offset **55**; ArbOS 50 or newer is required.
-An unavailable version or a raw value below 105 refuses with `NITRO_LIMITS_UNAVAILABLE`.
-`ArbGasInfo.getPricesInWei()` at
-`0x6c` supplies the same-block fee context. Dynamic max-transaction/max-block
+including poster gas. `ArbGasInfo.getPricesInWei()` at `0x6c` supplies the
+same-block fee context. ArbOS-version/backend probes and dynamic gas-limit
 getters are not planning guards.
 
 - `LaunchExecutionLimits.execution_gas_ceiling` is the fixed native envelope;
   `transaction_gas_ceiling` is separate tightening policy that can refuse it.
-- Release-owned direct-funded internal commands use versioned capacity profiles,
-  not a simulated success. Their outcomes are `confidence="profiled"`,
-  `execution_proof="not-run"` and `protocol_fit="profiled"`; `steps` is empty.
-  `simulation.gas_profile` is `LifecycleGasProfileEvidence`: `version`, `bounds`
-  (`LifecycleLaunchGasBounds`) and exact ordered `initial_buys`. Bounds contain
-  `atomic_compute_gas_upper_bound` and `activation_compute_gas_upper_bound`,
-  excluding poster gas. They never set signing gas. The immediate fee estimate
-  uses `fee_confidence="native-ceiling-and-data"` without invented `gas_used`.
-  Version `robinhood-4663-arbos61-v1` covers released profiles and quote identities
-  on ArbOS61 only. Other currencies/versions use exact execution, not an asset
-  admission whitelist. Mutating the display catalog cannot grant coverage.
-  One actual sender-code observation per client/session excludes AA/delegated
-  envelopes. Expired non-cancel commands refuse profile admission; cancellation
-  remains available.
-- Opening curves include overlapping bands, bitmap-word steps, per-step rounding,
-  ordered previous buys and opening hook fees. `compute_lifecycle_opening_buys`
-  is a pure unopened-curve calculation, not a live quote or contract-execution proof.
+- `PlannedLaunch.assessment`, `LifecycleTransaction.assessment` and optional
+  `LifecyclePlanningError.assessment` use `LifecyclePlanningAssessment`, not
+  simulation or admission evidence.
+- Assessment fields are `ready`, `block_number`, `block_hash`, `account`,
+  `chain_id`, resolved `limits`, optional immediate `estimate` and `gas_profile`.
+  Refusals carry a stable `code`, user-safe actionable `reason`, optional
+  `failed_transaction_id`, `failure_category` (`semantic`, `capacity`,
+  `affordability`) and `capacity_constraint` (`gas-envelope`, `calldata`,
+  `activation`, `preparation`).
+- `LifecycleGasProfile` contains `version`, `LifecycleLaunchGasBounds` and exact
+  ordered `initial_buys`. Version `robinhood-4663-capacity-v3` uses the shared
+  measured-max Node table with at least 25% padding, not current execution evidence. `activation_compute_gas_upper_bound`
+  is required; `atomic_compute_gas_upper_bound` is absent (`None`) for multiple
+  markets or any conversion. Bounds exclude poster allocation and never size
+  signing gas. Missing coverage refuses `UNKNOWN_GAS_PROFILE`; auto-compounding
+  profiles remain outside this budget model.
+- `compute_lifecycle_opening_buys` is pure ordered unopened-curve math, including
+  overlaps, bitmap-word steps, per-step rounding and opening hook fees.
   `compute_lifecycle_launch_gas_bounds(plan, predicted_token=..., ufg=...,
-  headroom_bps=1500)` is the parallel pure capacity helper. `None` means unprofiled,
-  including opaque conversion routes or missing UFG route context. A large upper
-  bound is uncertain, not proof that activation is impossible.
-- Conversion-funded execution and consuming activation retain exact validated
-  simulation. Fresh staged conversion review includes the state prerequisites
-  through activation in one `eth_simulateV1` request, not separate per-step RPCs.
-  A request that cannot prove its required activation is not admitted as complete.
-  Explicit `simulate_launch_plan` always requests real execution, including for a
-  covered internal template; only planning/build-next can use profile-only admission.
-- Every launch command uses the preset's fixed native total-gas ceiling, 32M on
-  Robinhood. Profiles only classify atomic versus staged: an atomic preference may
-  select staged execution, while explicitly staged execution remains staged.
-  Proven-impossible activation refuses; uncertain activation needs a complete exact
-  sequence proof before begin. Reviewed gas must match the native ceiling rather
-  than replacing it. Approval gas is left to wallet preparation.
-- The same-block price tuple replaces per-transaction NodeInterface calls.
-  For calldata length `C`, use `N=C+384`, `B=N+8*(N//1024)+64`,
-  `fee_bound=B*prices[1]`, and `poster_gas=2*ceil(fee_bound/prices[5])`
-  (zero for zero data fee). The allowance covers serialized legacy/EIP-1559 EOA
-  envelopes with an empty access list. Wallet-added access/authorization lists or
-  AA wrappers are outside this direct-EOA profile and need their wallet envelope.
-- Poster gas is inside Robinhood's 32M total ceiling, never added on top. Only the
-  immediate transaction has final signing gas/price and admission; build-next
-  refreshes the actual next command. Simulated suffix steps remain provisional.
-- Generic EVMs retain their resolved ceiling. A generic fork is not native Nitro
-  fee/compute proof.
-- Native fees use `data_fee_included_in_gas=True`, `data_fee=0` and
-  `total_fee=gas_limit * gas_price`. Do not add `poster_fee` again.
-- Robinhood's recommendation uses `getPricesInWei()[5]` and the existing twice-base-fee
-  floor, without a separate `eth_gasPrice`. Held reviewed prices remain exact and
-  must cover the pinned fee floor. The SDK never lowers the fixed gas ceiling to
-  fit a payer's balance; the wallet must afford that upfront reservation.
+  headroom_bps=1500)` is the parallel pure capacity helper. Unlisted quote
+  currencies do not require an execution fallback or a curated-token allowlist.
+- Planning never calls `eth_simulateV1`, executes a fork or runs launch calldata,
+  including Kyber routes and consuming activation. Conversion protection is the
+  committed calldata amountOutMinimum/deadline; opening buys use exact local
+  curve math and the committed output floors.
+- Every launch command uses the preset native ceiling, 32M total gas on Robinhood.
+  Multi-market or conversion-funded plans are staged. A single-market,
+  non-conversion atomic preference is selected only when its known budget fits.
+  Preparation batches are contiguous and deterministic, accounting for each
+  market's profile, positions, at least 25% padding (or greater supplied headroom),
+  full calldata processing and poster allocation. Activation remains
+  indivisible: an oversized bound refuses `ACTIVATION_GAS_LIMIT` with an actionable
+  request to reduce positions or pools.
+- Only the immediate command receives assessed gas/price and a fee estimate;
+  future unsigned commands have neither. Approvals always leave gas/price and
+  estimation to the wallet. Build-next refreshes current inputs and complete
+  activation/funding/floor checks while constructing only its next command.
+  A cached ready/refused assessment cannot override these checks.
+- For calldata length `C`, the Nitro poster bound uses `N=C+384`,
+  `B=N+8*(N//1024)+64`, `fee_bound=B*prices[1]`, and
+  `poster_gas=2*ceil(fee_bound/prices[5])` (zero for zero data fee). This reserves
+  serialized legacy/EIP-1559 envelopes with an empty access list; wallet-added
+  access/authorization lists and AA wrappers need their own wallet envelope.
+- Poster gas stays inside the 32M ceiling. Native estimates set
+  `data_fee_included_in_gas=True`, `data_fee=0`, `total_fee=gas_limit*gas_price`,
+  and `fee_confidence=\"native-ceiling-and-data\"`. Never add `poster_fee` again.
+  Generic estimates without an external data-fee estimate use
+  `fee_confidence=\"native-ceiling-only\"`. No estimate invents `gas_used`.
+- Fresh native prices use the larger of `getPricesInWei()[5]` and twice the pinned
+  base fee. Held prices remain exact and must cover the pinned required fee floor;
+  held gas must equal the native ceiling or refuse `STALE_REVIEWED_GAS`.
+  A lower complete caller gas policy refuses `GAS_POLICY_LIMIT`. The SDK never
+  shrinks the native reservation to make an unaffordable transaction look ready.
 
-There is no invented default aggregate simulation cap. An explicit
-`rpc_total_simulation_gas_limit` still tightens caller/provider policy; otherwise
-the native provider determines whether the actual aggregate request is available.
-Activation is indivisible. Missing optional policy remains in
-`unknown_constraints`, not a fabricated chain limit.
-
-| Admission field | Values / meaning |
-| --- | --- |
-| `confidence` | `profiled`, `stateful`, `provisional`: profile coverage versus observed execution evidence |
-| `execution_proof` | `not-run`, `proved`, `failed`, `unavailable`: profile-only versus validated sequential execution |
-| `protocol_fit` | `profiled`, `proved`, `failed`, `unknown`: profile coverage, protocol ceilings and supplied policy |
-
-The wallet owns submission, account/chain checks and nonce assignment; there is no
-redundant send-RPC estimate gate after SDK admission. Do not treat a public RPC
-429 as an economic revert or a gas-cap measurement.
+The removed simulation/proof/admission APIs, fork options and aggregate simulation
+limits have no compatibility aliases. Actual canonical receipts remain the
+authority for launch progress, replacement reconciliation and settlement.
+The wallet owns submission, active account/chain checks and nonce assignment;
+there is no redundant send-RPC estimate gate after planning. Do not treat a public
+RPC 429 as an economic revert or a capacity observation.
 
 Lifecycle planning reads one authoritative L2 header, then batches independent
-progress, factory prediction, Nitro limits and funding balances/allowances at its
+progress, factory prediction, prices and funding balances/allowances at its
 explicit block number. Nitro's EVM `block.number`/`blockhash` and Multicall3's
 corresponding helpers expose L1 values, so they are never used as L2 pins.
 Prepared directory entries and dependent adapter reads are each one aggregate
@@ -299,7 +291,7 @@ available.
 
 Attach an optional listener to the Web3 client before planning. It receives
 `LifecycleDiagnosticEvent` with stage, phase (`queued/start/success/failure/reuse`),
-durations/queue time, request ID, and method; listener failures do not change admission.
+durations/queue time, request ID, and method; listener failures do not change planning.
 
 ```python
 from web3 import Web3
@@ -317,10 +309,8 @@ or credential-bearing URLs to your own diagnostic output.
 
 In 0.14.0, build-next no longer emits nested `plan.context`, `plan.domain` or
 `plan.inputs` stages for whole-plan metadata or suffix work.
-`simulation.envelope` rescue events are removed. Ordinary final validation uses
-`simulation.measure`, also used by an optional sizing pass; only explicitly
-reviewed proof retains `simulation.replay`. Use returned admission/outcomes for
-completion, not a fixed event sequence or the presence of a particular stage.
+No simulation, sizing or replay stages are emitted. Use the returned assessment
+for completion, not a fixed diagnostic-stage sequence.
 
 ## Decode author claims
 

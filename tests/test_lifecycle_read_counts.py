@@ -40,14 +40,11 @@ from black_market_sdk import (
     plan_launch,
     prepare_and_plan_lifecycle_launch,
     read_launch_progress,
-    simulate_launch_plan,
 )
 from black_market_sdk.lifecycle import (
     _LIFECYCLE_MULTICALL_CODE_HASH,
-    _tuple_type,
     read_lifecycle_token_at_block,
 )
-from black_market_sdk.lifecycle_abis import LAUNCH_RECEIPT_COMPONENTS_V1
 from black_market_sdk.lifecycle_rpc import LaunchBlock, LaunchRpcError, read_invocation
 
 
@@ -65,18 +62,7 @@ def draft_plan():
         buys=(LifecycleInitialBuy(0, 10**14, 1, PRINCIPAL, 0),))
 
 
-class NativeBuyScenario(UfgRpcScenario):
-    def return_data(self, transaction):
-        data = super().return_data(transaction)
-        kind, _ = self.command(transaction)
-        if kind not in {"atomic", "activate"}:
-            return data
-        abi_type = _tuple_type(LAUNCH_RECEIPT_COMPONENTS_V1)
-        from black_market_sdk import compute_lifecycle_opening_buys
-        values = list(abi_decode([abi_type], bytes.fromhex(data[2:]))[0])
-        values[8] = tuple(quote.token_out for quote in compute_lifecycle_opening_buys(
-            self.plan, predicted_token=values[2]))
-        return "0x" + abi_encode([abi_type], [tuple(values)]).hex()
+
 
 
 class CountingTransport:
@@ -108,9 +94,9 @@ def prepare(client, plan, **options):
 @pytest.fixture
 def prepared():
     draft = draft_plan()
-    client = CountingTransport(NativeBuyScenario(draft))
+    client = CountingTransport(UfgRpcScenario(draft))
     launch = prepare(client, draft)
-    assert launch.admitted
+    assert launch.assessment.ready
     return draft, client, launch
 
 
@@ -125,8 +111,8 @@ def assert_budget(client, *, calls, simulations, total):
 def test_protected_preparation_pins_once_without_a_diagnostic_buy_simulation(prepared):
     _, client, launch = prepared
     assert client.counts == Counter({"eth_chainId": 1, "eth_getBlockByNumber": 2,
-        "eth_call": 2, "eth_getCode": 2, "eth_simulateV1": 2})
-    assert len(client.calls) == 9
+        "eth_call": 2, "eth_getCode": 1})
+    assert len(client.calls) == 6
     assert "nonce" not in launch.transactions[0].as_transaction()
     config = decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config)
     assert len(config.positions) == 6 and config.ufg_launch_config == terms()
@@ -136,9 +122,9 @@ def test_protected_preparation_pins_once_without_a_diagnostic_buy_simulation(pre
 
 
 @pytest.mark.parametrize("entry,total,calls,simulations", [
-    ("plan", 5, 2, 1), ("simulate", 5, 2, 1),
-    ("build", 5, 2, 1), ("reviewed", 5, 2, 1),
-    ("staged", 5, 2, 1), ("staged-reviewed", 5, 2, 1),
+    ("plan", 4, 2, 0),
+    ("build", 4, 2, 0), ("reviewed", 4, 2, 0),
+    ("staged", 4, 2, 0), ("staged-reviewed", 4, 2, 0),
 ])
 def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations):
     _, client, launch = prepared
@@ -148,11 +134,9 @@ def test_entrypoint_read_budgets(prepared, entry, total, calls, simulations):
     if entry in {"plan", "staged"}:
         result = plan_launch(client, launch.plan, account=PRINCIPAL,
             mode="staged" if entry == "staged" else "atomic", confirmations=2, ufg=terms())
-        assert result.admitted
-    elif entry == "simulate":
-        assert simulate_launch_plan(client, launch).admitted
+        assert result.assessment.ready
     elif entry == "build":
-        assert build_next_transaction(client, launch).kind == "atomic"
+        assert build_next_transaction(client, launch).kind == "begin"
     else:
         result = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
         assert result.as_transaction() == launch.transactions[0].as_transaction()
@@ -169,7 +153,7 @@ def test_standalone_progress_retains_domain_confirmations_without_eoa_nonce_read
 
 
 def test_multicall_attestation_rejects_changed_runtime_before_execution():
-    client = CountingTransport(NativeBuyScenario(draft_plan()))
+    client = CountingTransport(UfgRpcScenario(draft_plan()))
     def change_code(args, response):
         if args["method"] == "eth_getCode" and args["params"][0].lower() == ROBINHOOD_MULTICALL3.lower():
             response["result"] = "0x6000"
@@ -242,7 +226,7 @@ def test_reviewed_extra_nonce_is_ignored_and_wallet_owns_assignment(prepared, no
 
 @pytest.mark.parametrize("invalid", ["missing", "failed"])
 def test_multicall_incomplete_or_failed_results_do_not_seed_successful_reads(invalid):
-    client = CountingTransport(NativeBuyScenario(draft_plan()))
+    client = CountingTransport(UfgRpcScenario(draft_plan()))
     def corrupt_aggregate(args, response):
         if args["method"] != "eth_call" or args["params"][0]["to"].lower() != ROBINHOOD_MULTICALL3.lower():
             return
@@ -258,11 +242,11 @@ def test_multicall_incomplete_or_failed_results_do_not_seed_successful_reads(inv
     assert failure.value.code == "INVALID_RPC_RESPONSE"
     assert client.counts["eth_simulateV1"] == 0
     client.after_response = None
-    assert prepare(client, draft_plan()).admitted
+    assert prepare(client, draft_plan()).assessment.ready
 
 
 def test_fee_recommendation_is_frozen_inside_preparation_but_not_across_invocations():
-    client = CountingTransport(NativeBuyScenario(draft_plan()))
+    client = CountingTransport(UfgRpcScenario(draft_plan()))
     client.provider.gas_price = 15
     def change_recommendation(args, _response):
         if args["method"] == "eth_call" and args["params"][0]["to"].lower() == ROBINHOOD_MULTICALL3.lower():
@@ -271,8 +255,7 @@ def test_fee_recommendation_is_frozen_inside_preparation_but_not_across_invocati
     launch = prepare(client, draft_plan())
     assert launch.transactions[0].gas_price == 15
     assert client.counts["eth_gasPrice"] == 0
-    assert all(int(block["calls"][0]["gasPrice"], 16) == 15
-        for payload in client.provider.simulations for block in payload["blockStateCalls"])
+    assert client.provider.simulations == []
     client.calls.clear()
     client.provider.block_number += 1
     client.provider.block_hash = ORPHAN_HASH

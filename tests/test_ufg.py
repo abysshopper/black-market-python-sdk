@@ -31,7 +31,7 @@ from black_market_sdk import (
     plan_launch, prepare_and_plan_lifecycle_launch, ROBINHOOD_WETH,
 )
 from black_market_sdk.lifecycle import _known_bound_deployment, _execution_account
-from test_lifecycle import AdmissionRpcScenario, function_signature
+from test_lifecycle import RecordingRpcScenario, function_signature
 
 ZERO = "0x" + "00" * 20
 HASH = bytes(32)
@@ -280,7 +280,7 @@ def test_upstream_abi_exports_are_complete_consumer_interfaces():
     assert {entry.get("name") for entry in UFG_BLACK_MARKET_TREASURY_ABI} >= {"collect", "redeem", "redeemSkipping", "assets"}
 
 
-class UfgRpcScenario(AdmissionRpcScenario):
+class UfgRpcScenario(RecordingRpcScenario):
     """Exercise principal funding and the actual proxy ABI through native proof."""
 
     def __init__(self, plan, **options):
@@ -338,23 +338,23 @@ class UfgRpcScenario(AdmissionRpcScenario):
         return super().make_request(method, params)
 
 
-def test_public_ufg_native_planner_simulation_and_build_next_preserve_principal_and_config():
-    from black_market_sdk import simulate_launch_plan, build_next_transaction
+def test_public_ufg_native_planner_and_build_next_preserve_principal_and_config():
+    from black_market_sdk import build_next_transaction
     plan = replace(request(), funding=(LifecycleAssetFunding(QUOTE, 11, 0, QUOTE, 11, ZERO, b""),))
     provider = UfgRpcScenario(plan)
     client = SimpleNamespace(provider=provider)
     planned = plan_launch(client, plan, account=PRINCIPAL, mode="atomic", ufg=terms())
-    assert planned.admitted and planned.simulation.execution_proof == "proved"
+    assert planned.assessment.ready
     assert planned.ufg == terms() and planned.ufg_config_hash == hash_ufg_launch_config(terms())
     assert planned.approvals[0].spender == UFG_LAUNCH_PROXY_ADDRESS
-    assert [transaction.kind for transaction in planned.transactions] == ["approve", "atomic"]
-    assert simulate_launch_plan(client, planned).admitted
+    assert planned.mode == "staged"
+    assert [transaction.kind for transaction in planned.transactions] == ["approve", "begin", "prepare", "activate"]
     provider.allowance = 11
     next_transaction = build_next_transaction(client, planned)
-    assert next_transaction.kind == "atomic" and next_transaction.to == UFG_LAUNCH_PROXY_ADDRESS
+    assert next_transaction.kind == "begin" and next_transaction.to == UFG_LAUNCH_PROXY_ADDRESS
     assert next_transaction.from_address.lower() == PRINCIPAL.lower()
     with pytest.raises(LifecyclePlanningError) as failure:
-        simulate_launch_plan(client, replace(planned, ufg=replace(terms(), exit_fee_bps=101)))
+        build_next_transaction(client, replace(planned, ufg=replace(terms(), exit_fee_bps=101)))
     assert failure.value.code == "PLAN_MUTATED"
 
 
@@ -364,7 +364,7 @@ def test_started_ufg_recovery_does_not_read_proxy_binding_guards():
     provider.config_hash, provider.principal = "0x" + "ff" * 32, TOKEN
     client = CountingTransport(provider)
     planned = plan_launch(client, request(), account=PRINCIPAL, mode="staged", ufg=terms())
-    assert planned.admitted
+    assert planned.assessment.ready
     forbidden = {keccak(text=signature)[:4].hex()
         for signature in ("principalOf(bytes32)", "launchConfigHash(bytes32)")}
     assert not any(call["method"] == "eth_call" and call["params"][0]["data"][2:10] in forbidden
@@ -400,7 +400,7 @@ def test_unified_ufg_preparation_mines_bound_salts_and_proves_proxy_transactions
     provider = UfgRpcScenario(plan)
     planned = asyncio.run(prepare_and_plan_lifecycle_launch(SimpleNamespace(provider=provider),
         plan, account=PRINCIPAL, mode="atomic", ufg=terms()))
-    assert planned.admitted and planned.ufg_config_hash == hash_ufg_launch_config(terms())
+    assert planned.assessment.ready and planned.ufg_config_hash == hash_ufg_launch_config(terms())
     assert len(planned.hook_deployments) == 1
     assert int(planned.hook_deployments[0].predicted_hook, 16) & 16383 == 6908
     decoded = decode_lifecycle_pool_bound_v4_market_config(planned.plan.markets[0].config)

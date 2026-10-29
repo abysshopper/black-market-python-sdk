@@ -18,7 +18,7 @@ Read the relevant skill before working on those paths.
 - Consumer code imports `black_market_sdk`; source lives in `black_market_sdk/`.
 - Use SDK address/ABI/client helpers; do not copy deployment addresses into apps.
 - Select the intended chain explicitly. Use integer token units, never floats.
-- Use release lifecycle presets for profiles and deployment wiring. Launch commands use the preset's fixed native transaction ceiling (32M total gas on 4663), without profile sizing, poster addition or held-gas substitution. Profiles classify atomic versus staged execution; aggregator-funded execution and consuming activation retain exact simulation. Held prices below the pinned floor refuse. On-chain enforcement and the wallet remain authorities.
+- Use release lifecycle presets for profiles and deployment wiring. Launch commands use the preset's fixed native transaction ceiling (32M total gas on 4663), without profile sizing, poster addition or held-gas substitution. Planning never simulates launch calldata, including conversions. Use `assessment.ready` and its actionable reason, not execution/admission evidence. Multi-market or conversion funding requires staged execution; unknown capacity refuses. Held prices below the pinned floor refuse. On-chain enforcement and the wallet remain authorities.
 - On Nitro, pin reads to one L2 RPC header. EVM block-number/hash helpers expose L1 values, not L2 pins.
 - Observe chain identity at most once per client session. Planning/building never reads EOA transaction counts or assigns wallet nonces; launch/domain nonces and UFG namespace identity are unchanged.
 - Keep launch cases independently runnable with one command and no arguments.
@@ -29,7 +29,7 @@ Read the relevant skill before working on those paths.
 
 - Reading/planning is not permission to spend funds or publish metadata.
 - Run launch examples only when the user explicitly authorizes chain and API writes.
-- Never add a default key, bypass admission, change a refused case, or silently skip the API.
+- Never add a default key, bypass a refused assessment, change a refused case, or silently skip the API.
 - Keep signed hashes before broadcast and retain failure logs; never automatically relaunch.
 - Do not commit `.env`, `launch-results/`, raw signed transactions, or recovery capabilities.
 
