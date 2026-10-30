@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "black-market-sdk"
-version = "0.15.1"
+version = "0.16.0"
 description = "Python SDK for Abyss token launches, swaps, and lending."
 readme = "README.md"
 license = "MIT"
@@ -41,6 +41,7 @@ packages = ["black_market_sdk"]
 "black_market_sdk/_lifecycle_release_20261008.json" = "black_market_sdk/_lifecycle_release_20261008.json"
 "black_market_sdk/_ufg_release_20261021.json" = "black_market_sdk/_ufg_release_20261021.json"
 "black_market_sdk/_auto_compound_release_20261028.json" = "black_market_sdk/_auto_compound_release_20261028.json"
+"black_market_sdk/_raeto_release_20261029.json" = "black_market_sdk/_raeto_release_20261029.json"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

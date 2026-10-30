@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.15.1**, Python **3.10+**, import `black_market_sdk`.
+Package **0.16.0**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.15.1
+python -m pip install black-market-sdk==0.16.0
 ```
 
 For the runnable examples, install an editable checkout:
@@ -116,9 +116,10 @@ fallback. See [prepare and assess](docs/launch-guide.md#prepare-and-assess).
 | HMM V2 | Fixed/dynamic V4 plus fee-funded auxiliary liquidity | [HMM launch configuration](docs/launch-guide.md#hmm-launch-configuration) |
 | UFG treasury | ERC20 with quote-fee reserves and holder redemption | [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches) |
 | Auto-compounding | Static/dynamic V4 with fee-funded, hook-owned full-range liquidity | [Auto-compounding launches](docs/launch-guide.md#auto-compounding-launches) |
+| Raeto fee sharing | Fixed/dynamic V4 with a mandatory 5/10/25/50/75% quote-fee share | [Raeto launches](docs/launch-guide.md#raeto-launches) |
 
-Auto-compounding presets and codecs are available, but planning currently refuses
-them with `UNKNOWN_GAS_PROFILE` because they lack a reviewed capacity budget.
+Raeto and auto-compounding use the reviewed `robinhood-4663-capacity-v4` budget
+model. Launch commands still reserve the native 32M total gas ceiling.
 
 ## Integrate and recover
 

@@ -36,6 +36,10 @@ from .ufg import (
     validate_ufg_launch_plan, _ufg_principal, _validate_ufg_identity,
     build_ufg_launch_transactions, build_ufg_cancel_transaction,
 )
+from .raeto import (
+    RAETO_QUOTE_ASSETS, RaetoLaunchConfigV1, decode_raeto_launch_tail,
+    encode_raeto_launch_tail, is_raeto_profile, validate_raeto_launch_config,
+)
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -330,6 +334,7 @@ class LifecyclePoolBoundV4MarketConfigV6:
     hmm_launch_config: HmmLaunchConfig | None = None
     ufg_launch_config: UfgLaunchConfig | None = None
     auto_compound_config: AutoCompoundConfigV1 | None = None
+    raeto_launch_config: RaetoLaunchConfigV1 | None = None
 
 
 LifecyclePoolBoundV4MarketConfig = LifecyclePoolBoundV4MarketConfigV5 | LifecyclePoolBoundV4MarketConfigV6
@@ -829,6 +834,20 @@ def _assert_allocation(plan: LaunchPlanV1) -> int:
     return count
 
 
+def _validate_raeto_market_context(
+    market: LifecycleMarketConfig,
+    config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig | None = None,
+) -> None:
+    """Enforce outer quote/profile binding on planning and known-preset recovery."""
+    if not is_raeto_profile(market.profile_id):
+        return
+    if market.config_version != 6 or not any(market.quote_asset.lower() == quote.lower() for quote in RAETO_QUOTE_ASSETS):
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires config6 and a WETH or USDG quote")
+    decoded = config if config is not None else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
+    if decoded.version != 6 or hex_bytes(decoded.profile_id) != hex_bytes(market.profile_id):
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto config must bind its market's Raeto profile")
+
+
 def _validate_launch_plan(plan: LaunchPlanV1) -> None:
     to_launch_plan_tuple(plan)
     if not 1 <= len(plan.markets) <= 16 or len(plan.buys) > 64 or len(plan.funding) > 8 or not 1 <= len(plan.fee_assets) <= 8 or plan.token.supply <= 0 or int(plan.token.inventory_recipient, 16) == 0 or plan.token.inventory_recipient.lower() == plan.orchestrator.lower() or plan.executor_fee_bps > 1000:
@@ -862,6 +881,7 @@ def _validate_launch_plan(plan: LaunchPlanV1) -> None:
             raise LifecyclePlanningError("INVALID_MARKET", "Each market needs a positive budget and bounded versioned config")
         if market.config_version == 4 or is_pool_bound_v4_config_version(market.config_version):
             config = decode_lifecycle_v4_market_config(market.config) if market.config_version == 4 else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
+            _validate_raeto_market_context(market, config)
             if hex_bytes(config.profile_id) != hex_bytes(market.profile_id):
                 raise LifecyclePlanningError("PROFILE_TERMS_MISMATCH", "Inner config profile differs from the committed market")
             if market.quote_asset.lower() in v4_quotes:
@@ -869,6 +889,8 @@ def _validate_launch_plan(plan: LaunchPlanV1) -> None:
             v4_quotes.add(market.quote_asset.lower())
             if config.lp_fee_pips >= 1000000 or config.hook_fee_pips > (1000000 if config.version == 6 else 999999) or config.fee_mode > 1 or not 1 <= config.tick_spacing <= 32767 or not 4295128739 <= config.sqrt_price_x96 < 1461446703485210103287273052203988822378723970342 or (config.protocol_fee_denominator != 0 and (not 4 <= config.protocol_fee_denominator <= 10 or int(config.treasury, 16) == 0)):
                 raise LifecyclePlanningError("INVALID_MARKET", "V4 market violates lifecycle fee, price or treasury bounds")
+        else:
+            _validate_raeto_market_context(market)
     _assert_allocation(plan)
     funding_by_asset = {funding.asset.lower(): funding.amount for funding in plan.funding}
     requirements: dict[str, int] = {}
@@ -1015,6 +1037,21 @@ def _v1_fee_shape(value: Any) -> None:
         raise LifecyclePlanningError("UNSUPPORTED_CONFIG_VERSION", "Config5/V1 cannot contain config6/V2 fee-policy fields")
 
 
+def _validate_raeto_market(config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig | Mapping[str, Any]) -> None:
+    def field(snake: str, camel: str) -> Any:
+        return config.get(camel) if isinstance(config, Mapping) else getattr(config, snake, None)
+    raeto = field("raeto_launch_config", "raetoLaunchConfig")
+    if field("version", "version") != 6 or raeto is None:
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6 and an explicit raeto_launch_config")
+    if any(field(snake, camel) is not None for snake, camel in (
+            ("hmm_launch_config", "hmmLaunchConfig"), ("ufg_launch_config", "ufgLaunchConfig"),
+            ("auto_compound_config", "autoCompoundConfig"))):
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG or auto-compound tails")
+    if field("fee_mode", "feeMode") != 1 or field("lp_fee_pips", "lpFeePips") != 0 or field("developer_fee_bps", "developerFeeBps") != 0:
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires QuoteOnly fee_mode 1, zero LP fee and zero developer fee")
+    validate_raeto_launch_config(raeto)
+
+
 def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4MarketConfig | Mapping[str, Any]) -> bytes:
     version = config["version"] if isinstance(config, Mapping) else config.version
     components = _bound_components(version)
@@ -1022,13 +1059,20 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
         validate_pool_bound_hook_fees(config)
     else:
         _v1_fee_shape(config)
-    prefix_config = ({key: value for key, value in config.items() if key != "autoCompoundConfig"}
-        if isinstance(config, Mapping) and "autoCompoundConfig" in config else config)
+    prefix_config = ({key: value for key, value in config.items()
+        if key not in {"autoCompoundConfig", "raetoLaunchConfig", "hmmLaunchConfig", "ufgLaunchConfig"}}
+        if isinstance(config, Mapping) else config)
     prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, prefix_config)])
     profile_id = config["profileId"] if isinstance(config, Mapping) else config.profile_id
     hmm = config.get("hmmLaunchConfig") if isinstance(config, Mapping) else getattr(config, "hmm_launch_config", None)
     ufg = config.get("ufgLaunchConfig") if isinstance(config, Mapping) else getattr(config, "ufg_launch_config", None)
     compound = config.get("autoCompoundConfig") if isinstance(config, Mapping) else getattr(config, "auto_compound_config", None)
+    raeto = config.get("raetoLaunchConfig") if isinstance(config, Mapping) else getattr(config, "raeto_launch_config", None)
+    if is_raeto_profile(profile_id):
+        _validate_raeto_market(config)
+        return prefix + encode_raeto_launch_tail(raeto)
+    if raeto is not None:
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Only Raeto profiles accept a Raeto tail")
     if is_auto_compound_profile(profile_id):
         if version != 6 or compound is None or hmm is not None or ufg is not None:
             raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require config6 and only an explicit auto-compound tail")
@@ -1072,6 +1116,10 @@ def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_
     cls = LifecyclePoolBoundV4MarketConfigV5 if version == 5 else LifecyclePoolBoundV4MarketConfigV6
     config = cls(*values[:-1], tuple(LifecycleV4Position(*position) for position in values[-1]))
     prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, config)])
+    if is_raeto_profile(config.profile_id):
+        if version != 6 or raw[:len(prefix)] != prefix:
+            raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require an exact canonical config6 prefix")
+        config = replace(config, raeto_launch_config=decode_raeto_launch_tail(raw[len(prefix):]))
     if is_hmm_profile(config.profile_id):
         if version != 6 or raw[:len(prefix)] != prefix:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require an exact canonical config6 prefix")
@@ -1449,6 +1497,12 @@ def validate_v4_lifecycle_market(*, market: LifecycleMarketConfig, config: Lifec
         validate_pool_bound_hook_fees(config)
     elif config.version == 5:
         _v1_fee_shape(config)
+    if is_raeto_profile(config.profile_id):
+        _validate_raeto_market(config)
+        if not any(market.quote_asset.lower() == quote.lower() for quote in RAETO_QUOTE_ASSETS):
+            raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto quote asset must be WETH or USDG")
+    elif getattr(config, "raeto_launch_config", None) is not None:
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Only Raeto profiles accept a Raeto tail")
     if is_hmm_profile(config.profile_id):
         hmm = getattr(config, "hmm_launch_config", None)
         if config.version != 6 or hmm is None or config.lp_fee_pips != 0 or config.developer_fee_bps != 0:
@@ -2885,11 +2939,13 @@ def _prepare_gas_estimate(plan: LaunchPlanV1, index: int) -> int:
         else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
         if is_pool_bound_v4_config_version(market.config_version) else decode_lifecycle_v4_market_config(market.config))
     count = len(config.positions)
-    # Native/fork measured maxima shared with Node 0.15.1. Single-market
+    # Native/fork measured maxima shared with Node 0.16.0. Single-market
     # observations include overhead; additional positions use the marginal cost.
     base, position = ((9_800_000, 70_000) if market.config_version == 1 else
         (15_000_000, 50_000) if is_hmm_profile(market.profile_id) else
-        (10_000_000, 70_000) if is_ufg_profile(market.profile_id) else (9_000_000, 40_000))
+        (10_000_000, 70_000) if is_ufg_profile(market.profile_id) else
+        (9_300_000, 70_000) if is_raeto_profile(market.profile_id) else
+        (8_900_000, 70_000) if is_auto_compound_profile(market.profile_id) else (9_000_000, 40_000))
     return base + position * (count - 1)
 
 
@@ -3196,6 +3252,9 @@ def build_next_transaction(
     else:
         plan, selected = launch, mode
         account = _execution_account(plan) if account is None else account
+    if action != "cancel":
+        for market in plan.markets:
+            _validate_raeto_market_context(market)
     if selected is None:
         raise LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Building requires an explicitly selected mode")
     selected = _mode(selected)

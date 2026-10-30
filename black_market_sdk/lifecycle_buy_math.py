@@ -71,14 +71,14 @@ def _opening_state(plan: LaunchPlanV1, market_index: int) -> _OpeningState:
         price, spacing, lp_fee = config.opening_sqrt_price_x96, tier.tick_spacing, config.fee
     else:
         # Dynamic opening buys share the block's minimum fee. HMM work starts
-        # onOpened, after all ordered buys, not during this unopened curve.
+        # onOpened; auto-compounding defers until all ordered buys complete.
         config = decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
         if hex_bytes(config.profile_id).lower() != hex_bytes(market.profile_id).lower():
             raise LifecyclePlanningError("INVALID_MARKET", "V4 opening config differs from the selected profile")
         price, spacing, lp_fee = config.sqrt_price_x96, config.tick_spacing, config.lp_fee_pips
         dynamic = preset.key in {KnownLifecycleProfile.V4_DYNAMIC_FEE_POOL,
             KnownLifecycleProfile.V4_HMM_DYNAMIC_POOL, KnownLifecycleProfile.V4_UFG_DYNAMIC_POOL,
-            KnownLifecycleProfile.V4_AUTO_COMPOUND_DYNAMIC_POOL}
+            KnownLifecycleProfile.V4_AUTO_COMPOUND_DYNAMIC_POOL, KnownLifecycleProfile.V4_RAETO_DYNAMIC_POOL}
         hook_fee = config.minimum_hook_fee_pips if dynamic else config.hook_fee_pips
     tick = get_tick_at_sqrt_ratio(price)
     liquidity_net: dict[int, int] = {}

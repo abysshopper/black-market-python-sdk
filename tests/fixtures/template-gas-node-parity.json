@@ -1,0 +1,4065 @@
+{
+  "generator": "Node SDK 0.16.0 capacity-v4; offline (no matrix re-execution)",
+  "matrixSha256": "c4b625ec838351f815c545be174ccccb0eacd4bacd974c973b945e4d7c108b41",
+  "cases": [
+    {
+      "planHash": "0xf0d739064c2e2266ae9a5d5dd14721c2e1a8c7d4e90d12f5a952f9a1b9cba5dd",
+      "planEncodingSha256": "c1b46aba4573ba639cdf12cbeab4fa74c3b4ec661bd192a726e31bea6ad122a1",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "f406c7bfb79cb9c2e654c69a4d53c33a3dbb8615dfc02193439da00b8b8dced6"
+        }
+      ]
+    },
+    {
+      "planHash": "0xb2049b221725179e8747d4b0f69324bab926c762506432109c62d3ac1aafb175",
+      "planEncodingSha256": "9da526040604ea864feb8fc4a319887d84078ee5d55aeeba8bfedde6afd3771b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "9f5fc11a45e721962e11cd313d1d259a76c53ba2ebe293c92dc7de9df7523e94"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "7f7142261d00b100aa4df07ff41d96a33c639c5772b46b1419a34556bbf5af80",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "97a4c23517805c354386094e888c3df1310f8149629d4618e2636a99508815bc"
+        }
+      ]
+    },
+    {
+      "planHash": "0x2eceef60b227f070a2f3fb8452e785812c0995dde62d864e2c43ecafe15ca4ac",
+      "planEncodingSha256": "9b63849ab510043df3969e60e8fcbc75d55b4c4377c3cd5eae790fc4e6255a55",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920099305874089962",
+          "sqrtPriceAfterX96": "61266799905355922715649145794770"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "f57f439a93fb08df98a96309d8093837874918b66e89b260fe9def2f21868682"
+        }
+      ]
+    },
+    {
+      "planHash": "0x17ab297c98fb13ebce7a640341340cae7e6957856001c66bab9ea2d7594e1f09",
+      "planEncodingSha256": "16fb1988697f86a2a986335079f88dc25876dde3e39ab248964406104660e769",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920099305874089962",
+          "sqrtPriceAfterX96": "61266799905355922715649145794770"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "72de0fd519f9decd41e02e516fde13361b949d843f2c68e4b69642a9cffb8771"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "2b62c400653f4f518ebdd927790f99f8250113f8887adae322ee0bd72305d8f0",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "063b1fb1015c4089a1ef3e3f360c8bf6fed67bf17d1f0808d471556907b9e726"
+        }
+      ]
+    },
+    {
+      "planHash": "0x0242c1ad44c8c6a36af2a5709f3f5e241a5aa3b69f69d3660c1658ca2eb5843f",
+      "planEncodingSha256": "433c09447e1472716a2ca97d8b1ef85b26380c4e0557cd5ec167765e81f12803",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920099305874089962",
+          "sqrtPriceAfterX96": "61266799905355922715649145794770"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920029211137474942",
+          "sqrtPriceAfterX96": "61266437201963569992595991485444"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919959117645748587",
+          "sqrtPriceAfterX96": "61266074502865646625257408306847"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919889025398881418",
+          "sqrtPriceAfterX96": "61265711808062076344643212573074"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "16124389fc06de53fbd98603ee27077702c0754b4a8bab2e87bbbf3debace054"
+        }
+      ]
+    },
+    {
+      "planHash": "0x3a32c68b3b569640ff6171827d20ad515413b551d5ec0b2b182442aee1171570",
+      "planEncodingSha256": "649db33acd33d34b29880978eea4a9228a2614ffb1ecdaa7e074e37fd77d5913",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920099305874089962",
+          "sqrtPriceAfterX96": "61266799905355922715649145794770"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920029211137474942",
+          "sqrtPriceAfterX96": "61266437201963569992595991485444"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919959117645748587",
+          "sqrtPriceAfterX96": "61266074502865646625257408306847"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919889025398881418",
+          "sqrtPriceAfterX96": "61265711808062076344643212573074"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "ad4b6123a884fc2a7e8c499111ce7edbe3f3cfba7e7da4c53a4f33376fd41e0f"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "da6848ae947f3a9cfee2fbcfa432ed5406d487b951b5511b364135354a077a13",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "dc8a93f02a4e363dacbcf51a934bdc1975e9a2d7842d78d375d0af95b050f01d"
+        }
+      ]
+    },
+    {
+      "planHash": "0xeecd51bcc6111db94972a29e33e32701328071ae36d4f978c52d6ba1fc51086c",
+      "planEncodingSha256": "1fe99519522eb13413e25f9e35ba352609e20c3638c2dccdc57536afaf86990f",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "542a097a2ba2b1e0190849179daa2b4d545887f59cb74742e3073fbb360ccbee"
+        }
+      ]
+    },
+    {
+      "planHash": "0xd87542095d4bb432450b10563c0d6c6489724a05322a3860b8a83e26571e85ec",
+      "planEncodingSha256": "440f7d9e628f1adbf59c80f12ac68b40690380144e58d019dbd2eab92e17a688",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "99f1da729d88ba918138da05422a4fad5f982aed4a1e29e5a35b9e7a0a25fe18"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "24dc265ca0208dc5b1fc257847811fbbbed01e0a34067fc676764c5f1d75e266",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "c6992631a4372ea71bc339778d715f7874efabbe53ed7d1473b326af6a04aa6c"
+        }
+      ]
+    },
+    {
+      "planHash": "0x7244be4827abfeb92a87a4b024c840cbea3e6bd5b4e96baf5f3b63ad3de1e216",
+      "planEncodingSha256": "d9fc1b4bbfca899f431f2253e08547de0d4613f0ffc5fdee0c9fcc26ec128c8d",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "61266968027973187022342277886648"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "66dd9598fcdc729cf8a15aaf0f1d28ab964313a779d4aeb1dd6c6598d6fe71b8"
+        }
+      ]
+    },
+    {
+      "planHash": "0x0534a0b37e905964cb27ea1e9a0e9c5399a8967e61f9e23e3925266c0e35bb2d",
+      "planEncodingSha256": "601443afbabc0c76b69241f5a35010a591815ef615e13f90ebebb63005027369",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "61266968027973187022342277886648"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "0e556de6dddfc207d968fbb98c48a6c48378b16be8c06e8d527ad55b0b3af59b"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "8c50c53efad03c2e039103bbea7f5a261fecb16eebfda5b97e4406040a0ec281",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "5c3e6c063e1dff47468c98b2137895a46291fa411f30800516f4148e22ae3fc9"
+        }
+      ]
+    },
+    {
+      "planHash": "0xf3df55ec594ce53d9d2710827abeba58980abbbc07ecab57352eac43f5a6eb62",
+      "planEncodingSha256": "5e2e9cb53d2f7c3762cdecebd2cb164f6873d6f0d3d96f92595248b32786c5fd",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "102454910654640040074060383"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920077946693447350",
+          "sqrtPriceAfterX96": "102455236052374645470740140"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920040342488750673",
+          "sqrtPriceAfterX96": "102455561450109250867419897"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920002738642344478",
+          "sqrtPriceAfterX96": "102455886847843856264099654"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "9050860983c5b88e36b495f34fbb464ceff31f9452ff05c30348ab17c6e4face"
+        }
+      ]
+    },
+    {
+      "planHash": "0x07fa61527ae571d9b77ee157017a0dd042480f233dfd9ce2d67930b094109253",
+      "planEncodingSha256": "c4167b7c54941d0dd99646c47b3fc9a9bbdd9e3e202741660963aeffed21d1dc",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "61266968027973187022342277886648"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920077946693447350",
+          "sqrtPriceAfterX96": "61266773444139596980312662828386"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920040342488750673",
+          "sqrtPriceAfterX96": "61266578861541999162519024597715"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920002738642344478",
+          "sqrtPriceAfterX96": "61266384280180381792505696370169"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "c25a74723fcb0fe76de91bcf59f3cf4e34fdd01e19718c51ee093587c0be233c"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "98c85b863b1b6dac7018db941f4bc98b72a348758857e252ed31db7e25d1d516",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "29d614f439856b663f6e11cf87582744a5e7ff7d9f45bb1d2b3a2368434d9cea"
+        }
+      ]
+    },
+    {
+      "planHash": "0x7394c3f26e03f1a82440a18c5023e8d9da92621356bc8183b127b095faea1907",
+      "planEncodingSha256": "12dc6f0d81b0f0310f1bc9f37d0228190ec6bb935f123d18859b455e8dc8aabd",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "3382bf7775ea602016a10a46744813d0ecc56406bc6bd1ebb2902fb490a649dc"
+        }
+      ]
+    },
+    {
+      "planHash": "0x9d052a2c5b829ecf15d387373790e9ecce511ec8249a3467f6d62a7c10a6f4c3",
+      "planEncodingSha256": "4afc764cdd8695aad37a264e83dd8ad43ee8e673d07b2e0835a223e4c4e40311",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "fe5f7e6b659ab6406d1fd8a8a8af5dfd3f2453ab42280441a6def9afe1ab4cda"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "ffd5e41d9e19b824651a0ae425166abaa3de95ae77925b6e4e19dbc02ff321ad",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "b860139ed4df5fa2a9f401dee79c860a92a7f922a3ac4d5f42a8383ab743f065"
+        }
+      ]
+    },
+    {
+      "planHash": "0xfbbed65ccfdbba7aed8eeb3adbfaacd11dc38d3dbbacf6cc887212f3dc6955ab",
+      "planEncodingSha256": "6301a59460c143d460378f692a5f6ba90cb587183ef1eadc0a4069ccda0e1626",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "547a1dd300c1646d07426f6f18eed3afdc74c150be37e92b047e526b9f0f1e97"
+        }
+      ]
+    },
+    {
+      "planHash": "0x472b8138521520934978bf5813c1a30fcf910738c2d3e0eb20eb5dd41ec6a806",
+      "planEncodingSha256": "53acadf44715dc30ca13ce5d8831205f1fa0535633da1199eba30b57b76bb6e3",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "386625d0d5adc9bbeddf61dfb025781c809cba6fce539ed2dbcfc5749e76d4db"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "284a0134df75c03b6ab1f2bfe8599e4659bad8c7b7cea6a5920a5b29ce63c4c6",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "287825cf5e569f0d23dc7344c9dfbf217aab67ee6c543faf4e4ef47d9844a997"
+        }
+      ]
+    },
+    {
+      "planHash": "0x486910ddf74c03f1143e1c32bb460b63b3071d3d539fef4de5837007e0e86b91",
+      "planEncodingSha256": "41a72a0a67c1014257cf75c833f7e54abee6248c696f4ac96e243b2d9b71d2e3",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920124275478119777",
+          "sqrtPriceAfterX96": "61267093080660942500964924669235"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920117556705933964",
+          "sqrtPriceAfterX96": "61267058314529207647837348753626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920110837945185886",
+          "sqrtPriceAfterX96": "61267023548436928991149326879045"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "956bc10703d0dd4b016b749ccb040cc32c46730698d38a2e763443f3804cf71d"
+        }
+      ]
+    },
+    {
+      "planHash": "0x899cec6f977a57967a797e039dc5bfd398ed972aa81e544b627912bd5e12fc62",
+      "planEncodingSha256": "05bc840ce9fbae189ccc5ec2920c158f84ac3c35830eb8c53471e642e21d6287",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920124275478119777",
+          "sqrtPriceAfterX96": "61267093080660942500964924669235"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920117556705933964",
+          "sqrtPriceAfterX96": "61267058314529207647837348753626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920110837945185886",
+          "sqrtPriceAfterX96": "61267023548436928991149326879045"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "021fc6077b4336d6f527455cc792a25dfc031a726a6cf04cbb47bf0f6cd4eaa5"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "c3a22dbb5a11d7f6883cabfac594eedae45ad89a15b2838164e74f151ff44d54",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "b5c83777db8c60ea0f16a2b3ca66a058afeb5b9eee4964a8ad395560891fac60"
+        }
+      ]
+    },
+    {
+      "planHash": "0x1cbb4891c21f29262f35adc098857a81a16f9beed604ffcd4936ff0d66942773",
+      "planEncodingSha256": "a923575a4d0249bdd12da888e5aa12af9a9c19c7686178ff35b7105a01db1253",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "e3c165037b4fe51c903b1a29708f64f5f69d319c23d0d54f4358b424cfb206d9"
+        }
+      ]
+    },
+    {
+      "planHash": "0xaa5ca954da51e91adc99549966d0e773b5b1afdb00b97f2b4ebd4a840344cfb1",
+      "planEncodingSha256": "a8dcb1a8f525b8d659292464ee3e2dbfae47e27ae0bfc87904203af88c91a8d6",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "e5abce040ef69fd410c2adbe81ada46e6cd12093698aebd4ce43264590ae9a61"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "832d38e9570d82dc02774f6d7ccedaaa950cf4d9c6f3b42e222d78c7a9a445a0",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "f047746fad81a1ada403356d0bbf6d0be4d62dafc24c77e248fedd5e9c7b22f0"
+        }
+      ]
+    },
+    {
+      "planHash": "0x9369c03d8a2408ef8e89ecc061f90f1cfdd5bba0b4b2c9110c56ffa8c54d4737",
+      "planEncodingSha256": "1dc3582843eaa7fe64850b76a3ff7aeb60a1191a7d3d98a14930b0a175efd77a",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197370933126191281087",
+          "sqrtPriceAfterX96": "1118563698692672647781270956268245042"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "5a9109e26f33b89f893b44808ec013d4bf245c3f12ac1e20696a78be0209520d"
+        }
+      ]
+    },
+    {
+      "planHash": "0xeab5eabd62e1f6aa93187b17d5b2fc829d09bcfa72a4891536ecd9cf99f6568a",
+      "planEncodingSha256": "84d50a74f15b1c1e9237a142102e24a549413d13db7c52244210cb78425fb961",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197370933126191281087",
+          "sqrtPriceAfterX96": "1118563698692672647781270956268245042"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "6f637e342ae9552aa27e9f0b2262cde6da1ec995e5fb36b917b64fb2ea7e6b1d"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "24c1c242aa319f7e4f3049927645724c29076dacf714c5f431f8ed0145d094c7",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "97b08631183b53c6fb6eb21310cbeaed862595e12e60a30ef9b3b602e2df11d5"
+        }
+      ]
+    },
+    {
+      "planHash": "0x2b4abdb5fdcbcb557caf5f18a3e3bdeb67d513e70661602b9bf93ad93663400c",
+      "planEncodingSha256": "0824f25bd3a5d7564b25c07063be2b2b3c5468722d2cde634a4d8af68a37e762",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197370933126191280950",
+          "sqrtPriceAfterX96": "5611751697934661434485"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197293037929952641675",
+          "sqrtPriceAfterX96": "5612859294603755286935"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197215188838257311936",
+          "sqrtPriceAfterX96": "5613966891272849139385"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197137385814728044229",
+          "sqrtPriceAfterX96": "5615074487941942991835"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "cd44258755a0dff524c64103b0142ec8c9a5d459de42c8b847ac2e659d6c796f"
+        }
+      ]
+    },
+    {
+      "planHash": "0xbfb9af2d116c82b452842bd5d3c2a0bc2d902bd7926dce74103a265f520b38b0",
+      "planEncodingSha256": "a2c6fe11fb78b8fb32e574573e2dcb731c4e8e5f4993794cc04bdfd8373a13b8",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197370933126191280950",
+          "sqrtPriceAfterX96": "5611751697934661434485"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197293037929952641675",
+          "sqrtPriceAfterX96": "5612859294603755286935"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197215188838257311936",
+          "sqrtPriceAfterX96": "5613966891272849139385"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197137385814728044229",
+          "sqrtPriceAfterX96": "5615074487941942991835"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "7ac9ac17dba518d4918fae240a9ed63bbcc6126c325b449dc38cd8afaf2b7e6f"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "5e884d1f6b3fc4ba07a8efd31c1e619b96d834a40789a628d6dda1517fe25072",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "341591789ee0ea89ba4d41ec5d9dbad492817f54a8694c9ff0383ec376802191"
+        }
+      ]
+    },
+    {
+      "planHash": "0x7b1f026900925fc926e1f39b6babf64a4e25caf56768c757b641b429e79783af",
+      "planEncodingSha256": "ab8f95f1b0da4688cf29ad6704005b0ea2d30e1aeceb4edf16a2b61c762fbed5",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "8dc0de489a1f26a2d7aa6812114a2620e7ce824a59929b01474374352262bcea"
+        }
+      ]
+    },
+    {
+      "planHash": "0xbd8ffb9259998b30e6930b4b23d21c796cd70ad80774fe79daecdfabeec9bbdc",
+      "planEncodingSha256": "4f2e5b504d461304c0e1fb14957c3d06335f844126f7505981fa5026c7be4c9e",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "5521e7872d215fcc8afdd1a32c3a19d16d2096c57b02b568329aa1342d4a923c"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "9632e5671794ef8e4ebfd5ab5a7493519dc9447947d076beb00792aec07e8431",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "9ef877abb251eb096efcf1ccb4cdc93c4c2fef5ae5c7630e6ef1724146c9e344"
+        }
+      ]
+    },
+    {
+      "planHash": "0xbed7734e23861be449fa45207fc1f4af8027ae9870828e65df72a0585173e2f0",
+      "planEncodingSha256": "dd601eb41571a824da9e206ac3fbbf472cd2958232a0921e221836280e9fa6aa",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858227",
+          "sqrtPriceAfterX96": "1118666040813078987230903106524964183"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "b6400c63a8401c79c348f2a13cc46c11d29d80cde7feea6a4e82889284f7add2"
+        }
+      ]
+    },
+    {
+      "planHash": "0x6e00d5171f25a17f6b21cd9c1b6ac80b5158645397cfc6bfd6170eb7cb63a1da",
+      "planEncodingSha256": "8a0bd9dbc8acc14ac675293e5cd70978c2b8a8196833e7f8e0b89d379500c18f",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858227",
+          "sqrtPriceAfterX96": "1118666040813078987230903106524964183"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "cec304db245645da790ce492b63c8fcb69345e1804e5e8953f40d2953147c925"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "612ac30e0025025d766da97df4a4233668c90e2110bba2f245a4f189679eeb22",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "e011973aae2806811c0466aac46f6c0cb0fda351fd54611962efe97eb19ef13d"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5e62fc4cc891920803a2c5a582d4c6fc21662196dae7c74278cf5127b1bcadf2",
+      "planEncodingSha256": "e9041a4679050d79c75012c0d9456f70ae43c92eac4061fb1a63e4ad71f75160",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858065",
+          "sqrtPriceAfterX96": "5611238302026492918398"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197347190931813990157",
+          "sqrtPriceAfterX96": "5611832502787418254761"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197305403713125138931",
+          "sqrtPriceAfterX96": "5612426703548343591124"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197263629765363422220",
+          "sqrtPriceAfterX96": "5613020904309268927487"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "590bb15d2e4b0919cd77cd7b433a7fbdb79fce4035ff390f7610cecd6ceacdcf"
+        }
+      ]
+    },
+    {
+      "planHash": "0xeaaf7a7cfc198a640c21da91d2d6526fa368fb09b76c1dc19d6473713698550a",
+      "planEncodingSha256": "0a56a924a8e38e39f9d8415a40d668a3aaa14c2d68c38dd71745a3c19162011b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858227",
+          "sqrtPriceAfterX96": "1118666040813078987230903106524964183"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197347190931813990319",
+          "sqrtPriceAfterX96": "1118547592478717207924612476683838040"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197305403713125139092",
+          "sqrtPriceAfterX96": "1118429169225160622425226280809092163"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197263629765363422382",
+          "sqrtPriceAfterX96": "1118310771044443983256467318598735110"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "3c74847b7bb614b29ce8302b2a523e1245a0afaad27f5fd323f7037fb629cf67"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "85460cde17e686423d2d1971a51e4c4ed114ea48462c880c2bd860d353430a53",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "54d7c8c700c0b37e5eab445c3f3a9293ba5a207a7e16dcc71482fbcfc520b1c5"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5db3ccebb854ad80db0d1427dbbb6e976042ed0c11d1735a5ffbde8c634b8576",
+      "planEncodingSha256": "5a68967d3eefaad7db1d44a1663c1d41b3f5bc02f2722097d05f287d55cec3fe",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "6701690018dde0f9b4ea5484085dc36cc1db04928c30e5ca4052b513ed3c6f13"
+        }
+      ]
+    },
+    {
+      "planHash": "0x66c7734653ecc8a0f99b9650da6805f4b443a328f6198e711cf29b05d8173565",
+      "planEncodingSha256": "029a4aaf426f9d0fdddb4c7b491124b1096ccbc71d3aaebd36f1fd2da5d9cdc3",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "a1f28f720560c92b326c645434ac83501cb2e3f09a911cfd3d1ff5cb4f815cb9"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "795733b040455d50712f8b9978aa0a58e54d4ae0a60c6c5259bdd653ba1c6775",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "b53b9fb93fd6ad091e54908946eb9372ab8f03e08bf4b67746e2700847554eeb"
+        }
+      ]
+    },
+    {
+      "planHash": "0x4ea49587610d80759b5ca5cfa60d50a459ec72414381784636f4301e0c705eed",
+      "planEncodingSha256": "f178119048f2c93fc52c2adfba8050a0f9e8c661c80b85b82a4aaa059ebe6fa9",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197406160780888328305",
+          "sqrtPriceAfterX96": "5610750265911069039494"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "450867d0a9613f8b8ce1fea6194dfb5cb3a218f3d8682706918c844b6d36ba16"
+        }
+      ]
+    },
+    {
+      "planHash": "0x13149bdf19c4dc0c57ac55b069cc16faf25e7e846b717c0edd7845d6e1cda4c0",
+      "planEncodingSha256": "426480b479ffe4926583a9d721c6ca4904b5a3d8feae9d6a7a5f744d67da0734",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197406160780888328307",
+          "sqrtPriceAfterX96": "1118763344988659928842196963361323611"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "49c8a70af28b517a2d2baa43e4fbba670a1f8b3c1eca8dcaebe445875f6bc374"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "3d4a9476906e1032373a344f71b87054c48eeaf631ee7bcdbfdff74f399f012d",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "6cb1187f48ee22480a575321fef3ec9652a74378b772a4d0eaaf6dd5978ac5cf"
+        }
+      ]
+    },
+    {
+      "planHash": "0x29a4a6bb1a914e9e0995e865c7ec5e810fb8a3529f999f605a73fd0dd13fd95e",
+      "planEncodingSha256": "16285b7854cbffba719222bcb84044f72bc8b68d51e680344fbfa9ca77f460dd",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197406160780888328307",
+          "sqrtPriceAfterX96": "1118763344988659928842196963361323611"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197398690422186946306",
+          "sqrtPriceAfterX96": "1118742176542204248625925331656557235"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197391220487524026429",
+          "sqrtPriceAfterX96": "1118721008896802068821711816478593737"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197383750976867476470",
+          "sqrtPriceAfterX96": "1118699842052407920251826403007039377"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "292878bbddc6d7b34777509e9b0f9e295a840fcbb23c45df38d5a46e888cd466"
+        }
+      ]
+    },
+    {
+      "planHash": "0x2b2e02c3942bc360dbc64bbce2c906dd197bffed51b60d18d8ee45a61e7033dd",
+      "planEncodingSha256": "ad67e25b0be3eab62cb333526dc33fe3cff8f4b1f087f02c62e19907388a573e",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197406160780888328305",
+          "sqrtPriceAfterX96": "5610750265911069039494"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197398690422186946301",
+          "sqrtPriceAfterX96": "5610856430556570496953"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197391220487524026421",
+          "sqrtPriceAfterX96": "5610962595202071954412"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197383750976867476459",
+          "sqrtPriceAfterX96": "5611068759847573411871"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "127e703de73be411aeafb3ee0af213237189e8052a52480bf1a0b220df119dbd"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "a35bbb915d7200aa9d00eacc18794e18ee988055b56acf79be636e67e47e8d7b",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "d1c6741667733907438287961a4bebff43a54191574cd4f9b3e187f76e0eb3a4"
+        }
+      ]
+    },
+    {
+      "planHash": "0xbf5dd70ef3373c23fc20a0e22b86a00c129f0529a6d7435db4f02a59dea398ab",
+      "planEncodingSha256": "9d737187ecd35d6eb731b87ff599800771694d90927106e918ec533a1e4c660b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "8635480"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "8635480"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "10362576"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "6001a473ec9e4536b7c070f6f0ccbb3e4054edb5fa2dfa8523ada1e2af1ee611"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "3ad76d36e00140d89618045d61a6c403004cf267c658726497379ce63f0eeffe",
+          "preparationGas": "19020000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "544e8852a69715d8bd5467da265b5541b142ace13f7de612af28ecbce9d34c27"
+        }
+      ]
+    },
+    {
+      "planHash": "0x21594a11cdf2d060e5d68d6fe3413db08ab1007de61e231851afd7326f5b58d6",
+      "planEncodingSha256": "c2932bbcb508d9ba0805623a8080d88ba3f446327195783d85a4b1dc3ed9a3ab",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "9398920"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "9398920"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "11278704"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920096805006950604",
+          "sqrtPriceAfterX96": "61266774024011928218914804660383"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "313c244573a48f09f32f97219e5618d244d3f3e0a6735b8be318af1fe1f4607c"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "1ba70201d31694215ab4fcd50b605ce82dffd8682155701181c1a1a915b1489e",
+          "preparationGas": "19020000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "fef420356010f5e53aa810486a75127952188eecf9e417595ae81faac2359f9a"
+        }
+      ]
+    },
+    {
+      "planHash": "0x2ec3269d7c98ff35b447e1090b479ae37b9ee506916738fd76ffc6288fcb22de",
+      "planEncodingSha256": "faf82e710367b45b121b5c19c5657c7d2f50e5a2f7946b8ca70cca7e3057e53e",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "11671960"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "11671960"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "14006352"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920096805006950604",
+          "sqrtPriceAfterX96": "102455235082665410347520269"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197368153457136216193",
+          "sqrtPriceAfterX96": "5611830732025350457050"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920021708658724602",
+          "sqrtPriceAfterX96": "102455884908425386017659912"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197284703466959248366",
+          "sqrtPriceAfterX96": "5613017362785133332065"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "39577624f3e50c4c36b4c447f62294c6893696779d1cf594da264896a69089a9"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "b1cc0e375187d410873ec0ca4712529da36d5cbbd3106bcd9dd1affdbf593eca",
+          "preparationGas": "19020000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "b21c9dec6f4044f533441f66adabbbf8145a593153040a835f2e34b8267b3b84"
+        }
+      ]
+    },
+    {
+      "planHash": "0x75bf6930c1993c995337bfb2e2e9db7c5cbc9736175a712b418f7b6639a25dcd",
+      "planEncodingSha256": "036d4e19bf31c99d65c24e53c52e3a97ea2aa93d85c8f9bb2b0018ff50bfa279",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "23750680"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "23750680"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "28500816"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "a6a88cf605874135e85072edb541d7357f886f777bcffb4d7dc9b445ba63bab6"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "4132e0afb86cdabb347ce9807d45db3f3f90b3341bb5e7f1d91431507fa0a657",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "67911c58aaab470f2bf20614eb7e64b33a3c3510658bb1989aa873a0c754cdd2",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "b9665a6c3c6ce8d651ca5b4b06bbca7ba8fc1615dabb8edb8370b44904c9e6cb"
+        }
+      ]
+    },
+    {
+      "planHash": "0xe499e5a004b6e9aee8781fe5c5b2c6c42e1d5e7ce2f7d6047834c165dcc1667f",
+      "planEncodingSha256": "9b62b5258eadac0525d0c11709b4c953fa62d31623bad23710f9c4b8c2000089",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "24889120"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "24889120"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "29866944"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920083836524634359",
+          "sqrtPriceAfterX96": "61266639813862723935137416396467"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "105556db1b24549c2d1f29dbd26c041a489689ee03cbbc83cdacfc94f2364573"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "d4593840ee8b9d03d935a0c02cff1cc39fee9b701ba4f6c3f21394051301e7c1",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "06a2089cc3cecfcf017bccca51024a9ff4259fcd90f5e92eea5d50856d2328d8",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "6fb757802ef57d5536dca01099e8549c641d39bbeeee35ad57136e4fb59aff5d"
+        }
+      ]
+    },
+    {
+      "planHash": "0x30cbb55390fa0a55da0bc6464cd4a48c8984f3d3936aea882411e049d4a551bd",
+      "planEncodingSha256": "79e1db7f62baf7815a148854fd95db076ccf07ae7dfd282a047520e3dafc30c1",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "28287160"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "28287160"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "33944592"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920083836524634359",
+          "sqrtPriceAfterX96": "61266639813862723935137416396467"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197353740439143503645",
+          "sqrtPriceAfterX96": "1118466262280380205934552275548733470"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919982803983425055",
+          "sqrtPriceAfterX96": "61266117023604792092787365392920"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197241492992736586747",
+          "sqrtPriceAfterX96": "1118148191334387735619745977311859535"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "a50cd6ba9d0ff421883157f5b5fe02f7686a42fa671fb655c03017ca14c55e87"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "6237440a3b1b3d1b36c83b643d843abe939e21410db6fffb558036eca43e714c",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "846d199c0c96940a282fff9c938948dddc4796185b1ba3ec329372614c5629ac",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "a642a7ffe379536bbbe23e128733da382afcb1966555d444490eb82d49d6c25c"
+        }
+      ]
+    },
+    {
+      "planHash": "0x30dc93911d79c64ff7c4387b57b2f247113e1caa82506ef8901314d26cf62ad2",
+      "planEncodingSha256": "02c58411b1afc0505a5f65735c09e43f9c276e19b035e00165df8fcab5f87cae",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "f34d6c58e9c5c56d0464e61117e4920ef11138d59cdfddc1217e05b7f0c9b103"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5e1060d22e3ffce853a7aa8e444d0a1283cb4ce00ff9bbfccc7268e9f9a2b0e2",
+      "planEncodingSha256": "85f4cf2f8e1127096119edccc6b80645168daac8d561302229a97dcba6ad875f",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22882700",
+          "activationComputeGasUpperBound": "3445200"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27459240",
+          "activationComputeGasUpperBound": "4134240"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "929b475a6a9539a439d5da18b44763f048ca0ebc95eefee1adf598736deecb52"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "4af3f302942c5ca317feb8c91112b83308153fdfe0505cff765b794f7418031b",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "0c2c16fb93875bea97e2becbe393f4e797b2f3755b54d280795410f9f6cb1daf"
+        }
+      ]
+    },
+    {
+      "planHash": "0x804ba187363042a7e64297a83dcf9a27104bb39b9e3c871d2d81d2a79e5a8fc8",
+      "planEncodingSha256": "a91347f2d10244bd65e5f95fc4dd33dd60658a160bb6b92d8e4d04cb8a3fef39",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973918068962143385",
+          "sqrtPriceAfterX96": "61266796608033012967055605409473"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "efa7f03875051f7ce930cd5c05587f4fab9112c7947aca3c1752eb4e33b35717"
+        }
+      ]
+    },
+    {
+      "planHash": "0x9463dd75eb68651b513922c2db7a94d008326f06cdfcb756d08dc218b4614782",
+      "planEncodingSha256": "a3de4f862d9019640b3df273e58ba1a1f436062c6a227f51bde1c12c033d6dd9",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973918068962143385",
+          "sqrtPriceAfterX96": "61266796608033012967055605409473"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "89129fd6407f4459110c8927727c11f06a6bfc773c48115c6babc8a95bc820ed"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "cfd1f9e9f15047d310fb27ca656c057fc13674eb3105c38cffc6113ade88b928",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "34cd07486469196121879632ba2275f916de8776283c64e18601d00f3fd85751"
+        }
+      ]
+    },
+    {
+      "planHash": "0x7e6b66eaeefa13ca3b17e8ca64ea64d214ce23b4f4d6deb6deffd87670cb2b89",
+      "planEncodingSha256": "a718cdec55c0f5b6bbc70751b19e07bb4c0f7a5b76ec8d99d014eee47f53ece5",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973918068962143385",
+          "sqrtPriceAfterX96": "61266796608033012967055605409473"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973846693994342250",
+          "sqrtPriceAfterX96": "61266430607396186627670892715831"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973775320305690462",
+          "sqrtPriceAfterX96": "61266064611132223677207995897198"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973703947896157454",
+          "sqrtPriceAfterX96": "61265698619241045747688570049958"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "97e84b664925a98e44dfd8116f60f0a86c305acedd249665db6d7252af46dda7"
+        }
+      ]
+    },
+    {
+      "planHash": "0x8a23b52cfa457413ee85445b0569dc60add739b02fb8899d12fa44327456f7af",
+      "planEncodingSha256": "8ffc28f43f37ddbabc82ece3a162723cfe92a86635f8f099a55c1e064ba8f533",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "25535540",
+          "activationComputeGasUpperBound": "6098040"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "30642648",
+          "activationComputeGasUpperBound": "7317648"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973918068962143385",
+          "sqrtPriceAfterX96": "61266796608033012967055605409473"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973846693994342250",
+          "sqrtPriceAfterX96": "61266430607396186627670892715831"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973775320305690462",
+          "sqrtPriceAfterX96": "61266064611132223677207995897198"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973703947896157454",
+          "sqrtPriceAfterX96": "61265698619241045747688570049958"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "96f33f0ed157238b86d84e8bf83f0ab4d6652e2b88c515baab3487243c40eb9d"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "aaed787d3f4a8d1ec7942d3bcac00a3a461bbd2350bba395faad59f09361e521",
+          "preparationGas": "9300000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "54a9e15404c4acb38fd7bec5c7b45fc247c69205e5b2b89ac11af9798f733cab"
+        }
+      ]
+    },
+    {
+      "planHash": "0x448584d1a6799391b0ec485673e7ee8a38324a0722ba85cb3b8f5920a22d85be",
+      "planEncodingSha256": "665a016f2d0f89d096866ce7269c7a4b3bc2dc3900dbc087d6979147ced6897c",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "f4ac2e3285b5ff23a802229e4747b37e3610068bf24e18e1f048c0e2a651e512"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5b6be8c8175e4b78016f71435f680f069ccfd7cacdc57fb94e60c67b33d45d09",
+      "planEncodingSha256": "3461ef5d164f09b91e87f359fe6a156d5dc03c99799cdd3caec5820bdf0b84ce",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "28166300",
+          "activationComputeGasUpperBound": "7853800"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "33799560",
+          "activationComputeGasUpperBound": "9424560"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "4f3ef949d92ea54c4bcc02c50a7c33e1ce4ced80e87a8dde48749c81da61ddcb"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "81a27f11e347c14965bb394c13c29c9f2e152b055af3b73e071267fa3c324178",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "4d3f81988599814875c8bc4b60a11593ef1de38a355206d496ec40c94aee9e9e"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5f74a7c0410c69f0c084da28e5fdc218800f184cd3f0590e7106c35f1f430f8d",
+      "planEncodingSha256": "0b5ff55b6f17ae0807be9f60758ff5ce3df7c91b0e8242873ae5154119083aba",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "cac845c7803b9fde185b6a53e2a27454529bd97ab5a10fedb8b09c1aa444ee0d"
+        }
+      ]
+    },
+    {
+      "planHash": "0xe18c65a27b8903922b67a73a5d1ec3876343755e24fcdf0c50fdddebdb949ac5",
+      "planEncodingSha256": "7a92fba2398318c50d5006fe342f67cd9188d6da7c1d6758dd613253c1e9fea0",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29054740",
+          "activationComputeGasUpperBound": "8742240"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34865688",
+          "activationComputeGasUpperBound": "10490688"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "4a72b278ec43731868b2309fbf6146482912d5d9b1b4b2a491a7393046b80626"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "c10e95e118580de50a77883c995b0a0b20f59f6da0f319236122feebcf6315aa",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "11297ba7323cd046a9bfdd7522869c8bef66ad4b450f6f0222cf0ab2e6094af7"
+        }
+      ]
+    },
+    {
+      "planHash": "0x8b4b8ea41aae7bc99d29bf2114b75055362f05d8de9b0fabcf51594d4897cd6e",
+      "planEncodingSha256": "1fa7f49bbf5d8ba7db80ce55b5a0b33ed487eae91c48bb6df352ff9e21e46e62",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973896319669489111",
+          "sqrtPriceAfterX96": "61266769906263154149860700894985"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973858028650827644",
+          "sqrtPriceAfterX96": "61266573554761196852869933052293"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973819738000317212",
+          "sqrtPriceAfterX96": "61266377204517794195541937657619"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "15691e7565bbe47f3c0af7e69f61d8a85fa188a10795ee2500dff6d2d38d0135"
+        }
+      ]
+    },
+    {
+      "planHash": "0x3e176d905bf0b9690f3a94fb87084bb7cc6c5fe6876b365f58c857676ae811ee",
+      "planEncodingSha256": "418b3373fb61d07d48d42250e1c0dfd95bcea3993fa148f530b6f07e9fbd0466",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31694140",
+          "activationComputeGasUpperBound": "11381640"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38032968",
+          "activationComputeGasUpperBound": "13657968"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973896319669489111",
+          "sqrtPriceAfterX96": "61266769906263154149860700894985"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973858028650827644",
+          "sqrtPriceAfterX96": "61266573554761196852869933052293"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973819738000317212",
+          "sqrtPriceAfterX96": "61266377204517794195541937657619"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "2b64804ea7787f373b445ccb769f287d8525a5bb0ebad4ddab9c4da68a444760"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "ed09f50318fb5c153885a94507e3c068ee3b0a72933ccc08f9e40ab58033c2e9",
+          "preparationGas": "9790000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "71dd988841bebe8172bbad459680236802ac1e50b66d68ab3cf86f9045a3dad9"
+        }
+      ]
+    },
+    {
+      "planHash": "0xb3e0e754045a9aa6750f7a5c60360ed9af019ab96b2df25a7c74283289476e1f",
+      "planEncodingSha256": "c6279210771b89770d7c7e3161be20f5a9c8aade574bc89468767b6e6e8e2d88",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "ffbf53ac36cc532fd522765181092decb813696f43204b92b8bdcda72afc8e73"
+        }
+      ]
+    },
+    {
+      "planHash": "0xa5efa12a71f438779f88f2cc51b4bc97c61586d2e37d4b87b30b0e97e2227e79",
+      "planEncodingSha256": "4b9e15d5e850d91c49ecb9b645d6f9da2aef4a7fcb26e73590fdb4ba1e5d987d",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "46281500",
+          "activationComputeGasUpperBound": "22969000"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "55537800",
+          "activationComputeGasUpperBound": "27562800"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "2fec9a23dded828ed1bc5727bd3b8d0fbf5761fffa8d60cdfafc836aae55e25c"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "909eec44d005d4efed833fd652482f93bc79876a27d296b68e1c8aa21025b5a2",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "f8027f6a123cad0f2a25b2fe5bd3a35ef42db050bec277e71ade0f436de6d60c"
+        }
+      ]
+    },
+    {
+      "planHash": "0xc2b1487ec68e0850bba01c0f99c1a8f8beb38174a0867c0852cf818ac3800aa9",
+      "planEncodingSha256": "776534a1c9addf2f1abf09aaa5266523138ca5e906f52115ad1782b67a73f62a",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "bf1192625ff09644bb9ecc645d313bab398851c555353dc5cdb8c495028c0b73"
+        }
+      ]
+    },
+    {
+      "planHash": "0x857827d6f344728cb5fca1d212ec650ac2cafb1eff21dad7b4fe5bed2cbf26ca",
+      "planEncodingSha256": "ee5e42a2afa528bb5cf79a3ca4c73488d897dc8a1eb9cc7543676559c275a894",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "47919940",
+          "activationComputeGasUpperBound": "24607440"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "57503928",
+          "activationComputeGasUpperBound": "29528928"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "9f0ccea26780cd8dc03abd4e873738efa269762bf02aae554aea6ab04e1eb3ce"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "10da366499bf30adca734a59676138278a48e788ede0f2b4fa575997f5a954b4",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "f6a250984eed2cf6e2d3f5358da17f42d2d269b3b6101b15bfd27abf933b4642"
+        }
+      ]
+    },
+    {
+      "planHash": "0xe07d372305a7017eaaa1cfa70b568d57af0d40db5727b55b40abdfd204299340",
+      "planEncodingSha256": "3ff8a75ab7eb687986ca43a287404fb32a31ec4a0caa9761eb1edc52d0d1744b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973943494620780216",
+          "sqrtPriceAfterX96": "61267092448549104241320651324416"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973936653134041444",
+          "sqrtPriceAfterX96": "61267057366362531228618830018571"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973929811659055189",
+          "sqrtPriceAfterX96": "61267022284216135056723728155990"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "93d64810a60088d7341f6c1abdc797a296a4e783591741a9dde3fd35a850c62e"
+        }
+      ]
+    },
+    {
+      "planHash": "0xdd28ba2f06c5aa82d3bc1de639b684c61fc0d3fca390c2c67bef964bb6b5100f",
+      "planEncodingSha256": "918dc8cec0871dffa115266d8da56b9f8aa351d144b8455868ea12579efd6268",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973943494620780216",
+          "sqrtPriceAfterX96": "61267092448549104241320651324416"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973936653134041444",
+          "sqrtPriceAfterX96": "61267057366362531228618830018571"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973929811659055189",
+          "sqrtPriceAfterX96": "61267022284216135056723728155990"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "1ef8fa5f30b1b5b7fedeb318783df7cb419b0c7dac936854ec4654ee5ced5fa6"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "3d729572bbf75d23892c0e958697deff2c6cb116539774e116685043e9e7958a",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "0f7fc9dbc42152f19ec5346087ce0e1ac294cb83e889a757e91ab3f12a62fa06"
+        }
+      ]
+    },
+    {
+      "planHash": "0xc7aaee8ad617416213481fe2e2a0ea520f1bded3d4bff7981a71ecb4f4493b3f",
+      "planEncodingSha256": "69da02b85a0b002d8a8c8bafa428db1d018f45225a789ba22005b34a5ff83521",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "23552390",
+          "activationComputeGasUpperBound": "4114890"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "28262868",
+          "activationComputeGasUpperBound": "4937868"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199164856978668767058",
+          "sqrtPriceAfterX96": "1118561691678446776998433635419736036"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "b27c094ab3955add4143e1d2b6e400d0ffc3219d802b26db19ca4056896353e7"
+        }
+      ]
+    },
+    {
+      "planHash": "0xa5a50250bbef96b421b57d977e450f473c018e0aee8a1b929bf9efa186a664f0",
+      "planEncodingSha256": "4607c79a94bfa3ffcbd44c1cc7b5dbd3022d998b7cadefe1bdcdfcfb71131d26",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52809340",
+          "activationComputeGasUpperBound": "29496840"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63371208",
+          "activationComputeGasUpperBound": "35396208"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199200727977021890339",
+          "sqrtPriceAfterX96": "1118763152544629417666428079891964868"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199193121180157230357",
+          "sqrtPriceAfterX96": "1118741791668774447726182328540760390"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199185514819000720240",
+          "sqrtPriceAfterX96": "1118720431608602948227302426508949262"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199177908893519084840",
+          "sqrtPriceAfterX96": "1118699072364068198696426520441534254"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "33d48863fadf8850f845a99390cec24befac1401508b301c08e3f7e2febe634f"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "1d8d7023955b9b896a1812b30119e031ae36c828f87d66dd50c30a1603e9a103",
+          "preparationGas": "11470000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "189adb44a54d568a2f0a64bf5914f9118939ef12fe78174744a46c7778f619ae"
+        }
+      ]
+    },
+    {
+      "planHash": "0x092522a24f7383a68269fb4655ca66ffcb36037e490b30041ddc8b1aa0c1b46c",
+      "planEncodingSha256": "bda00558b70542dd6f9c3174e8f912e61fdf40bc985d9da1e9ada2ad29d7127c",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "8635480"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "8635480"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "10362576"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "596eaa7bcd249a088fc4d16461e40b1d69cf6798d8513f3fcdb2b769d7d38113"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "6b5f6d390bc6c7018ae849bd4cb27550e9e98fc08a9c19996d4cd763e8cea9e7",
+          "preparationGas": "19020000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "5d523a025f5e6268948b830cea35890f5f2dd37e917c4cfebf701a5b2e3bb67e"
+        }
+      ]
+    },
+    {
+      "planHash": "0xa9e685ae4c11c8674a137a99ab382e3325a6113a18e799e6bb3e7406177d9561",
+      "planEncodingSha256": "87fccfe4ff67ef4b07e60d85951996d2aee11bad369acb6319394d5cd81b82b1",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "28287160"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "28287160"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "33944592"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973902317075399641",
+          "sqrtPriceAfterX96": "61266635061183829377794705785361"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199147350353112184620",
+          "sqrtPriceAfterX96": "1118463369911267493427725822657037520"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973799439253040530",
+          "sqrtPriceAfterX96": "61266107518409958689327207232626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199033053653949071090",
+          "sqrtPriceAfterX96": "1118142409900780182085815530209619565"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "83e64aecbcee2d0948def6cfbcd67353d967f7387c42a3164d0242fb2b0322c6"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "39df127c3121e30bf28ff48ce82e978406448d3ebc947e0bfe41bc5210f8bbb8",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "f2e1e78be3003cc3e42d343e6870d33aaede45375b2743a00e3652712a2b631a",
+          "preparationGas": "10350000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "ce6cd8e7e86e26541689c1da6509f1f9bc1a18f5819a4381ca2be2ed9a8b63d3"
+        }
+      ]
+    },
+    {
+      "planHash": "0x55c3c63855948ff209ffe0fa52fbaa9f12b05e50d67f176187ccd2c322592e85",
+      "planEncodingSha256": "a4bf823315720b63b706b72fa1a0c1a748af208840dfaca3b380bfdf6b2c3776",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27460392",
+          "activationComputeGasUpperBound": "4510392"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "7efac05ad7c5695505d5874470d09e9176a90ff303ff234bf4cfea4b5ad8cf50"
+        }
+      ]
+    },
+    {
+      "planHash": "0x55c3c63855948ff209ffe0fa52fbaa9f12b05e50d67f176187ccd2c322592e85",
+      "planEncodingSha256": "a4bf823315720b63b706b72fa1a0c1a748af208840dfaca3b380bfdf6b2c3776",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27460392",
+          "activationComputeGasUpperBound": "4510392"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "ebfce94ceeb31259ec2e3433f8341247d482d945f42ef5a632c37d752bc594ce"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "0b6dd90853dc81c88f195ad894da7650a81f8c2740d0ab1ffe67d3b4a4add414",
+          "preparationGas": "8900000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "539bc9f2a68b29ad8141ea1d18cdcb850d61a93da4fddb8689149b0d41fae8e9"
+        }
+      ]
+    },
+    {
+      "planHash": "0x3fbe51b1c9b4ebf4eb85c92df60d069848487324ede8bb51c2d1c4e2fb9a42a1",
+      "planEncodingSha256": "3942e0108011318efb370ccf9bb0f9e0595c8cea78167b395cbceb63fce95d04",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34866840",
+          "activationComputeGasUpperBound": "10866840"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "61266968027973187022342277886648"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "37a317c33aab15dbaa3a6e0414b3221b6ba5449f160e4375f98009e6687abb11"
+        }
+      ]
+    },
+    {
+      "planHash": "0x3fbe51b1c9b4ebf4eb85c92df60d069848487324ede8bb51c2d1c4e2fb9a42a1",
+      "planEncodingSha256": "3942e0108011318efb370ccf9bb0f9e0595c8cea78167b395cbceb63fce95d04",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34866840",
+          "activationComputeGasUpperBound": "10866840"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920115551256439060",
+          "sqrtPriceAfterX96": "61266968027973187022342277886648"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "bf5a6f5ee1d14337f7375426e0dad3b94e8e48d2461fb0c38968ef0ec20d308b"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "c45cedb06f586b53e72ae1779128e8725e274c6a25c496755eed8ea28b9cdf5c",
+          "preparationGas": "9390000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "65978ef8592072f38296c9ef16146abce00dfc68bd9a18ddbced7143b5613adb"
+        }
+      ]
+    },
+    {
+      "planHash": "0x842a401e63caf287ef061c2c5174a91e26f210e223ea1c6c94cf2e0af2f505b0",
+      "planEncodingSha256": "d1082718a70a7581538f145c40b23eeb0e6cfd28a22e54bad9e1974e1957883d",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63372360",
+          "activationComputeGasUpperBound": "35772360"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920124275478119777",
+          "sqrtPriceAfterX96": "61267093080660942500964924669235"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920117556705933964",
+          "sqrtPriceAfterX96": "61267058314529207647837348753626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920110837945185886",
+          "sqrtPriceAfterX96": "61267023548436928991149326879045"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "544ed0d0b92797fb8e9114a055ede55c5b1c9357c3520147f047ae469cab832c"
+        }
+      ]
+    },
+    {
+      "planHash": "0x842a401e63caf287ef061c2c5174a91e26f210e223ea1c6c94cf2e0af2f505b0",
+      "planEncodingSha256": "d1082718a70a7581538f145c40b23eeb0e6cfd28a22e54bad9e1974e1957883d",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63372360",
+          "activationComputeGasUpperBound": "35772360"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920130994261743350",
+          "sqrtPriceAfterX96": "61267127846832133617700618254078"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920124275478119777",
+          "sqrtPriceAfterX96": "61267093080660942500964924669235"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920117556705933964",
+          "sqrtPriceAfterX96": "61267058314529207647837348753626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920110837945185886",
+          "sqrtPriceAfterX96": "61267023548436928991149326879045"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "9046d4d5d8e9e3a86f2fc3f2f3b7d98d4fa09ad25c22bf53a56f4820c953cb01"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "a9d483deef51ff412bf1458e4562e6a1b39734eb36a9591e7ede6f3f2b9c6863",
+          "preparationGas": "11070000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "890f57f73f9bc3aa9c685cae0e87fb7deacc9c1832e9031992debc4e8e52958c"
+        }
+      ]
+    },
+    {
+      "planHash": "0x55a6bca216b08dd7fccc1bfd7f2eb483d919d2587774a791b3d6ec364338833d",
+      "planEncodingSha256": "907b98312dc123d32aecb27b2a302d16f676d22667a97672cff803d5cdf5878c",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "9262400"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "9262400"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "11114880"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "89a1c52b694d2d36bbf432d247ced9781318446812a7cf2788e6f07bde3a4426"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "ad746404d0c8e62583328a0b09145d06c6226cb9c275913d3b328d702d3061f4",
+          "preparationGas": "18220000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "fba7660c3afeb9b584389f19eee5a261322e683fbb909e63eac7b717ed6217d0"
+        }
+      ]
+    },
+    {
+      "planHash": "0xa2809b931cfb169223b8b5ee9cda7c71f542e7db8ec04941e35179b9a5b9d0f5",
+      "planEncodingSha256": "142d887604fa59055338efc14534152d3bbb2cac35cd084dd86da8099861f563",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "28914080"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "28914080"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "34696896"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5920083836524634359",
+          "sqrtPriceAfterX96": "61266639813862723935137416396467"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197353740439143503645",
+          "sqrtPriceAfterX96": "1118466262280380205934552275548733470"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5919982803983425055",
+          "sqrtPriceAfterX96": "61266117023604792092787365392920"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197241492992736586747",
+          "sqrtPriceAfterX96": "1118148191334387735619745977311859535"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "2795781530ca313f338abb260220b6334e46b3007ac092dbe4fd7b6f62f28ce6"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "3e4b35443f77484655f32ddfca6cff57941efe9ddd21b67c2b248bc85953a2df",
+          "preparationGas": "9950000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "508b76a483d15863875a7379ffa4a82b2690635acfa30442a3200d1f8ce6adbc",
+          "preparationGas": "9950000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "876d9c50d677ecbd9aac65134f088740b96bd982ce021ecde3041853ad206928"
+        }
+      ]
+    },
+    {
+      "planHash": "0x587d3beb8e724b77cb57e4d4e1c7ce552f19204edb5c41cf929414bfe61ba869",
+      "planEncodingSha256": "05ca9ad1c361efe93d134ff2274feaa7033612c25d7a4e7eac002d5a490425f6",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38034120",
+          "activationComputeGasUpperBound": "14034120"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858227",
+          "sqrtPriceAfterX96": "1118666040813078987230903106524964183"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197347190931813990319",
+          "sqrtPriceAfterX96": "1118547592478717207924612476683838040"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197305403713125139092",
+          "sqrtPriceAfterX96": "1118429169225160622425226280809092163"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197263629765363422382",
+          "sqrtPriceAfterX96": "1118310771044443983256467318598735110"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "26d00f19a94dbe5ce78f15c5629123bd2cead4a452f26879f6784aef3140cb86"
+        }
+      ]
+    },
+    {
+      "planHash": "0x587d3beb8e724b77cb57e4d4e1c7ce552f19204edb5c41cf929414bfe61ba869",
+      "planEncodingSha256": "05ca9ad1c361efe93d134ff2274feaa7033612c25d7a4e7eac002d5a490425f6",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38034120",
+          "activationComputeGasUpperBound": "14034120"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197388991427051858227",
+          "sqrtPriceAfterX96": "1118666040813078987230903106524964183"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197347190931813990319",
+          "sqrtPriceAfterX96": "1118547592478717207924612476683838040"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197305403713125139092",
+          "sqrtPriceAfterX96": "1118429169225160622425226280809092163"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "197263629765363422382",
+          "sqrtPriceAfterX96": "1118310771044443983256467318598735110"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "3829760f4f027af1682f92971cf00ba3f13bee108f4c7d03da0fab5adb54ebda"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "fc8eba4c403f29ae2393fcd6a139502e12aba349b97bd85951537a0b1a492e3f",
+          "preparationGas": "9390000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "73f2da1b3899a9ecc1df04164bf8452ba46b8cbebd060ab4056492fc11c0bef6"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5c9fa85ffd1688ca144fdefa295945418338ed5556953a83ded8c0a1ce62b1dd",
+      "planEncodingSha256": "17effe0f7a82a34584366feab99a3b0ecac344de8b1e817f45ebbac3c52b2c20",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27460392",
+          "activationComputeGasUpperBound": "4510392"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "0250e00d347a87450e3d19507a43177ca2e94dc9f1290b0842a76a839f7a3294"
+        }
+      ]
+    },
+    {
+      "planHash": "0x5c9fa85ffd1688ca144fdefa295945418338ed5556953a83ded8c0a1ce62b1dd",
+      "planEncodingSha256": "17effe0f7a82a34584366feab99a3b0ecac344de8b1e817f45ebbac3c52b2c20",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "22883660",
+          "activationComputeGasUpperBound": "3758660"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "27460392",
+          "activationComputeGasUpperBound": "4510392"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "2466442bf68c76028a532732a6b4f9c7b55954d09acc9f71892daecfa7d6a854"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "a56b4084761521b48ef214398c108d1c586ef50d1d558cae1ebc7b4fe45669f7",
+          "preparationGas": "8900000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "0127dc1baa1d88496a4616ffd6282132a45cbb0f5794792c44bafca249b2ae72"
+        }
+      ]
+    },
+    {
+      "planHash": "0x50848d640338319a4bc00b4d65df0acbe0e17eb766a3803fcc1ed1bbbaf75b15",
+      "planEncodingSha256": "f1a30ac944523b666dc3bd0983cbc0482bf7167ab50bb9d82e7a55ce84f8e528",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34866840",
+          "activationComputeGasUpperBound": "10866840"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "e066f85d8f6be31d8e828e1c2ee2323cc88a365a1151ee158bfe4bd82e725a64"
+        }
+      ]
+    },
+    {
+      "planHash": "0x50848d640338319a4bc00b4d65df0acbe0e17eb766a3803fcc1ed1bbbaf75b15",
+      "planEncodingSha256": "f1a30ac944523b666dc3bd0983cbc0482bf7167ab50bb9d82e7a55ce84f8e528",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "29055700",
+          "activationComputeGasUpperBound": "9055700"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "34866840",
+          "activationComputeGasUpperBound": "10866840"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973934611056306334",
+          "sqrtPriceAfterX96": "61266966259023678187071108123986"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "ba23191ce6281d2f0a2d136c24c26cf70232b657cd0e4d41584e3b2d25a991c3"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "d8d2a3ce33d9ffc44c93b72afc3e9f1361734aba4a324175e57a47cf2d0cb6e1",
+          "preparationGas": "9390000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "3b816642177469331930f0ed1100bc074149ee63f6827abee15861505b83590c"
+        }
+      ]
+    },
+    {
+      "planHash": "0x20aee9b14a4e209e6b44b6574e6a9dfcff18a13767cb51121c823b12acade40b",
+      "planEncodingSha256": "13cd4543fa06ba0088f387d7c1405a5e8f2bf3f5437f23624f7e9a4dfdd90d03",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63372360",
+          "activationComputeGasUpperBound": "35772360"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973943494620780216",
+          "sqrtPriceAfterX96": "61267092448549104241320651324416"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973936653134041444",
+          "sqrtPriceAfterX96": "61267057366362531228618830018571"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973929811659055189",
+          "sqrtPriceAfterX96": "61267022284216135056723728155990"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "299bededdd00e77b80eeaac85753919ed53841d9db0e8cea8f968abd0e2840eb"
+        }
+      ]
+    },
+    {
+      "planHash": "0x20aee9b14a4e209e6b44b6574e6a9dfcff18a13767cb51121c823b12acade40b",
+      "planEncodingSha256": "13cd4543fa06ba0088f387d7c1405a5e8f2bf3f5437f23624f7e9a4dfdd90d03",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "52810300",
+          "activationComputeGasUpperBound": "29810300"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "63372360",
+          "activationComputeGasUpperBound": "35772360"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973950336119271531",
+          "sqrtPriceAfterX96": "61267127530775854163846325886128"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973943494620780216",
+          "sqrtPriceAfterX96": "61267092448549104241320651324416"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973936653134041444",
+          "sqrtPriceAfterX96": "61267057366362531228618830018571"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973929811659055189",
+          "sqrtPriceAfterX96": "61267022284216135056723728155990"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "37be06e237a8b8d453197c94683e7a1f817fb23af1c28d2c1c3b7066092080ed"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "f13ee23f0915ffd93d63821f79839ea31a3cf04ba914845cc7323a0571249bf3",
+          "preparationGas": "11070000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "22c57550db79007f1c2a22ad7b595f083bc321a32a06cbfef06b91dcd8a7c9c4"
+        }
+      ]
+    },
+    {
+      "planHash": "0x40b66d04a14edc9a4a46fb6811e9bcf677c5b23951572e0872cc64baf4a71e63",
+      "planEncodingSha256": "d8597e5daeb3a4341c94de292b78de0c903bf310f9fbbbcb812dca3a18686e0e",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "9262400"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "9262400"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "11114880"
+        }
+      ],
+      "initialBuys": [],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "19979d5c88d34bc09d13ad4a8f45a7601916a3fe305e932b698fc2e2c1668879"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "f6f7637363e8efec822f4bd59515820b7d302de23c775f9d60f2d533ee1e82da",
+          "preparationGas": "18220000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "648c12fe2b732ec2e17e32e618a0427309864244ea3e22355d33217ffe94252e"
+        }
+      ]
+    },
+    {
+      "planHash": "0xb16753a7fc1f7293bb420194982a993b8765dbd34b3a3579650335b448d81978",
+      "planEncodingSha256": "ca81c4b0d4da96757c72304e87e6bbddaae4951e4acc56acbac8c7198e54b341",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "activationComputeGasUpperBound": "28914080"
+        },
+        {
+          "headroomBps": 1500,
+          "activationComputeGasUpperBound": "28914080"
+        },
+        {
+          "headroomBps": 5000,
+          "activationComputeGasUpperBound": "34696896"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973902317075399641",
+          "sqrtPriceAfterX96": "61266635061183829377794705785361"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199147350353112184620",
+          "sqrtPriceAfterX96": "1118463369911267493427725822657037520"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "10000000000000",
+          "quoteSpent": "10000000000000",
+          "tokenOut": "5973799439253040530",
+          "sqrtPriceAfterX96": "61266107518409958689327207232626"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 1,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199033053653949071090",
+          "sqrtPriceAfterX96": "1118142409900780182085815530209619565"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "0c584295484039eab3894362d18e205232ea3eb64aac465c194ac7fb58e63baf"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "d783f7bc84950fd876e77873eef9d157e95297944777262c9e963895e5f01a95",
+          "preparationGas": "9950000"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "50597e9773eeb3224c1fb116076236da95f79d8fa0fd842739619634e65ecc47",
+          "preparationGas": "9950000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "1ea1f4f21c1362408e006ac462728ec3516f6d5bcdc1090018330a44d72ada68"
+        }
+      ]
+    },
+    {
+      "planHash": "0x64a951d5e7ac21eb97a66f1e9c580478516df26a13be440579b1b41fab872755",
+      "planEncodingSha256": "2d7945cc73551f1e197dcaa55194ad02bdcd445da92dee9e1a53d2eb9cc63c5b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38034120",
+          "activationComputeGasUpperBound": "14034120"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199183245053998586194",
+          "sqrtPriceAfterX96": "1118664963897048255119424574242856729"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199140681218087431722",
+          "sqrtPriceAfterX96": "1118545439104814944623003620035466334"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199098131024035890160",
+          "sqrtPriceAfterX96": "1118425939851326768416195826218585469"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199055594466014898725",
+          "sqrtPriceAfterX96": "1118306466128399342934469814424652739"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "atomic",
+          "calldataSha256": "d605546449573a408bdb61b6068c093cf3c96573cb2c161228617388852e1c48"
+        }
+      ]
+    },
+    {
+      "planHash": "0x64a951d5e7ac21eb97a66f1e9c580478516df26a13be440579b1b41fab872755",
+      "planEncodingSha256": "2d7945cc73551f1e197dcaa55194ad02bdcd445da92dee9e1a53d2eb9cc63c5b",
+      "bounds": [
+        {
+          "headroomBps": 0,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 1500,
+          "atomicComputeGasUpperBound": "31695100",
+          "activationComputeGasUpperBound": "11695100"
+        },
+        {
+          "headroomBps": 5000,
+          "atomicComputeGasUpperBound": "38034120",
+          "activationComputeGasUpperBound": "14034120"
+        }
+      ],
+      "initialBuys": [
+        {
+          "buyIndex": 0,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199183245053998586194",
+          "sqrtPriceAfterX96": "1118664963897048255119424574242856729"
+        },
+        {
+          "buyIndex": 1,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199140681218087431722",
+          "sqrtPriceAfterX96": "1118545439104814944623003620035466334"
+        },
+        {
+          "buyIndex": 2,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199098131024035890160",
+          "sqrtPriceAfterX96": "1118425939851326768416195826218585469"
+        },
+        {
+          "buyIndex": 3,
+          "marketIndex": 0,
+          "quoteAmountIn": "1000000",
+          "quoteSpent": "1000000",
+          "tokenOut": "199055594466014898725",
+          "sqrtPriceAfterX96": "1118306466128399342934469814424652739"
+        }
+      ],
+      "transactions": [
+        {
+          "kind": "begin",
+          "calldataSha256": "2b4e6d2b9abe2fae6a6601cf16fce60721cf7e4ae8ca360406e3574f6994bbaa"
+        },
+        {
+          "kind": "prepare",
+          "calldataSha256": "787c30d9f6539da6ba4cd1a6f5628daffe621c8823ba984a6f8b895e1043bbd4",
+          "preparationGas": "9390000"
+        },
+        {
+          "kind": "activate",
+          "calldataSha256": "f679886d16c3f6fb726a34ec9c0dd94a2f886d5ec28e5fb8ffed8cbc99f9ed64"
+        }
+      ]
+    }
+  ]
+}

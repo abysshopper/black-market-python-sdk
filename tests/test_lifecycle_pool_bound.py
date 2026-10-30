@@ -280,7 +280,7 @@ def test_v5_and_v6_have_independent_exact_wire_layouts_without_defaults(profile_
         positions = tuple((position.tick_lower, position.tick_upper, position.liquidity,
             position.salt, position.max_token_amount) for position in selected.positions)
         wire_values = tuple(getattr(selected, field.name) for field in fields(selected)
-                            if field.name not in ("positions", "hmm_launch_config", "ufg_launch_config", "auto_compound_config")) + (positions,)
+                            if field.name not in ("positions", "hmm_launch_config", "ufg_launch_config", "auto_compound_config", "raeto_launch_config")) + (positions,)
         expected = abi_encode([wire_type], [wire_values])
         assert encode_lifecycle_pool_bound_v4_market_config(selected) == expected
         assert decode_lifecycle_pool_bound_v4_market_config(expected, expected_version=selected.version) == selected

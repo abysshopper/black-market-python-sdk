@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.15.1** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.16.0** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -26,6 +26,7 @@ remain registered: filter by live admission. For another deployment, pass its ac
 | HMM V2 | `V4_HMM_FIXED_POOL` / `V4_HMM_DYNAMIC_POOL` | Zero LP/developer fee, explicit bid cap and reference deviation; [configure HMM](#hmm-launch-configuration). |
 | UFG treasury | Canonical Abyss QUOTE variants or `V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` | ERC20 without rewards; quote fees become redeemable reserves. [Use the proxy route](#ufg-treasury-launches). |
 | Auto-compounding | `V4_AUTO_COMPOUND_STATIC_POOL` / `V4_AUTO_COMPOUND_DYNAMIC_POOL` | Zero LP/developer fee; compound 0–100% of net hook fees into locked full-range liquidity. [Configure compounding](#auto-compounding-launches). |
+| Raeto fee sharing | `V4_RAETO_FIXED_POOL` / `V4_RAETO_DYNAMIC_POOL` | WETH/USDG, QuoteOnly, zero LP/developer fee; share 5/10/25/50/75% of post-treasury quote fees. [Configure Raeto](#raeto-launches). |
 
 Choose ERC20/ERC404 and no rewards/staking/dividends separately from the profile.
 ERC404 examples use 100 tokens per NFT unit. An oracle pool does not grant lending admission.
@@ -514,7 +515,7 @@ wrapped ETH can return as WETH. Spent gas is not refunded.
 For ordinary saved core plans, `examples/launch_submit.py` reads progress and emits
 unsigned next/cancel commands; `--receipts` accepts snake_case receipt-reference JSON.
 `launch_recipe.py` encodes bare V4 prefixes. These CLIs do **not construct UFG/HMM/
-auto-compound tails**: submit has no `ufg` option, and recipe has no tail input.
+auto-compound/Raeto tails**: submit has no `ufg` option, and recipe has no tail input.
 Use typed SDK integration for these offerings; complete plans must retain their tails.
 
 | Symptom | Cause | Next action |
@@ -557,10 +558,71 @@ Use `build_claim_developer_fees_transaction` for one hub/asset, or
 Decode with `decode_developer_claim_receipt(receipt, transaction=transaction)` and retry
 failed rows only; [claim statuses](reference.md#decode-author-claims) distinguish each outcome.
 
+## Raeto launches
+
+Raeto is a constrained **fee-sharing offering**, not a UFG treasury or redemption
+contract. Select `KnownLifecycleProfile.V4_RAETO_FIXED_POOL` for a fixed maximum
+hook fee, or `V4_RAETO_DYNAMIC_POOL` for the minimum/maximum/sensitivity schedule.
+The hook creation bytes match the ordinary zero-royalty fixed/dynamic hooks, but
+the collector, factory, locker, adapter and frozen terms belong to the Raeto preset.
+
+```python
+from black_market_sdk import (
+    KnownLifecycleProfile, RaetoLaunchConfigV1, RAETO_QUOTE_ASSETS,
+    RAETO_SHARE_BPS_OPTIONS, get_known_lifecycle_profile,
+    encode_raeto_launch_tail, decode_raeto_launch_tail, validate_raeto_launch_plan,
+)
+
+preset = get_known_lifecycle_profile(
+    chain_id=4663, orchestrator=addresses.orchestrator,
+    key=KnownLifecycleProfile.V4_RAETO_FIXED_POOL,
+)
+assert preset is not None and preset.supported
+raeto = RaetoLaunchConfigV1(share_bps=500)
+assert decode_raeto_launch_tail(encode_raeto_launch_tail(raeto)) == raeto
+```
+
+Copy the Raeto preset's treasury, denominator, beneficiary and terms into
+`LifecyclePoolBoundV4MarketConfigV6`, set `raeto_launch_config=raeto`, and use
+that preset's outer profile/adapter with `config_version=6`. Each market must use
+**WETH or USDG**, **`fee_mode=1` (QuoteOnly)**, **`lp_fee_pips=0`** and
+**`developer_fee_bps=0`**. One V4 market per quote permits at most two Raeto
+markets and 32 total positions. Normal token/reward choices and fee policies
+remain available; there is no UFG proxy, treasury, special nonce or proxy approval.
+
+The deployed menu is exactly **500, 1000, 2500, 5000 or 7500 bps** (5/10/25/50/75%).
+The 5% floor cannot be disabled; **1234, 8000 and 10000 are not deployed options**,
+even though newer contract source accepts a wider range. Encoding appends one
+canonical 32-byte uint16 word to the config6 prefix. Missing, extra and mixed
+HMM/UFG/auto-compound tails fail with `INVALID_RAETO_CONFIG`.
+
+For an exclusively Raeto plan, call `validate_raeto_launch_plan(plan)` after
+building every market; it rejects non-Raeto, mismatched or malformed markets with
+`INVALID_RAETO_PLAN`. Independently, ordinary planning, combined preparation and
+continuation enforce Raeto market fees, share, quote and profile binding before
+RPC reads. The optional validator is not the security boundary. Use the normal
+`prepare_and_plan_lifecycle_launch` / `build_next_transaction` flow.
+A changed share changes the full plan hash, but not the hook's prefix-only
+constructor commitment. Re-review any changed unstarted plan.
+
+At collection, the collector books `floor(post-treasury quote fees * share_bps /
+10000)` as Raeto credit and forwards the rest to the normal fee hub. The **current
+fee owner** may call `setShareBps` with another menu value, including immediately
+before collection; that selection applies to **all uncollected fees**.
+Collection never consults or pays the payout registry. Anyone can call
+`claimRaeto(quote_asset)` to pay the registry's **current** payout, not a chosen
+recipient. Donations do not become fee revenue or Raeto credit.
+`RAETO_FEE_COLLECTOR_V1_ABI` exposes the exact share/owed/token/quote getters,
+share/claim methods and three Raeto events. See [Raeto reference](reference.md#raeto-profiles).
+
+Both variants use capacity-v4 budgets and exact local opening-buy math.
+Signing gas stays at the native 32M total ceiling; a ready assessment is a
+budget/input check, **not execution proof**.
+
 ## Auto-compounding launches
 
-Configuration and codec support is available, but planning currently refuses
-these profiles with `UNKNOWN_GAS_PROFILE`: no reviewed capacity budget exists.
+Both profiles have reviewed preparation, atomic and activation budgets in
+`robinhood-4663-capacity-v4`; they use the normal planning and continuation flow.
 
 Select `KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL` for a fixed maximum
 hook fee, or `V4_AUTO_COMPOUND_DYNAMIC_POOL` for the config6 minimum/maximum/
@@ -593,14 +655,15 @@ The share is an integer in **0–10,000 bps** of net hook fees, not a trader tax
 The hook owns a locked full-range position; fees outside the compounding share
 continue through the launch's ordinary token/quote fee-asset policies.
 Its canonical 64-byte suffix is mandatory even for a zero share. Do not combine
-it with HMM or UFG tails. The retired October profiles ending `1d68` / `e0d7`
+it with HMM, UFG or Raeto tails. The retired October profiles ending `1d68` / `e0d7`
 are not SDK offerings; rebuild unstarted plans with the current preset.
 
 Use normal unified preparation to mine the hook salt. Unlike HMM/UFG, the exact
 auto-compound tail is part of the salt-normalized constructor market commitment:
 changing the share changes the hook prediction and requires mining again.
-These hooks have no reviewed gas-capacity bound. Planning refuses
-`UNKNOWN_GAS_PROFILE` rather than executing a fallback or reusing another hook's budget.
+Capacity-v4 includes measured position-dependent work for every opening buy.
+Multi-market/conversion plans remain staged; oversized indivisible activation
+still refuses rather than executing a fallback or borrowing another hook's budget.
 Every post-opening swap compounds in `afterSwap`. Let `eth_estimateGas` include
 that work; never cap swap gas below its estimate. Underfunded compounding reverts
 with `CompoundOutOfGas()` instead of silently skipping.

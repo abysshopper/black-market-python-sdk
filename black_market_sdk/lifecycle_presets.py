@@ -27,6 +27,8 @@ class KnownLifecycleProfile(str, Enum):
     V4_UFG_DYNAMIC_POOL = "v4-ufg-dynamic-pool"
     V4_AUTO_COMPOUND_STATIC_POOL = "v4-auto-compound-static-pool"
     V4_AUTO_COMPOUND_DYNAMIC_POOL = "v4-auto-compound-dynamic-pool"
+    V4_RAETO_FIXED_POOL = "v4-raeto-fixed-pool"
+    V4_RAETO_DYNAMIC_POOL = "v4-raeto-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
@@ -104,6 +106,12 @@ def _load_deployment() -> LifecycleDeploymentPreset:
         raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "Auto-compound presets must bind to the canonical lifecycle deployment")
     data["adapters"].extend(compound["adapters"])
     data["profiles"].extend(compound["profiles"])
+    raeto = json.loads(files("black_market_sdk").joinpath("_raeto_release_20261029.json").read_text())
+    if (raeto["chainId"] != data["chainId"] or raeto["orchestrator"].lower() != addresses["orchestrator"].lower()
+            or raeto["registry"].lower() != addresses["registry"].lower()):
+        raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "Raeto presets must bind to the canonical lifecycle deployment")
+    data["adapters"].extend(raeto["adapters"])
+    data["profiles"].extend(raeto["profiles"])
     adapters = {row["id"]: LifecycleAdapterRegistration(row["address"], row["codehash"],
         row["capabilities"], row["configVersion"], True) for row in data["adapters"]}
     profiles = []

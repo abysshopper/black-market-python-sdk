@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.15.1**.
+for SDK **0.16.0**.
 
 ## Resolve deployment addresses
 
@@ -27,6 +27,7 @@ be supplied explicitly in the plan; lookup does not rewrite a saved plan.
 | `UFG_LAUNCH_PROXY_ADDRESS` | `0xf6673d859DE03eB74A0b01696Edb97f941dFD0CA` |
 | `UFG_TREASURY_FACTORY_ADDRESS` | `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
 | `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
+| `RAETO_PAYOUT_REGISTRY_ADDRESS` | `0xBEC2C0e91612090F82df6743F31CDF18B4386b50` |
 
 The core's deployment block is **82,880,313**. Start event scans there and chunk
 requests to the provider's block-range limit (the public RPC permits ≤10M).
@@ -94,7 +95,16 @@ bytes. Shares must be integers in 0–10,000; LP/developer fees must be zero.
 Use `is_auto_compound_profile` or the known-profile keys rather than detecting
 auto-compounding from config6 alone. Both InputToken and QuoteOnly are supported.
 
-Salt mining preserves tails. The full plan hash commits them. HMM/UFG constructors
+Raeto config6 uses `raeto_launch_config=RaetoLaunchConfigV1(share_bps=500)`.
+`encode_raeto_launch_tail` / `decode_raeto_launch_tail` enforce exactly
+`abi.encode(uint16 shareBps)` (**32 bytes**) and the deployed menu
+**500/1000/2500/5000/7500**. LP/developer fees must be zero, fee mode QuoteOnly,
+and the quote WETH/USDG. All four auxiliary tail types are mutually exclusive;
+tails cannot be attached to another profile. Invalid Raeto fees/quotes/tails use
+`INVALID_RAETO_CONFIG`; `validate_raeto_launch_plan` checks the complete,
+exclusively Raeto route with `INVALID_RAETO_PLAN`.
+
+Salt mining preserves tails. The full plan hash commits them. HMM/UFG/Raeto constructors
 commit the salt-normalized prefix only; **auto-compound constructors commit the
 normalized prefix plus their entire 64-byte tail**. Changing a compound share
 therefore changes initcode and the hook address. The V2 constructor remains twenty
@@ -136,10 +146,50 @@ The opt-in test uses only chain reads/`eth_call`: it predicts a token, mines eac
 profile's hook salt, compares the SDK constructor/prediction with live factory
 metadata, checks factory acceptance/rejection, and compares the **entire market**
 and tail bytes with `scripts/auto_compound_config.py`. Ordinary pytest stays offline.
-These hooks have no reviewed launch capacity budget. Planning refuses them with
-`UNKNOWN_GAS_PROFILE` rather than inventing capacity or executing a fallback.
-Their configuration codecs, presets and pure builders remain available. After opening, compounding executes
-inside `afterSwap`, so never cap swap gas below `eth_estimateGas`'s result.
+Capacity-v4 now includes reviewed auto-compound preparation/atomic/activation
+budgets and position-dependent opening-buy costs. Readiness remains a capacity
+and pinned-input assessment, not execution proof. After opening, compounding
+executes inside `afterSwap`, so never cap swap gas below `eth_estimateGas`'s result.
+
+## Raeto profiles
+
+`KnownLifecycleProfile.V4_RAETO_FIXED_POOL` / `V4_RAETO_DYNAMIC_POOL` select
+the October 29 Raeto deployment on the canonical Robinhood graph.
+
+| Export | ID |
+| --- | --- |
+| `RAETO_FIXED_PROFILE_ID` | `0x9161833b162e7ca8160b11c64aedb307561e19a9136fd32f99cd797aab6da3ca` |
+| `RAETO_DYNAMIC_PROFILE_ID` | `0x08387d00ee4f75f860810cc8fb434087328592c2f39ea3321109e589039f80e1` |
+| `RAETO_FIXED_ADAPTER_ID` | `0x911d7ecefe56489d329235e3484829717dc00400d4181902f0f2de45f9338615` |
+| `RAETO_DYNAMIC_ADAPTER_ID` | `0x8ab9c8c9b8fd4c8bbf12b780d9474463fa0fa52e3b450f0d5f68fd067dc1674d` |
+
+`RAETO_QUOTE_ASSETS` is the checksummed WETH/USDG tuple;
+`RAETO_SHARE_BPS_OPTIONS` is the immutable `(500, 1000, 2500, 5000, 7500)` menu.
+The optional complete-plan validator does not replace per-market enforcement:
+planning, combined preparation and continuation reject malformed Raeto markets
+before RPC reads, including known-preset recovery.
+`RAETO_FEE_COLLECTOR_V1_ABI` is the verified Node subset: `shareBps()`,
+`owed(address)`, `launchToken()`, `quoteAsset()`, `setShareBps(uint16)`,
+`claimRaeto(address)` and `RaetoShareUpdated` / `RaetoFeesBooked` / `RaetoFeesClaimed`.
+See [collection-time fee ownership and payout semantics](launch-guide.md#raeto-launches).
+
+`tests/fixtures/raeto-registry-readback.json` preserves Node's admission bytes,
+registry responses, dependency graph, creation-code chunks, verified collector
+ABI provenance and accepted/rejected deployed-share checks at Robinhood L2
+block **101,180,179** (`0xe778e5d89ca2cab5843eedeb8c27b10f5463313d4b95b8971986ac72e297933c`).
+The generated `_raeto_release_20261029.json` binds both profiles to that evidence.
+To regenerate from a built, reviewed Node 0.16.0 checkout, **without RPC or forks**:
+
+```sh
+node tools/ci/import_raeto_release.mjs /path/to/black-market-node-sdk
+```
+
+The importer also preserves Node's measured 84-case `template-gas-matrix.json`
+byte-for-byte and generates 20 Raeto wire/constructor vectors plus per-case Node
+capacity/ordered-buy/calldata parity vectors. Tests check every observation and
+forwarding estimate, at least 5% observed-gas margin, and exact bounds at
+0/1500/5000 bps headroom. The matrix is an ordinary EVM fork, **not native ArbOS
+execution evidence**; it is retained, never replayed by the Python suite.
 
 ## Configure HMM controls
 
@@ -205,17 +255,17 @@ getters are not planning guards.
   `affordability`) and `capacity_constraint` (`gas-envelope`, `calldata`,
   `activation`, `preparation`).
 - `LifecycleGasProfile` contains `version`, `LifecycleLaunchGasBounds` and exact
-  ordered `initial_buys`. Version `robinhood-4663-capacity-v3` uses the shared
-  measured-max Node table with at least 25% padding, not current execution evidence. `activation_compute_gas_upper_bound`
+  ordered `initial_buys`. Version `robinhood-4663-capacity-v4` uses the shared
+  measured-max Node table, including Raeto and auto-compounding, with at least
+  25% padding, not current execution evidence. `activation_compute_gas_upper_bound`
   is required; `atomic_compute_gas_upper_bound` is absent (`None`) for multiple
   markets or any conversion. Bounds exclude poster allocation and never size
-  signing gas. Missing coverage refuses `UNKNOWN_GAS_PROFILE`; auto-compounding
-  profiles remain outside this budget model.
+  signing gas. Missing coverage still refuses `UNKNOWN_GAS_PROFILE`.
 - `compute_lifecycle_opening_buys` is pure ordered unopened-curve math, including
   overlaps, bitmap-word steps, per-step rounding and opening hook fees.
   `compute_lifecycle_launch_gas_bounds(plan, predicted_token=..., ufg=...,
-  headroom_bps=1500)` is the parallel pure capacity helper. Unlisted quote
-  currencies do not require an execution fallback or a curated-token allowlist.
+  headroom_bps=1500)` is the parallel pure capacity helper. Ordinary templates
+  do not impose a curated-token allowlist; Raeto specifically allows only WETH/USDG.
 - Planning never calls `eth_simulateV1`, executes a fork or runs launch calldata,
   including Kyber routes and consuming activation. Conversion protection is the
   committed calldata amountOutMinimum/deadline; opening buys use exact local

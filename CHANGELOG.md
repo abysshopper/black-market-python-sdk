@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.16.0
+
+- Add Raeto fixed/dynamic config6 presets on the canonical Robinhood graph, generated from the reviewed Node 0.16.0 deployment modules and preserved October 29 admission/registry evidence. Export profile/adapter IDs, payout registry, WETH/USDG quote allowlist, the deployed 500/1000/2500/5000/7500 bps share menu, typed tail codecs, plan validation and verified collector ABI.
+- Require QuoteOnly, zero LP/developer fees and exactly one canonical uint16 share word after the config6 prefix. Reject mixed HMM/UFG/auto-compound tails and mismatched profiles; enforce Raeto restrictions independently in planning, combined preparation and continuation before RPC, not only through the optional complete-plan validator.
+- Adopt `robinhood-4663-capacity-v4` with identical Node preparation/atomic/activation coefficients and position-dependent opening-buy costs for Raeto and auto-compounding. Remove the auto-compound gas-budget exclusion; retain the fixed native 32M signing ceiling, staged multi-market/conversion execution and refusal of unknown or oversized activation.
+- Preserve Node's 84-case measured fork matrix without re-executing it. Add byte-identical Raeto wire/constructor vectors and exact per-case capacity, ordered-buy and calldata parity across three headroom settings; bounds must cover every retained gas/forwarding observation with margin.
+
 ## 0.15.1
 
 - Replace launch simulation/admission/proof evidence with `LifecyclePlanningAssessment` on planned launches, immediate transactions and planning errors. Review `ready`, the pin, resolved limits, capacity/fee budgets and actionable refusal reason. Remove retired APIs/types, explicit simulation, fork options, backend probes and aggregate simulation limits without aliases.
@@ -107,4 +114,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.15.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.16.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

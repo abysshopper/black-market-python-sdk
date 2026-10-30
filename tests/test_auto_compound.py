@@ -232,14 +232,14 @@ def test_compound_share_binds_constructor_while_only_hook_salt_is_normalized(ide
 
 
 @pytest.mark.parametrize("identity,fee", [(PROFILES[0], 10000), (PROFILES[1], 1000)])
-def test_opening_math_uses_static_maximum_or_dynamic_minimum_without_uncalibrated_capacity(identity, fee):
+def test_opening_math_uses_static_maximum_or_dynamic_minimum_with_reviewed_capacity(identity, fee):
     from black_market_sdk.lifecycle_buy_math import _opening_state
     plan = request(identity)
     plan = replace(plan, buys=(LifecycleInitialBuy(0, 10**12, 1, CREATOR, 4_295_128_740),))
     assert _opening_state(plan, 0).hook_fee == fee
     quote, = compute_lifecycle_opening_buys(plan, predicted_token=TOKEN)
     assert quote.token_out > 0
-    assert compute_lifecycle_launch_gas_bounds(plan, predicted_token=TOKEN) is None
+    assert compute_lifecycle_launch_gas_bounds(plan, predicted_token=TOKEN) is not None
 
 
 @pytest.mark.skipif(not os.environ.get("AUTO_COMPOUND_RPC_URL") or not os.environ.get("BLACK_MARKET_REFERENCE_ROOT"),
