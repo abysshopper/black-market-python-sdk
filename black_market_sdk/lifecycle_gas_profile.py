@@ -20,7 +20,7 @@ from .hmm import is_hmm_profile
 from .ufg import UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, is_ufg_profile
 from .raeto import is_raeto_profile
 
-_PROFILE_VERSION = "robinhood-4663-capacity-v4"
+_PROFILE_VERSION = "robinhood-4663-capacity-v5"
 
 
 def _approval(transaction: LifecycleTransaction) -> bool:
@@ -60,6 +60,10 @@ def _capacity_basis(plan: LaunchPlanV1, transaction: LifecycleTransaction,
     # position/buy work and25% padding bounds compute and forwarding envelopes.
     atomic_base = 18_000_000 if markets[0].raeto or markets[0].auto_compound else 22_000_000
     gas = atomic_base + creation + (6_500_000 if ufg_route else 0) if atomic else 1_500_000 + (250_000 if ufg_route else 0)
+    # Empirical allowance for escrow/router work, not an arbitrary-route proof.
+    # Conversion happens during begin, so activation keeps its existing budget.
+    if atomic:
+        gas += 2_000_000 * sum(funding.kind == LifecycleFundingKind.SWAP for funding in plan.funding)
     for market in markets:
         if atomic:
             gas += (7_000_000 if market.hmm else 1_000_000 if market.ufg_hook else 500_000 if market.abyss else 0)
@@ -98,7 +102,7 @@ def derive_lifecycle_launch_capacity(plan: LaunchPlanV1, *, predicted_token: str
         raise LifecyclePlanningError("INVALID_LIMITS", "Headroom must be between zero and 10000 basis points")
     quotes = tuple(opening_buys) if opening_buys is not None else compute_lifecycle_opening_buys(plan, predicted_token=predicted_token)
     atomic = None
-    if len(plan.markets) == 1 and not any(funding.kind == LifecycleFundingKind.SWAP for funding in plan.funding):
+    if len(plan.markets) == 1:
         atomic = _build_lifecycle_command(plan, "atomic", ufg=ufg)
     activation = _build_lifecycle_command(plan, "activate", ufg=ufg)
     markets, reserve = _market_gas(plan), _forwarding_reserve(plan, "activate")

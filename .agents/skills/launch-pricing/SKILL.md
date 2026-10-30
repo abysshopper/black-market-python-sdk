@@ -193,9 +193,12 @@ duplicate funding rows or assume a single route build funds several quote assets
 
 Build late enough to avoid expiry, then assess the complete committed plan.
 Conversions rely on their calldata amountOutMinimum/deadline, never a simulated
-output. Multi-market or conversion funding is staged. Changed calldata before
-submission means rebuild/review an unstarted commitment. After begin/submission,
-recover the exact original plan; expiry may require cancellation, not a silent
-refresh. Never replace the committed first buy with a post-launch wallet swap.
+output. Single-market conversion funding can be atomic if its known budget plus
+poster allocation fits; each Swap adds an empirical 2M compute reserve before
+at least 25% padding, not a universal arbitrary-router bound. Multi-market plans
+remain staged. Changed calldata before submission means rebuild/review an
+unstarted commitment. After begin/submission, recover the exact original plan;
+expiry may require cancellation, not a silent refresh. Never replace the
+committed first buy with a post-launch wallet swap.
 
 Source/evidence map: `../token-launch/references/audit-history.md`.

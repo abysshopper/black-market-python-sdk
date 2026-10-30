@@ -46,9 +46,12 @@ Use synchronous Web3, not AsyncWeb3. `read_lifecycle_profiles`, `read_launch_pro
 Do not translate Node calls mechanically or wrap unified preparation in another
 mining/planning loop. Release presets own profile/deployment wiring. Launch commands
 use the fixed preset native ceiling (32M total gas on 4663), not profile-sized gas,
-poster additions or held-gas substitutions. Multi-market or conversion funding is
-always staged. Unknown capacity refuses without an execution fallback. Planning
-never simulates calldata; build-next constructs only the immediate command.
+poster additions or held-gas substitutions. Multi-market plans remain staged.
+Single-market conversion funding can be atomic when its known budget, including
+the empirical 2M compute reserve per Swap before padding, plus poster allocation
+fits. This reserve is not arbitrary-router execution proof. Unknown capacity
+refuses without an execution fallback. Planning never simulates calldata;
+build-next constructs only the immediate command.
 Chain identity is observed once per client session; the wallet assigns EOA nonces.
 Launch/domain nonces and receipt-confirmation policy remain unchanged.
 
