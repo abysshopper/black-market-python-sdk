@@ -8,11 +8,13 @@ from pathlib import Path
 import pytest
 
 from black_market_sdk import (
-    RAETO_QUOTE_ASSETS, ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT,
-    KnownLifecycleProfile, LifecycleFeeAssetPolicy, build_launch_transactions,
+    RAETO_QUOTE_ASSETS, ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT, ROBINHOOD_WETH,
+    KnownLifecycleProfile, LifecycleAssetFunding, LifecycleFeeAssetPolicy,
+    LifecycleInitialBuy, LifecycleV4Position, build_launch_transactions,
     build_next_transaction, compute_lifecycle_launch_gas_bounds, compute_lifecycle_opening_buys,
-    decode_lifecycle_pool_bound_v4_market_config, encode_lifecycle_pool_bound_v4_market_config,
-    encode_launch_plan, hash_launch_plan, is_raeto_profile, parse_launch_plan,
+    decode_lifecycle_pool_bound_v4_market_config, derive_launch_position_ranges,
+    encode_lifecycle_pool_bound_v4_market_config,
+    encode_launch_plan, hash_launch_plan, is_raeto_profile, launch_plan_to_dict, parse_launch_plan,
     prepare_and_plan_lifecycle_launch, validate_raeto_launch_plan,
 )
 from black_market_sdk.lifecycle import _prepare_gas_estimate, _LIFECYCLE_CAPACITY_PADDING_BPS
@@ -140,11 +142,53 @@ def test_new_templates_plan_and_continue_with_native_ceiling_without_execution(k
     draft = orient_opening_bands(draft, client, provider)
     launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=draft.creator, mode=mode))
     assert launch.assessment.ready and launch.mode == mode
-    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v4"
+    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v5"
     assert launch.transactions[0].gas_limit == CEILING
     assert len(launch.hook_deployments) == 1
     provider.plan = launch.plan
     command = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
     assert command.assessment.ready and command.gas_limit == CEILING
     assert command.as_transaction() == launch.transactions[0].as_transaction()
+    assert_no_execution(client)
+
+
+@pytest.mark.parametrize("key", KEYS[:2])
+@pytest.mark.parametrize("position_count,selected", [(6, "atomic"), (8, "staged")])
+def test_raeto_dividends_native_conversion_uses_atomic_budget_until_positions_exceed_it(key, position_count, selected):
+    row = next(row for row in MATRIX["cases"] if row["scenario"]["key"] == key
+        and row["scenario"]["marketCount"] == row["scenario"]["positions"] == 1 and row["scenario"]["buyCount"] == 0)
+    draft = parse_launch_plan(json.dumps(row["plan"]))
+    quote = next(asset for asset in RAETO_QUOTE_ASSETS if asset != ROBINHOOD_WETH)
+    config = decode_lifecycle_pool_bound_v4_market_config(draft.markets[0].config)
+    # Synthetic unit-price bands exercise planning, not the retained fork matrix.
+    ranges = derive_launch_position_ranges(launch_sqrt_price_x96=1 << 96,
+        launched_token_is_quote=True, token_budget=draft.token.supply, tick_spacing=config.tick_spacing,
+        venue="uniswap-v4", distribution_preset="staircase", position_count=position_count,
+        position_gaps="adjacent")
+    config = replace(config, sqrt_price_x96=1 << 96, positions=tuple(LifecycleV4Position(
+        position.tick_lower, position.tick_upper, position.liquidity, bytes(32), position.max_token_amount)
+        for position in ranges.positions))
+    draft = replace(draft, token=replace(draft.token, reward_mode=2),
+        markets=(replace(draft.markets[0], quote_asset=quote,
+            config=encode_lifecycle_pool_bound_v4_market_config(config)),),
+        fee_assets=(LifecycleFeeAssetPolicy(quote, 8000, 2000, 0),),
+        funding=(LifecycleAssetFunding(quote, 10**14, 2, "0x" + "00" * 20, 10**16,
+            "0x8888888888888888888888888888888888888888", b"conversion"),),
+        buys=(LifecycleInitialBuy(0, 10**14, 1, draft.creator, 0),))
+    provider = ResumeScenario(draft)
+    client = CountingTransport(provider)
+    draft = orient_opening_bands(draft, client, provider)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft,
+        account=draft.creator, mode="atomic", buy_slippage_bps=50))
+    assert launch.assessment.ready and launch.mode == selected
+    bounds = launch.assessment.gas_profile.bounds
+    assert (bounds.atomic_compute_gas_upper_bound <= CEILING) == (selected == "atomic")
+    assert bounds.activation_compute_gas_upper_bound < CEILING
+    assert launch.plan.buys[0].min_token_out == launch.assessment.gas_profile.initial_buys[0].token_out * 9950 // 10000 > 1
+    assert launch_plan_to_dict(launch.plan)["funding"] == launch_plan_to_dict(draft)["funding"]
+    assert launch.transactions[0].value == 10**16 and launch.transactions[0].gas_limit == CEILING
+    provider.plan = launch.plan
+    current = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
+    assert current.as_transaction() == launch.transactions[0].as_transaction()
+    assert current.assessment.ready
     assert_no_execution(client)

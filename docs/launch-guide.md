@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.16.0** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.16.1** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -365,13 +365,21 @@ Approval commands omit gas so the wallet can prepare their envelopes.
 | `staged` | Begin → packed preparation transactions → one activation | Preparation is split; activation still mints, locks, buys, and opens every market together. |
 
 Staging is not rollback: an expired begun launch remains begun until cancelled.
-Select the mode preference explicitly and review `launch.mode`. Every multi-market
-or conversion-funded plan is staged. Atomic is eligible only for one market
-without conversion when its known budget fits the native ceiling. Explicit staged
-execution remains staged. Contiguous preparation batches reserve poster gas and
-compute headroom; activation is indivisible. An activation that exceeds its budget
-refuses with `ACTIVATION_GAS_LIMIT`: reduce positions or pools before launching.
+Select the mode preference explicitly and review `launch.mode`. Multi-market
+plans remain staged. A known single-market plan, including conversion funding,
+is atomic-eligible when its padded compute budget plus poster allocation fits
+the native ceiling. Explicit staged execution remains staged. Contiguous
+preparation batches reserve poster gas and compute headroom; activation is
+indivisible. An activation that exceeds its budget refuses with
+`ACTIVATION_GAS_LIMIT`: reduce positions or pools before launching.
 Unavailable gas budgets never trigger an execution backend.
+
+Capacity-v5 adds **2,000,000 compute gas per Swap funding row** to the atomic
+basis before at least 25% padding (or greater supplied headroom). Full conversion
+calldata still contributes compute and poster allocation. This empirical reserve
+assumes conversion work fits that allowance; it is not a universal arbitrary-router
+bound or execution proof. Staged activation does not repeat conversion work and
+keeps its existing budget.
 
 Kyber conversions rely on their exact calldata amountOutMinimum and deadline.
 Ordered opening-buy output floors use exact local math and `buy_slippage_bps`.
@@ -615,14 +623,14 @@ recipient. Donations do not become fee revenue or Raeto credit.
 `RAETO_FEE_COLLECTOR_V1_ABI` exposes the exact share/owed/token/quote getters,
 share/claim methods and three Raeto events. See [Raeto reference](reference.md#raeto-profiles).
 
-Both variants use capacity-v4 budgets and exact local opening-buy math.
+Both variants use capacity-v5 budgets and exact local opening-buy math.
 Signing gas stays at the native 32M total ceiling; a ready assessment is a
 budget/input check, **not execution proof**.
 
 ## Auto-compounding launches
 
 Both profiles have reviewed preparation, atomic and activation budgets in
-`robinhood-4663-capacity-v4`; they use the normal planning and continuation flow.
+`robinhood-4663-capacity-v5`; they use the normal planning and continuation flow.
 
 Select `KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL` for a fixed maximum
 hook fee, or `V4_AUTO_COMPOUND_DYNAMIC_POOL` for the config6 minimum/maximum/
@@ -661,9 +669,10 @@ are not SDK offerings; rebuild unstarted plans with the current preset.
 Use normal unified preparation to mine the hook salt. Unlike HMM/UFG, the exact
 auto-compound tail is part of the salt-normalized constructor market commitment:
 changing the share changes the hook prediction and requires mining again.
-Capacity-v4 includes measured position-dependent work for every opening buy.
-Multi-market/conversion plans remain staged; oversized indivisible activation
-still refuses rather than executing a fallback or borrowing another hook's budget.
+Capacity-v5 retains measured position-dependent work for every opening buy.
+Multi-market plans remain staged; single-market conversions use the atomic
+conversion reserve described above. Oversized indivisible activation still
+refuses rather than executing a fallback or borrowing another hook's budget.
 Every post-opening swap compounds in `afterSwap`. Let `eth_estimateGas` include
 that work; never cap swap gas below its estimate. Underfunded compounding reverts
 with `CompoundOutOfGas()` instead of silently skipping.

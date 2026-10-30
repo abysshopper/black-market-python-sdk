@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import replace
 
 import pytest
+from eth_abi import encode as abi_encode
+from eth_utils import keccak
 
 from black_market_sdk import (
     AUCTION_QUOTE_OPTIONS, LifecycleAssetFunding, LifecycleInitialBuy,
@@ -37,10 +39,17 @@ def orient_opening_bands(draft, client, provider):
     return provider.plan
 
 
-def released_draft(count=1, *, buy=False, conversion=False):
+def released_draft(count=1, *, buy=False, conversion=False, single_position=False):
     draft = ordinary_bound_draft(count)
-    draft = replace(draft, markets=tuple(replace(market, quote_asset=RELEASED_QUOTES[index])
-        for index, market in enumerate(draft.markets)))
+    markets = []
+    for index, market in enumerate(draft.markets):
+        config = decode_lifecycle_pool_bound_v4_market_config(market.config)
+        if single_position:
+            config = replace(config, positions=(replace(config.positions[0],
+                tick_lower=-887220, tick_upper=0, max_token_amount=market.token_budget),))
+        markets.append(replace(market, quote_asset=RELEASED_QUOTES[index],
+            config=encode_lifecycle_pool_bound_v4_market_config(config)))
+    draft = replace(draft, markets=tuple(markets))
     funding = ()
     if buy or conversion:
         funding = (LifecycleAssetFunding(ROBINHOOD_WETH, 10**14, 2 if conversion else 1,
@@ -73,7 +82,7 @@ def test_assessment_reserves_native_ceiling_and_only_immediate_envelope_with_fou
     draft, provider, client = scenario()
     launch = prepare(client, draft)
     assert launch.assessment.ready
-    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v4"
+    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v5"
     bounds = launch.assessment.gas_profile.bounds
     assert bounds.atomic_compute_gas_upper_bound > bounds.activation_compute_gas_upper_bound > 0
     immediate = launch.transactions[0]
@@ -95,7 +104,7 @@ def test_assessment_reserves_native_ceiling_and_only_immediate_envelope_with_fou
 
 @pytest.mark.parametrize("conversion", [False, True])
 def test_ordered_buy_protection_uses_exact_local_curve_without_executing_router(conversion):
-    draft, provider, client = scenario(released_draft(buy=True, conversion=conversion))
+    draft, provider, client = scenario(released_draft(buy=True, conversion=conversion, single_position=True))
     launch = prepare(client, draft, buy_slippage_bps=50, mode="atomic")
     quote, = launch.assessment.gas_profile.initial_buys
     assert launch.assessment.ready
@@ -104,9 +113,10 @@ def test_ordered_buy_protection_uses_exact_local_curve_without_executing_router(
     assert draft.buys[0].min_token_out == 1
     from black_market_sdk import launch_plan_to_dict
     assert launch_plan_to_dict(launch.plan)["funding"] == launch_plan_to_dict(draft)["funding"]
-    if conversion:
-        assert launch.mode == "staged"
-        assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound is None
+    assert launch.mode == "atomic"
+    assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound <= 32_000_000
+    assert launch.transactions[0].gas_limit == 32_000_000
+    assert launch.transactions[0].value == draft.funding[0].input_amount
     assert_no_execution(client)
 
 
@@ -130,9 +140,9 @@ def test_metadata_storage_words_round_each_utf8_string_independently():
 def test_conversion_recovery_assesses_only_next_command_without_full_replanning(monkeypatch, held_gas, accepted):
     import black_market_sdk.lifecycle as lifecycle
     draft, provider, client = scenario(released_draft(conversion=True))
-    launch = prepare(client, draft, mode="atomic")
+    launch = prepare(client, draft, mode="staged")
     assert launch.assessment.ready and launch.mode == "staged"
-    assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound is None
+    assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound is not None
     held = replace(launch.transactions[0], gas_limit=held_gas, gas_price=7)
     def forbidden(*args, **kwargs):
         raise AssertionError("Build-next must not replan the suffix or rediscover profiles")
@@ -344,16 +354,17 @@ def test_assessment_obeys_pinned_fee_floor_without_raising_held_price(arb_floor,
 
 @pytest.mark.parametrize("mode,count,conversion,selected", [
     ("atomic", 1, False, "atomic"), ("atomic", 2, False, "staged"),
-    ("staged", 1, False, "staged"), ("atomic", 1, True, "staged"),
+    ("staged", 1, False, "staged"), ("atomic", 1, True, "atomic"),
+    ("staged", 1, True, "staged"), ("atomic", 2, True, "staged"),
 ])
-def test_only_single_market_without_conversion_is_atomic_eligible(mode, count, conversion, selected):
-    draft, provider, client = scenario(released_draft(count, conversion=conversion))
+def test_only_fitting_single_market_atomic_preference_is_selected(mode, count, conversion, selected):
+    draft, provider, client = scenario(released_draft(count, conversion=conversion, single_position=True))
     draft = orient_opening_bands(draft, client, provider)
     launch = prepare(client, draft, mode=mode)
     assert launch.assessment.ready and launch.mode == selected
     assert launch.transactions[0].kind == ("atomic" if selected == "atomic" else "begin")
     assert launch.transactions[0].gas_limit == 32_000_000
-    if count > 1 or conversion:
+    if count > 1:
         assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound is None
     client.calls.clear()
     with pytest.raises(LifecyclePlanningError) as failure:
@@ -388,3 +399,172 @@ def test_capacity_bounds_reject_invalid_headroom_without_rpc(headroom):
     with pytest.raises(LifecyclePlanningError) as failure:
         compute_lifecycle_launch_gas_bounds(draft, predicted_token=PRINCIPAL, headroom_bps=headroom)
     assert failure.value.code == "INVALID_LIMITS"
+
+
+@pytest.mark.parametrize("swap_count", [0, 1, 2, 3])
+@pytest.mark.parametrize("headroom", [0, 1500, 2500, 5000])
+def test_each_swap_reserves_two_million_only_in_atomic_basis_before_padding(swap_count, headroom):
+    draft = released_draft(single_position=True)
+    assets = sorted((ROBINHOOD_WETH, "0x1111111111111111111111111111111111111111",
+        "0x2222222222222222222222222222222222222222"), key=lambda asset: int(asset, 16))
+    direct = replace(draft, funding=tuple(LifecycleAssetFunding(asset, 10**14, 0,
+        asset, 10**14, ZERO, b"") for asset in assets))
+    funding = tuple(replace(funding, kind=2, input_asset=ZERO,
+        target="0x8888888888888888888888888888888888888888", data=b"conversion")
+        if index < swap_count else funding for index, funding in enumerate(direct.funding))
+    request = replace(direct, funding=funding)
+    atomic, = build_launch_transactions(request, mode="atomic")
+    bounds = compute_lifecycle_launch_gas_bounds(request, predicted_token=PRINCIPAL, headroom_bps=headroom)
+    direct_bounds = compute_lifecycle_launch_gas_bounds(direct, predicted_token=PRINCIPAL, headroom_bps=headroom)
+    words = sum((len(value.encode()) + 31) // 32
+        for value in (request.token.name, request.token.symbol, request.token.metadata_uri))
+    basis = 22_000_000 + 25_000 * words + 2_000_000 * swap_count
+    basis += 24 * atomic.calldata_bytes + 100_000 * len(request.fee_assets)
+    padding = 10000 + max(2500, headroom)
+    assert bounds.atomic_compute_gas_upper_bound == (basis * padding + 9999) // 10000
+    activation = build_launch_transactions(request, mode="staged")[-1]
+    direct_activation = build_launch_transactions(direct, mode="staged")[-1]
+    calldata_delta = 24 * (activation.calldata_bytes - direct_activation.calldata_bytes)
+    assert bounds.activation_compute_gas_upper_bound - direct_bounds.activation_compute_gas_upper_bound == (
+        calldata_delta * padding + 9999) // 10000
+    assert atomic.value == sum(funding.input_amount for funding in request.funding if funding.kind == 2)
+
+
+@pytest.mark.parametrize("headroom", [0, 2500, 5000])
+def test_atomic_conversion_compute_boundary_is_inclusive_and_one_gas_over_stages(headroom):
+    from black_market_sdk.lifecycle import _select_launch_mode
+    from black_market_sdk.lifecycle_gas_profile import derive_lifecycle_launch_capacity
+    from black_market_sdk.lifecycle_rpc import LaunchBlock
+    request = released_draft(conversion=True, single_position=True)
+    capacity = derive_lifecycle_launch_capacity(request, predicted_token=PRINCIPAL, headroom_bps=headroom)
+    bound = capacity.bounds.atomic_compute_gas_upper_bound
+    block = LaunchBlock(1, "0x" + "ab" * 32, request.deadline - 1, 64_000_000, 1)
+    for ceiling, selected in ((bound, "atomic"), (bound - 1, "staged")):
+        limits = LaunchExecutionLimits(headroom_bps=headroom, chain_transaction_gas_limit=ceiling)
+        assert _select_launch_mode(None, request, "atomic", capacity, block, limits) == selected
+        assert _select_launch_mode(None, request, "staged", capacity, block, limits) == "staged"
+
+
+@pytest.mark.parametrize("over", [False, True])
+def test_native_conversion_selection_reserves_current_poster_inside_fixed_ceiling(over):
+    request = released_draft(conversion=True, single_position=True)
+    atomic, = build_launch_transactions(request, mode="atomic")
+    bound = compute_lifecycle_launch_gas_bounds(request, predicted_token=PRINCIPAL).atomic_compute_gas_upper_bound
+    size = atomic.calldata_bytes + 384
+    compressed = size + 8 * (size // 1024) + 64
+    price = (32_000_000 - bound) // (2 * compressed) + int(over)
+    draft, provider, client = scenario(request, l1_price_per_byte=price)
+    launch = prepare(client, draft, mode="atomic")
+    assert launch.assessment.ready
+    assert launch.mode == ("staged" if over else "atomic")
+    assert (bound + 2 * compressed * price <= 32_000_000) == (not over)
+    assert launch.transactions[0].gas_limit == 32_000_000
+    assert_no_execution(client)
+
+
+def test_oversized_single_market_conversion_retains_bound_but_selects_staged():
+    draft, provider, client = scenario(released_draft(conversion=True))
+    launch = prepare(client, draft, mode="atomic")
+    assert launch.assessment.ready and launch.mode == "staged"
+    assert launch.assessment.gas_profile.bounds.atomic_compute_gas_upper_bound > 32_000_000
+    assert launch.assessment.gas_profile.bounds.activation_compute_gas_upper_bound < 32_000_000
+    assert [transaction.kind for transaction in launch.transactions] == ["begin", "prepare", "activate"]
+    assert_no_execution(client)
+
+
+def test_atomic_conversion_continuation_refreshes_funding_and_fees_without_replanning(monkeypatch):
+    import black_market_sdk.lifecycle as lifecycle
+    draft, provider, client = scenario(released_draft(buy=True, conversion=True, single_position=True))
+    launch = prepare(client, draft, mode="atomic", buy_slippage_bps=50)
+    assert launch.assessment.ready and launch.mode == "atomic"
+    provider.plan = launch.plan
+    held = replace(launch.transactions[0], gas_price=7)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Atomic continuation must not replan or rediscover profiles")
+    monkeypatch.setattr(lifecycle, "_plan_launch", forbidden)
+    monkeypatch.setattr(lifecycle, "_read_plan_metadata", forbidden)
+    current = build_next_transaction(client, launch, reviewed_transaction=held)
+    assert current.as_transaction() == held.as_transaction()
+    assert current.gas_limit == 32_000_000 and current.value == draft.funding[0].input_amount
+    provider.balance = held.value + held.gas_limit * held.gas_price - 1
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=held)
+    assert failure.value.code == "INSUFFICIENT_NATIVE_BALANCE"
+    provider.balance = 10**24
+    provider.gas_price = 8
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=held)
+    assert failure.value.code == "REVIEWED_FEE_TOO_LOW"
+    provider.gas_price = 1
+    provider.l1_price_per_byte = 32_000_000
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=held)
+    assert failure.value.code == "MODE_REVIEW_REQUIRED"
+    provider.l1_price_per_byte = 0
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=held,
+            limits=LaunchExecutionLimits(headroom_bps=5000))
+    assert failure.value.code == "MODE_REVIEW_REQUIRED"
+    provider.timestamp = launch.plan.deadline + 1
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=held)
+    assert failure.value.code == "PLAN_EXPIRED"
+    assert_no_execution(client)
+
+
+@pytest.mark.parametrize("conversion", [False, True])
+@pytest.mark.parametrize("allowance", [0, 1])
+def test_erc20_funding_approvals_precede_atomic_and_refresh_after_allowance_changes(conversion, allowance):
+    from black_market_sdk import get_known_lifecycle_deployment
+    request = released_draft(buy=True, conversion=conversion, single_position=True)
+    original = request.funding[0]
+    input_asset = "0x9999999999999999999999999999999999999999" if conversion else original.asset
+    funding = replace(original, kind=2 if conversion else 0, input_asset=input_asset)
+    draft, provider, client = scenario(replace(request, funding=(funding,)))
+    provider.allowance, provider.token_balance = allowance, 10**24
+    original_request = provider.make_request
+    def token_reads(method, params):
+        if method == "eth_call" and params[0]["to"].lower() == input_asset.lower():
+            selector = params[0]["data"][:10]
+            if selector == "0x" + keccak(text="balanceOf(address)")[:4].hex():
+                return {"result": "0x" + abi_encode(["uint256"], [provider.token_balance]).hex()}
+            if selector == "0x" + keccak(text="allowance(address,address)")[:4].hex():
+                return {"result": "0x" + abi_encode(["uint256"], [provider.allowance]).hex()}
+        return original_request(method, params)
+    provider.make_request = token_reads
+    launch = prepare(client, draft, mode="atomic", buy_slippage_bps=50)
+    assert launch.assessment.ready and launch.mode == "atomic"
+    approval = launch.transactions[0]
+    assert [transaction.kind for transaction in launch.transactions] == (
+        ["approve-reset", "approve", "atomic"] if allowance else ["approve", "atomic"])
+    assert approval.to.lower() == input_asset.lower()
+    escrow = get_known_lifecycle_deployment(chain_id=draft.chain_id, orchestrator=draft.orchestrator).funding_escrow
+    assert launch.approvals[0].spender.lower() == escrow.lower()
+    assert launch.approvals[0].required_amount == funding.input_amount
+    assert approval.gas_limit is approval.gas_price is approval.estimate is None
+    current = build_next_transaction(client, launch, reviewed_transaction=approval)
+    assert current.as_transaction() == approval.as_transaction()
+    assert current.gas_limit is current.gas_price is current.estimate is None
+    provider.plan = launch.plan
+    provider.allowance = funding.input_amount
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch, reviewed_transaction=approval)
+    assert failure.value.code == "REVIEWED_TRANSACTION_MISMATCH"
+    current = build_next_transaction(client, launch)
+    assert current.kind == "atomic" and current.value == 0
+    assert current.gas_limit == 32_000_000 and current.assessment.ready
+    provider.token_balance = funding.input_amount - 1
+    with pytest.raises(LifecyclePlanningError) as failure:
+        build_next_transaction(client, launch)
+    assert failure.value.code == "INSUFFICIENT_FUNDING_BALANCE"
+    assert_no_execution(client)
+
+
+def test_conversion_does_not_assign_capacity_to_an_unknown_template():
+    draft = released_draft(conversion=True, single_position=True)
+    market = draft.markets[0]
+    identity = bytes.fromhex("99" * 32)
+    config = replace(decode_lifecycle_pool_bound_v4_market_config(market.config), profile_id=identity)
+    draft = replace(draft, markets=(replace(market, profile_id=identity,
+        config=encode_lifecycle_pool_bound_v4_market_config(config)),))
+    assert compute_lifecycle_launch_gas_bounds(draft, predicted_token=PRINCIPAL) is None

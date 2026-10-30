@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.1
+
+- Allow known single-market conversion-funded launches to select atomic execution when their compute budget plus poster allocation fits the native ceiling. Adopt `robinhood-4663-capacity-v5`: add an empirical 2,000,000 compute-gas reserve per Swap funding row before at least 25% padding, without claiming a universal bound on arbitrary router execution.
+- Keep the native 32M total signing envelope, direct-funding and activation budgets, explicit staged/multi-market execution, approval handling, committed conversion floors/deadlines, ordered-buy slippage, unknown-profile refusal and fresh next-command assessment unchanged. Planning never executes launch calldata or reads wallet nonces.
+
 ## 0.16.0
 
 - Add Raeto fixed/dynamic config6 presets on the canonical Robinhood graph, generated from the reviewed Node 0.16.0 deployment modules and preserved October 29 admission/registry evidence. Export profile/adapter IDs, payout registry, WETH/USDG quote allowlist, the deployed 500/1000/2500/5000/7500 bps share menu, typed tail codecs, plan validation and verified collector ABI.
@@ -114,4 +119,4 @@
 
 ## Publishing
 
-After merging, publish GitHub release `v0.16.0`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.
+After merging, publish GitHub release `v0.16.1`. The `Publish to PyPI` workflow builds and verifies the distributions and publishes using the `pypi` environment's OIDC trusted publisher. A main-branch merge alone does not publish a package.

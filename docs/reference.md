@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.16.0**.
+for SDK **0.16.1**.
 
 ## Resolve deployment addresses
 
@@ -146,9 +146,10 @@ The opt-in test uses only chain reads/`eth_call`: it predicts a token, mines eac
 profile's hook salt, compares the SDK constructor/prediction with live factory
 metadata, checks factory acceptance/rejection, and compares the **entire market**
 and tail bytes with `scripts/auto_compound_config.py`. Ordinary pytest stays offline.
-Capacity-v4 now includes reviewed auto-compound preparation/atomic/activation
-budgets and position-dependent opening-buy costs. Readiness remains a capacity
-and pinned-input assessment, not execution proof. After opening, compounding
+Capacity-v5 retains reviewed auto-compound preparation/atomic/activation
+budgets and position-dependent opening-buy costs, adding an empirical atomic
+conversion reserve. Readiness remains a capacity and pinned-input assessment,
+not execution proof. After opening, compounding
 executes inside `afterSwap`, so never cap swap gas below `eth_estimateGas`'s result.
 
 ## Raeto profiles
@@ -255,12 +256,18 @@ getters are not planning guards.
   `affordability`) and `capacity_constraint` (`gas-envelope`, `calldata`,
   `activation`, `preparation`).
 - `LifecycleGasProfile` contains `version`, `LifecycleLaunchGasBounds` and exact
-  ordered `initial_buys`. Version `robinhood-4663-capacity-v4` uses the shared
-  measured-max Node table, including Raeto and auto-compounding, with at least
-  25% padding, not current execution evidence. `activation_compute_gas_upper_bound`
-  is required; `atomic_compute_gas_upper_bound` is absent (`None`) for multiple
-  markets or any conversion. Bounds exclude poster allocation and never size
-  signing gas. Missing coverage still refuses `UNKNOWN_GAS_PROFILE`.
+  ordered `initial_buys`. Version `robinhood-4663-capacity-v5` retains the shared
+  measured-max Node table, including Raeto and auto-compounding. Each Swap funding
+  row adds **2,000,000 compute gas to the atomic basis**, then the existing bound
+  is `max(ceil(basis * (10000 + max(2500, headroom_bps)) / 10000),
+  basis + forwarding_reserve)`. Conversion work is funded during begin, so staged
+  activation keeps its existing basis. The reserve is empirical and assumes
+  conversion work fits that allowance; it is not a universal arbitrary-router
+  bound or execution proof. Full calldata compute and poster costs still apply.
+  `activation_compute_gas_upper_bound` is required;
+  `atomic_compute_gas_upper_bound` is absent (`None`) for multiple markets.
+  Bounds exclude poster allocation and never size signing gas. Missing coverage
+  still refuses `UNKNOWN_GAS_PROFILE`.
 - `compute_lifecycle_opening_buys` is pure ordered unopened-curve math, including
   overlaps, bitmap-word steps, per-step rounding and opening hook fees.
   `compute_lifecycle_launch_gas_bounds(plan, predicted_token=..., ufg=...,
@@ -271,8 +278,9 @@ getters are not planning guards.
   committed calldata amountOutMinimum/deadline; opening buys use exact local
   curve math and the committed output floors.
 - Every launch command uses the preset native ceiling, 32M total gas on Robinhood.
-  Multi-market or conversion-funded plans are staged. A single-market,
-  non-conversion atomic preference is selected only when its known budget fits.
+  Multi-market plans remain staged. A single-market atomic preference, including
+  conversion funding, is selected only when its known compute budget plus poster
+  allocation fits the native ceiling. Explicit staged execution remains staged.
   Preparation batches are contiguous and deterministic, accounting for each
   market's profile, positions, at least 25% padding (or greater supplied headroom),
   full calldata processing and poster allocation. Activation remains

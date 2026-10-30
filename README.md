@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.16.0**, Python **3.10+**, import `black_market_sdk`.
+Package **0.16.1**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.16.0
+python -m pip install black-market-sdk==0.16.1
 ```
 
 For the runnable examples, install an editable checkout:
@@ -101,9 +101,10 @@ Counts below are markets / positions / ordered buys.
 | [`launch_erc20_depth_v4.py`](examples/launch_erc20_depth_v4.py) | ERC20, four bands | 1 / 4 / 1 | staged |
 | [`launch_erc20_dividends_multiquote_mixed.py`](examples/launch_erc20_dividends_multiquote_mixed.py) | ERC20 dividends, WETH + USDG | 3 / 7 / 3 | staged |
 
-Planning never executes launch calldata, including conversion routes. Multi-market
-and conversion-funded plans use staged execution. Release-owned capacity budgets
-must fit the native ceiling; unavailable budgets refuse without a simulation
+Planning never executes launch calldata, including conversion routes. A known
+single-market plan can use atomic execution, including conversion funding, when
+its padded compute budget plus poster allocation fits the native ceiling.
+Multi-market plans remain staged; unavailable budgets refuse without a simulation
 fallback. See [prepare and assess](docs/launch-guide.md#prepare-and-assess).
 
 ## Choose an offering
@@ -118,8 +119,9 @@ fallback. See [prepare and assess](docs/launch-guide.md#prepare-and-assess).
 | Auto-compounding | Static/dynamic V4 with fee-funded, hook-owned full-range liquidity | [Auto-compounding launches](docs/launch-guide.md#auto-compounding-launches) |
 | Raeto fee sharing | Fixed/dynamic V4 with a mandatory 5/10/25/50/75% quote-fee share | [Raeto launches](docs/launch-guide.md#raeto-launches) |
 
-Raeto and auto-compounding use the reviewed `robinhood-4663-capacity-v4` budget
-model. Launch commands still reserve the native 32M total gas ceiling.
+Raeto and auto-compounding use the `robinhood-4663-capacity-v5` budget model,
+retaining reviewed template coefficients and adding an empirical conversion reserve.
+Launch commands still reserve the native 32M total gas ceiling.
 
 ## Integrate and recover
 

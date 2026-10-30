@@ -44,9 +44,11 @@ V4 wrappers select the fixed-fee profile; they do not switch to dynamic or HMM.
 
 Planning uses deterministic capacity budgets and pinned inputs, with no launch
 simulation or aggregate simulation window, including conversion routes.
-Multi-market or conversion-funded cases use staged execution. Review the returned
-mode and `assessment.ready`; an unavailable or oversized activation budget refuses
-with an actionable reason rather than executing a fallback.
+Multi-market cases remain staged. Single-market conversions can be atomic when
+their known budget plus poster allocation fits, including an empirical 2M compute
+reserve per Swap before padding. Review the returned mode and `assessment.ready`;
+an unavailable or oversized activation budget refuses with an actionable reason
+rather than executing a fallback.
 
 ## Continue the original run
 
@@ -83,7 +85,7 @@ path if funding is expired; a fresh broadcast cannot continue its identity.
 ## Change the fixed case
 
 Copy a wrapper next to both helpers, or copy all three together and install
-`black-market-sdk==0.14.0`. In `CASE`, `tokenKind` is 0 ERC20 / 1 ERC404;
+`black-market-sdk==0.16.1`. In `CASE`, `tokenKind` is 0 ERC20 / 1 ERC404;
 `rewardMode` is 0 none / 1 staking / 2 dividends; `mode` is `atomic` / `staged`.
 `markets` selects `venue` (`v4` / `abyss`), `quote` (`WETH` / `USDG`), and position
 count; `buysPerMarket` controls ordered buys. `distributionPreset` accepts the SDK

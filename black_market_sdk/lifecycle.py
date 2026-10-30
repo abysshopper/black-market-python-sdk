@@ -2992,7 +2992,7 @@ def _preparation_groups(client: Web3, plan: LaunchPlanV1, prepared: int, block: 
 
 
 def _select_launch_mode(client: Web3, plan: LaunchPlanV1, requested: str, capacity: _ProfiledLaunchCapacity | None, block: LaunchBlock, limits: LaunchExecutionLimits) -> LaunchExecutionMode:
-    if requested != "atomic" or len(plan.markets) != 1 or any(item.kind == LifecycleFundingKind.SWAP for item in plan.funding) or capacity is None or capacity.atomic is None:
+    if requested != "atomic" or len(plan.markets) != 1 or capacity is None or capacity.atomic is None:
         return "staged"
     poster = _nitro_poster_gas_bound(capacity.atomic, _read_nitro_prices(client, block))[0] if limits.protocol == "nitro" else 0
     return "atomic" if capacity.bounds.atomic_compute_gas_upper_bound + poster <= limits.compute_cap(block) else "staged"
