@@ -18,8 +18,9 @@ from .lifecycle_buy_math import has_profiled_opening_math
 from .lifecycle_rpc import LaunchBlock, LaunchExecutionLimits, pinned_rpc, quantity
 from .hmm import is_hmm_profile
 from .ufg import UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, is_ufg_profile
+from .raeto import is_raeto_profile
 
-_PROFILE_VERSION = "robinhood-4663-capacity-v3"
+_PROFILE_VERSION = "robinhood-4663-capacity-v4"
 
 
 def _approval(transaction: LifecycleTransaction) -> bool:
@@ -31,6 +32,8 @@ class _MarketGas:
     abyss: bool
     hmm: bool
     ufg_hook: bool
+    raeto: bool
+    auto_compound: bool
     positions: int
 
 
@@ -40,7 +43,7 @@ def _market_gas(plan: LaunchPlanV1) -> tuple[_MarketGas, ...]:
         abyss = market.config_version == 1
         config = decode_lifecycle_abyss_market_config(market.config) if abyss else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
         result.append(_MarketGas(abyss, is_hmm_profile(market.profile_id), is_ufg_profile(market.profile_id),
-            len(config.positions)))
+            is_raeto_profile(market.profile_id), is_auto_compound_profile(market.profile_id), len(config.positions)))
     return tuple(result)
 
 
@@ -52,17 +55,25 @@ def _capacity_basis(plan: LaunchPlanV1, transaction: LifecycleTransaction,
     creation = ((2_500_000 if token.kind == LifecycleTokenKind.ERC404 else 0)
         + (2_500_000 if token.reward_mode == LifecycleRewardMode.STAKING else 500_000 if token.reward_mode == LifecycleRewardMode.DIVIDENDS else 0)
         + 25_000 * metadata_words)
-    # Measured-max table shared with Node 0.15.1: native Abyss atomic21.584M,
-    # V4 fixed20.833M, HMM26.396M, UFG27.941M; fork Abyss32 activation39.72M.
-    gas = 22_000_000 + creation + (6_500_000 if ufg_route else 0) if atomic else 1_500_000 + (250_000 if ufg_route else 0)
+    # template-gas-matrix.json: Raeto/auto-compound atomic1 <=19.60M,
+    # atomic8 <=23.99M; atomic32 exceeds32M. The18M calibration base plus
+    # position/buy work and25% padding bounds compute and forwarding envelopes.
+    atomic_base = 18_000_000 if markets[0].raeto or markets[0].auto_compound else 22_000_000
+    gas = atomic_base + creation + (6_500_000 if ufg_route else 0) if atomic else 1_500_000 + (250_000 if ufg_route else 0)
     for market in markets:
         if atomic:
             gas += (7_000_000 if market.hmm else 1_000_000 if market.ufg_hook else 500_000 if market.abyss else 0)
             gas += (1_500_000 if market.abyss else 600_000) * (market.positions - 1)
         else:
-            gas += (500_000 + 1_250_000 * market.positions if market.abyss else 250_000 + 500_000 * market.positions)
+            gas += (500_000 + 1_250_000 * market.positions if market.abyss else
+                (500_000 if market.raeto else 750_000 if market.auto_compound else 250_000) + 500_000 * market.positions)
             gas += 1_000_000 if market.hmm else 250_000 if market.ufg_hook else 0
     gas += 500_000 * len(quotes)
+    # These collectors revalidate the prepared position set for each opening buy.
+    for quote in quotes:
+        market = markets[quote.market_index]
+        if market.raeto or market.auto_compound:
+            gas += 25_000 * market.positions
     if token.kind == LifecycleTokenKind.ERC404:
         gas += sum(100_000 * ((quote.token_out + token.nft_unit - 1) // token.nft_unit) for quote in quotes)
     return gas + 24 * transaction.calldata_bytes + 100_000 * len(plan.fee_assets)
@@ -81,7 +92,6 @@ def derive_lifecycle_launch_capacity(plan: LaunchPlanV1, *, predicted_token: str
         ufg: UfgLaunchConfig | None = None, headroom_bps: int = 1500,
         opening_buys: Sequence[LifecycleOpeningBuyQuote] | None = None) -> _ProfiledLaunchCapacity | None:
     if (not has_profiled_opening_math(plan)
-            or any(is_auto_compound_profile(market.profile_id) for market in plan.markets)
             or (plan.creator.lower() == UFG_LAUNCH_PROXY_ADDRESS.lower()) != (ufg is not None)):
         return None
     if isinstance(headroom_bps, bool) or not isinstance(headroom_bps, int) or not 0 <= headroom_bps <= 10000:
