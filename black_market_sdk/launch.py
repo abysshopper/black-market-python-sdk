@@ -361,13 +361,19 @@ def estimate_launch_initial_buy(
     *, launch_sqrt_price_x96: int, liquidity: int, paired_token_amount_in: int,
     launched_token_is_quote: bool, fee: int, sqrt_price_limit_x96: int | None = None,
 ) -> LaunchInitialBuyEstimate:
-    """Pure first-position estimate; actual stateful execution is final authority."""
+    """Pure first-position estimate; actual stateful execution is final authority.
+
+    A sqrt_price_limit_x96 equal to launch_sqrt_price_x96 estimates zero output here,
+    while a v4 swap with that limit reverts (PriceLimitAlreadyExceeded).
+    """
     get_tick_at_sqrt_ratio(launch_sqrt_price_x96)
     _integer(liquidity, 1, (1 << 128) - 1, "liquidity")
     _integer(paired_token_amount_in, 0, _MAX_UINT256, "paired_token_amount_in")
     _integer(fee, 0, 999_999, "fee")
     if sqrt_price_limit_x96 is not None:
         _integer(sqrt_price_limit_x96, 0, (1 << 160) - 1, "sqrt_price_limit_x96")
+        if sqrt_price_limit_x96 <= _MIN_SQRT_RATIO or sqrt_price_limit_x96 >= _MAX_SQRT_RATIO:
+            raise ValueError("sqrt_price_limit_x96 must be strictly between MIN_SQRT_RATIO and MAX_SQRT_RATIO")
         if (sqrt_price_limit_x96 < launch_sqrt_price_x96 if launched_token_is_quote
                 else sqrt_price_limit_x96 > launch_sqrt_price_x96):
             raise ValueError("sqrt_price_limit_x96 is on the wrong side of the launch price for this buy")

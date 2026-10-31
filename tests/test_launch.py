@@ -53,6 +53,9 @@ def test_initial_buy_estimate_rejects_a_limit_on_the_wrong_side(token0):
         estimate_launch_initial_buy(**options, sqrt_price_limit_x96=wrong)
     with pytest.raises(ValueError):
         estimate_launch_initial_buy(**options, sqrt_price_limit_x96=1 << 160)
+    out_of_bounds = (1 << 160) - 1 if token0 else 0
+    with pytest.raises(ValueError, match="MIN_SQRT_RATIO"):
+        estimate_launch_initial_buy(**options, sqrt_price_limit_x96=out_of_bounds)
 
 
 def test_tick_math_bounds():
