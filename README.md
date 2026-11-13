@@ -3,7 +3,7 @@
 # Abyss Python SDK
 
 Launch tokens, read pools, swap, and use lending with [web3.py](https://web3py.readthedocs.io).
-Package **0.16.1**, Python **3.10+**, import `black_market_sdk`.
+Package **0.17.0**, Python **3.10+**, import `black_market_sdk`.
 The launch examples target Robinhood Chain mainnet (**4663**).
 
 ## Install
@@ -11,7 +11,7 @@ The launch examples target Robinhood Chain mainnet (**4663**).
 Install the published package in your Python environment:
 
 ```sh
-python -m pip install black-market-sdk==0.16.1
+python -m pip install black-market-sdk==0.17.0
 ```
 
 For the runnable examples, install an editable checkout:
@@ -118,10 +118,12 @@ fallback. See [prepare and assess](docs/launch-guide.md#prepare-and-assess).
 | UFG treasury | ERC20 with quote-fee reserves and holder redemption | [UFG treasury launches](docs/launch-guide.md#ufg-treasury-launches) |
 | Auto-compounding | Static/dynamic V4 with fee-funded, hook-owned full-range liquidity | [Auto-compounding launches](docs/launch-guide.md#auto-compounding-launches) |
 | Raeto fee sharing | Fixed/dynamic V4 with a mandatory 5/10/25/50/75% quote-fee share | [Raeto launches](docs/launch-guide.md#raeto-launches) |
+| RWA rewards | Fixed/dynamic USDG pools whose quote-fee share buys 1–6 listed stock tokens for Dividends holders; LP/developer fees 0 | [RWA rewards launches](docs/launch-guide.md#rwa-rewards-launches) |
 
-Raeto and auto-compounding use the `robinhood-4663-capacity-v5` budget model,
-retaining reviewed template coefficients and adding an empirical conversion reserve.
-Launch commands still reserve the native 32M total gas ceiling.
+Raeto, auto-compounding and RWA rewards use the `robinhood-4663-capacity-v6`
+budget model, with measured template coefficients and an empirical conversion reserve.
+Launch commands still reserve the native 32M total gas ceiling. The eleven wrappers
+do not construct these auxiliary tails; use the typed integrations in the guides.
 
 ## Integrate and recover
 

@@ -1,6 +1,6 @@
 # Launch guide
 
-Use SDK **0.16.1** on Robinhood mainnet (**4663**). Start with the
+Use SDK **0.17.0** on Robinhood mainnet (**4663**). Start with the
 [one-market example](../README.md#run-your-first-launch), or integrate `LaunchPlanV1` below.
 Token amounts use raw integer units; USD inputs use 18 decimals.
 
@@ -27,6 +27,7 @@ remain registered: filter by live admission. For another deployment, pass its ac
 | UFG treasury | Canonical Abyss QUOTE variants or `V4_UFG_FIXED_POOL` / `V4_UFG_DYNAMIC_POOL` | ERC20 without rewards; quote fees become redeemable reserves. [Use the proxy route](#ufg-treasury-launches). |
 | Auto-compounding | `V4_AUTO_COMPOUND_STATIC_POOL` / `V4_AUTO_COMPOUND_DYNAMIC_POOL` | Zero LP/developer fee; compound 0–100% of net hook fees into locked full-range liquidity. [Configure compounding](#auto-compounding-launches). |
 | Raeto fee sharing | `V4_RAETO_FIXED_POOL` / `V4_RAETO_DYNAMIC_POOL` | WETH/USDG, QuoteOnly, zero LP/developer fee; share 5/10/25/50/75% of post-treasury quote fees. [Configure Raeto](#raeto-launches). |
+| RWA rewards | `V4_RWA_FIXED_POOL` / `V4_RWA_DYNAMIC_POOL` | QuoteOnly USDG, zero LP/developer fees; divert quote fees into 1–6 listed stock tokens for Dividends holders. [Configure RWA rewards](#rwa-rewards-launches). |
 
 Choose ERC20/ERC404 and no rewards/staking/dividends separately from the profile.
 ERC404 examples use 100 tokens per NFT unit. An oracle pool does not grant lending admission.
@@ -523,7 +524,7 @@ wrapped ETH can return as WETH. Spent gas is not refunded.
 For ordinary saved core plans, `examples/launch_submit.py` reads progress and emits
 unsigned next/cancel commands; `--receipts` accepts snake_case receipt-reference JSON.
 `launch_recipe.py` encodes bare V4 prefixes. These CLIs do **not construct UFG/HMM/
-auto-compound/Raeto tails**: submit has no `ufg` option, and recipe has no tail input.
+auto-compound/Raeto/RWA tails**: submit has no `ufg` option, and recipe has no tail input.
 Use typed SDK integration for these offerings; complete plans must retain their tails.
 
 | Symptom | Cause | Next action |
@@ -623,9 +624,90 @@ recipient. Donations do not become fee revenue or Raeto credit.
 `RAETO_FEE_COLLECTOR_V1_ABI` exposes the exact share/owed/token/quote getters,
 share/claim methods and three Raeto events. See [Raeto reference](reference.md#raeto-profiles).
 
-Both variants use capacity-v5 budgets and exact local opening-buy math.
+Both variants use capacity-v6 budgets and exact local opening-buy math.
 Signing gas stays at the native 32M total ceiling; a ready assessment is a
 budget/input check, **not execution proof**.
+
+## RWA rewards launches
+
+RWA rewards divert a share of a USDG pool's quote fees into **listed stock
+tokens that stream to holders**. Select `KnownLifecycleProfile.V4_RWA_FIXED_POOL`
+for a fixed maximum hook fee or `V4_RWA_DYNAMIC_POOL` for the
+minimum/maximum/sensitivity schedule. Hook creation bytes match the ordinary
+zero-royalty fixed/dynamic templates; the RWA collector, factory, locker,
+adapter and frozen terms are different.
+
+```python
+from black_market_sdk import (
+    KnownLifecycleProfile, LifecycleRewardMode, RwaLaunchConfigV1,
+    RWA_QUOTE_ASSET, get_known_lifecycle_profile,
+    encode_rwa_launch_tail, decode_rwa_launch_tail, validate_rwa_launch_plan,
+)
+
+preset = get_known_lifecycle_profile(
+    chain_id=4663, orchestrator="0x91560876033d568d25CDe98C78c33ff8FC43962c",
+    key=KnownLifecycleProfile.V4_RWA_FIXED_POOL,
+)
+assert preset is not None and preset.supported
+# Stock addresses must be ascending and listed in the live RWA asset registry.
+rwa = RwaLaunchConfigV1(
+    share_bps=2500, premium_bps=50, max_price_age=0,
+    basket=("0x322F0929c4625eD5bAd873c95208D54E1c003b2d",
+            "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"),
+    weights_bps=(5000, 5000),
+)
+assert decode_rwa_launch_tail(encode_rwa_launch_tail(rwa)) == rwa
+# Add rwa_launch_config=rwa to LifecyclePoolBoundV4MarketConfigV6.
+# Set token.reward_mode=LifecycleRewardMode.DIVIDENDS and give every basket
+# stock a 0/10000/0 fee policy. Once built: validate_rwa_launch_plan(plan).
+```
+
+Copy the preset's treasury, denominator, beneficiary and terms into config6.
+The outer market must use its RWA profile/adapter, **USDG**
+(`RWA_QUOTE_ASSET`), **`fee_mode=1` (QuoteOnly)**, **`lp_fee_pips=0`** and
+**`developer_fee_bps=0`**. One V4 market per quote permits at most one RWA
+market per launch; other offerings can share the plan. The 2500/50 values
+above are illustrative, not recommendations.
+
+| `RwaLaunchConfigV1` field | Range | Meaning |
+| --- | --- | --- |
+| `share_bps` | 0–10,000 | Post-treasury USDG fee share earmarked for stock; 0 turns diversion off. |
+| `premium_bps` | 0–100 | Bonus over Chainlink value paid to keepers selling stock into an earmark. |
+| `max_price_age` | uint32 | Stock-feed age: 0 uses registry defaults; `RWA_ANY_PRICE_AGE` disables this check; otherwise seconds. USDG always retains its registry feed window. |
+| `basket` | 1–6 addresses | Strictly ascending stock tokens, never USDG; fixed for the launch's lifetime. |
+| `weights_bps` | one per stock | Integer basis points summing to 10,000; zero weights are allowed. |
+
+The encoder appends exactly `abi.encode(RwaLaunchConfigV1)`, including its
+leading tuple offset (**8 + 2 × basket size words**). Static violations raise
+`INVALID_RWA_CONFIG`; stock **listing** is live registry state enforced
+on-chain when the launch begins.
+
+The collector constructor also requires a **Dividends** launch token and every
+basket stock committed as a hub fee asset with a **0/10000/0**
+owner/rewards/burn policy. Otherwise failures would happen at preparation,
+after begin. `plan_launch`, `prepare_and_plan_lifecycle_launch` and
+`build_next_transaction` call `validate_rwa_launch_plan` and refuse before
+RPC with `INVALID_RWA_CONFIG`. Launch token + USDG + six stocks fill all eight
+fee-asset slots. Term changes change the full plan hash, not the hook's
+salt-normalized prefix commitment; always re-review changed plans.
+
+At collection, `floor(quote fees * share_bps / 10000)` becomes per-stock USDG
+earmarks using current weights. Dust, unearmarked remainder and all launch-token
+fees go to the hub. Keepers call `fill(stock, amount, minQuoteOut, recipient)`
+to sell exact stock against its earmark at registry Chainlink value plus premium;
+`maxFill(stock)` reports the largest current fill. Anyone may call `forward()`
+to send bought stock to the hub; paused/blocked stock is skipped and remains
+pending. Call it in the same transaction as the hub's `claimAndSplit()`.
+The **current fee owner** can change share, premium, maximum price age and future
+weights with the collector setters; existing earmarks never move.
+`RWA_REWARD_COLLECTOR_V1_ABI` and `RWA_ASSET_REGISTRY_V1_ABI` expose these
+operations and registry reads (`isListed`, `listedAssets`, `quoteFor`, `assetFor`).
+See [RWA identities and preserved evidence](reference.md#rwa-reward-profiles).
+
+Both variants use measured `robinhood-4663-capacity-v6` budgets, deterministic
+preparation batches, exact local opening-buy math and the unchanged native
+**32M total gas ceiling**. Ready means a budget/input check, **not execution
+proof**. See [RWA gas evidence](reference.md#rwa-capacity-v6-evidence).
 
 ## Auto-compounding launches
 

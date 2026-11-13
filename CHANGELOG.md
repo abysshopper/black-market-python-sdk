@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0
+
+- Add supported Robinhood RWA rewards fixed/dynamic pool-bound templates (`V4_RWA_FIXED_POOL`, `V4_RWA_DYNAMIC_POOL`), generated from the 2026-11-13 go-live records and pinned Node registry readback. They reuse byte-identical ordinary fixed and zero-royalty dynamic hook creation code with the distinct RWA adapter/collector/locker graph.
+- Export RWA profile/adapter identities, `RWA_ASSET_REGISTRY_ADDRESS`, `RWA_QUOTE_ASSET` (USDG), basket/premium/age bounds, frozen `RwaLaunchConfigV1`, validators/codecs, `validate_rwa_launch_plan`, and verified `RWA_REWARD_COLLECTOR_V1_ABI` / `RWA_ASSET_REGISTRY_V1_ABI`.
+- Add typed config6 `rwa_launch_config` tails, exactly `abi.encode(RwaLaunchConfigV1)` including the leading tuple offset. Match every accepted deployed term set and reject every static violation against pinned `decodeAndValidate` verdicts; registry listing remains a live on-chain check at begin.
+- Planning, combined preparation and continuation refuse RWA preparation-only failures before any RPC: non-Dividends tokens, basket stocks missing a `0/10000/0` fee policy, non-USDG quotes, wrong adapters, non-QuoteOnly fees and nonzero LP/developer fees (`INVALID_RWA_CONFIG`).
+- Adopt `robinhood-4663-capacity-v6` with measured RWA preparation (including a per-stock term), activation and atomic costs. Preserve other templates' budgets, the native 32M ceiling, poster allowance and refusal paths. Import all 44 RWA observations and exact Node bounds, ordered buys and calldata parity at three headroom settings; refresh all 84 existing parity cases under v6 without replaying launches.
+
 ## 0.16.1
 
 - Allow known single-market conversion-funded launches to select atomic execution when their compute budget plus poster allocation fits the native ceiling. Adopt `robinhood-4663-capacity-v5`: add an empirical 2,000,000 compute-gas reserve per Swap funding row before at least 25% padding, without claiming a universal bound on arbitrary router execution.

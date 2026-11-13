@@ -2,7 +2,7 @@
 
 Use the [launch guide](launch-guide.md) for the deployment sequence. This page
 collects addresses, ABI boundaries, gas accounting, and integration-test setup
-for SDK **0.16.1**.
+for SDK **0.17.0**.
 
 ## Resolve deployment addresses
 
@@ -28,6 +28,7 @@ be supplied explicitly in the plan; lookup does not rewrite a saved plan.
 | `UFG_TREASURY_FACTORY_ADDRESS` | `0x26Aa5D52134c8E6c4C01E9fb53A7568c0C64901F` |
 | `UFG_UPSTREAM_FACTORY_ADDRESS` | `0xA170b5A58C111334A7237F2Ea2c428ec5022f68E` |
 | `RAETO_PAYOUT_REGISTRY_ADDRESS` | `0xBEC2C0e91612090F82df6743F31CDF18B4386b50` |
+| `RWA_ASSET_REGISTRY_ADDRESS` | `0x40356d61871C7Af760903FDD6ceb9344D7c3F328` |
 
 The core's deployment block is **82,880,313**. Start event scans there and chunk
 requests to the provider's block-range limit (the public RPC permits ≤10M).
@@ -99,12 +100,12 @@ Raeto config6 uses `raeto_launch_config=RaetoLaunchConfigV1(share_bps=500)`.
 `encode_raeto_launch_tail` / `decode_raeto_launch_tail` enforce exactly
 `abi.encode(uint16 shareBps)` (**32 bytes**) and the deployed menu
 **500/1000/2500/5000/7500**. LP/developer fees must be zero, fee mode QuoteOnly,
-and the quote WETH/USDG. All four auxiliary tail types are mutually exclusive;
+and the quote WETH/USDG. All five auxiliary tail types are mutually exclusive;
 tails cannot be attached to another profile. Invalid Raeto fees/quotes/tails use
 `INVALID_RAETO_CONFIG`; `validate_raeto_launch_plan` checks the complete,
 exclusively Raeto route with `INVALID_RAETO_PLAN`.
 
-Salt mining preserves tails. The full plan hash commits them. HMM/UFG/Raeto constructors
+Salt mining preserves tails. The full plan hash commits them. HMM/UFG/Raeto/RWA constructors
 commit the salt-normalized prefix only; **auto-compound constructors commit the
 normalized prefix plus their entire 64-byte tail**. Changing a compound share
 therefore changes initcode and the hook address. The V2 constructor remains twenty
@@ -192,6 +193,109 @@ forwarding estimate, at least 5% observed-gas margin, and exact bounds at
 0/1500/5000 bps headroom. The matrix is an ordinary EVM fork, **not native ArbOS
 execution evidence**; it is retained, never replayed by the Python suite.
 
+## RWA reward profiles
+
+These exports are available from `black_market_sdk`. Both presets are supported
+on the known Robinhood **4663** deployment.
+
+| `KnownLifecycleProfile` key / identity constant | Profile ID |
+| --- | --- |
+| `V4_RWA_FIXED_POOL` / `RWA_FIXED_PROFILE_ID` | `0x3b170b03f1ff1c808970f43827df234cde866d73608b6e3e3937601ae7c8676b` |
+| `V4_RWA_DYNAMIC_POOL` / `RWA_DYNAMIC_PROFILE_ID` | `0xab6c24038ff6ec16a300aa268dc4116f1649ae07c272dfc7e814c6f198515043` |
+
+`RWA_FIXED_ADAPTER_ID` is
+`0x0f13f4a8553a4dece69888deb425b04ff169d41132f3e2097034aff00f584dd6`;
+`RWA_DYNAMIC_ADAPTER_ID` is
+`0x46a5f7c611f6584cc99cffcdeb55183d6c3dcafe5fc6fcce85995be82639bbe1`.
+`is_rwa_profile(profile_id)` compares IDs case-insensitively.
+`RWA_ASSET_REGISTRY_ADDRESS` is the owner-upgradeable stock registry (ERC1967
+proxy, implementation `0x6e95829569EDbbd1C018e0E6B635f0210BE57aF4`) both
+factories read. `RWA_QUOTE_ASSET` is USDG,
+`0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`. `RWA_MAX_BASKET=6`,
+`RWA_MAX_PREMIUM_BPS=100` and `RWA_ANY_PRICE_AGE=0xffffffff`.
+
+Frozen `RwaLaunchConfigV1(share_bps, premium_bps, max_price_age, basket,
+weights_bps)` uses tuples for basket and weights. `validate_rwa_launch_config`,
+`encode_rwa_launch_tail` and `decode_rwa_launch_tail` enforce share 0–10,000,
+premium 0–100, uint32 age, 1–6 strictly ascending nonzero/non-USDG stock
+addresses, and integer weights summing to exactly 10,000 (zero weights allowed).
+The wire tail is exactly `abi.encode(RwaLaunchConfigV1)`, including the leading
+tuple offset: **8 + 2 × basket size words**. Truncated, extended or noncanonical
+tails raise `INVALID_RWA_CONFIG`. Stock listing is a live on-chain begin check,
+not an SDK-maintained allowlist.
+
+V6 `rwa_launch_config` is mutually exclusive with HMM/UFG/auto-compound/Raeto
+tails. RWA requires QuoteOnly, zero LP/developer fees, its own adapter and USDG.
+`validate_rwa_market_context(market)` enforces that outer binding.
+`validate_rwa_launch_plan(plan)` additionally requires a **Dividends** token and
+a **0/10000/0** owner/rewards/burn policy for every basket stock; it ignores
+non-RWA markets. Planning, combined preparation and continuation call it before
+any RPC so collector-construction failures do not wait until preparation.
+Term changes bind the full plan hash but not the hook's normalized-prefix
+constructor commitment.
+
+`RWA_REWARD_COLLECTOR_V1_ABI` includes term/earmark/pending getters (`basket`,
+`weightBps`, `earmarked`, `totalEarmarked`, `pendingStock`, `shareBps`,
+`premiumBps`, `maxPriceAge`, `launchToken`, `quoteAsset`, `poolId`, `hub`,
+`registry`), `maxFill`, `fill`, `forward`, four fee-owner setters, all `Rwa*`
+events and collector errors. `RWA_ASSET_REGISTRY_V1_ABI` covers `isListed`,
+`listedAssets`, `assetFeed`, `quoteFor`, `assetFor`, quote-feed getters,
+`owner`, listing events and oracle errors.
+See [collection and keeper semantics](launch-guide.md#rwa-rewards-launches).
+
+`tests/fixtures/rwa-registry-readback.json` preserves admission bytes/receipts,
+runtime hashes, factory metadata, registry proxy/implementation hashes and
+listing, verified ABI provenance and real `decodeAndValidate` results for ten
+accepted/rejected term sets per factory at Robinhood L2 block **113,693,643**
+(`0xea409fea2955aa229e8b1bff0e63d4ffb88c8eba0f85bd8553d9e6479e545461`).
+RWA source is identical at upstream `fde23bb` and deployment `f3076e7`
+(go-live record `9af36c6`). `_rwa_release_20261113.json` binds the presets to
+that evidence and their byte-identical ordinary fixed/dynamic hook creation code.
+Regenerate from a built, reviewed **Node 0.17.0 capacity-v6** checkout, offline:
+
+```sh
+node tools/ci/import_rwa_release.mjs /path/to/black-market-node-sdk
+node tools/ci/import_node_abis.mjs /path/to/black-market-node-sdk/dist/index.js
+```
+
+The importer verifies envelope bytes against readback and admission, copies
+RWA readback/matrix/smoke fixtures without changing historical evidence, and
+generates 1–6-stock config/plan/hash/constructor vectors, accepted/rejected term
+checks and exact Node capacity/ordered-buy/calldata vectors. It refreshes all
+84 existing matrix parity cases under v6 as well as all 44 RWA cases. No RPC,
+fork execution, signing or deployment occurs during import or Python tests.
+
+### RWA capacity-v6 evidence
+
+The preserved Node matrix contains **44 real launches / 88 successful launch
+transactions**, Anvil 1.6.0 at the same block: both templates cover six stocks,
+1/8/32 positions × 0/1/4 buys × atomic/staged, plus one-stock extremes at
+1 position/0 buys and 32 positions/4 buys. Each plan uses a Dividends token,
+USDG, and stock fee policies. Recorded collector terms and exact opening-buy
+outputs were checked by the Node harness.
+
+| Template | Cases | Atomic max | Atomic max fitting 32M | Prepare max | Activation max |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RWA fixed | 22 | 45.872M | 27.334M | 12.293M | 24.426M |
+| RWA dynamic | 22 | 45.931M | 27.389M | 12.293M | 24.509M |
+
+| RWA compute basis before padding | Gas |
+| --- | --- |
+| One-market atomic base / extra position | 17,000,000 / 550,000 |
+| Activation call / market / position | 1,500,000 / 250,000 / 540,000 |
+| Preparation market / extra position / stock | 9,900,000 / 70,000 / 80,000 |
+| Each opening buy | 500,000 + 150,000 + 20,000 × market positions |
+
+Token creation, full calldata and fee-asset terms remain additive. Bounds retain
+at least 25% padding and forwarding reserve comparison; poster allocation is
+separate. Every observation and forwarding estimate fits its bound with at
+least 5% observed-gas margin, and observed 32M fits remain plannable.
+The 32-position atomic cases select staged; every recorded activation fits,
+including six stocks and four buys. Poster costs can still stage/refuse an
+actual boundary. `tests/test_template_gas.py` checks exact Python/Node bounds at
+0/1500/5000 bps headroom without replaying any launches. These are ordinary EVM
+fork measurements, **not native ArbOS execution evidence**.
+
 ## Configure HMM controls
 
 `default_hmm_launch_config` sets strategy share to 50%; bid/ask widths 5, gap 1,
@@ -256,8 +360,9 @@ getters are not planning guards.
   `affordability`) and `capacity_constraint` (`gas-envelope`, `calldata`,
   `activation`, `preparation`).
 - `LifecycleGasProfile` contains `version`, `LifecycleLaunchGasBounds` and exact
-  ordered `initial_buys`. Version `robinhood-4663-capacity-v5` retains the shared
-  measured-max Node table, including Raeto and auto-compounding. Each Swap funding
+  ordered `initial_buys`. Version `robinhood-4663-capacity-v6` retains the shared
+  measured-max Node table and adds [RWA costs](#rwa-capacity-v6-evidence) to Raeto
+  and auto-compounding. Each Swap funding
   row adds **2,000,000 compute gas to the atomic basis**, then the existing bound
   is `max(ceil(basis * (10000 + max(2500, headroom_bps)) / 10000),
   basis + forwarding_reserve)`. Conversion work is funded during begin, so staged
@@ -272,7 +377,7 @@ getters are not planning guards.
   overlaps, bitmap-word steps, per-step rounding and opening hook fees.
   `compute_lifecycle_launch_gas_bounds(plan, predicted_token=..., ufg=...,
   headroom_bps=1500)` is the parallel pure capacity helper. Ordinary templates
-  do not impose a curated-token allowlist; Raeto specifically allows only WETH/USDG.
+  do not impose a curated-token allowlist; Raeto allows only WETH/USDG and RWA only USDG.
 - Planning never calls `eth_simulateV1`, executes a fork or runs launch calldata,
   including Kyber routes and consuming activation. Conversion protection is the
   committed calldata amountOutMinimum/deadline; opening buys use exact local
