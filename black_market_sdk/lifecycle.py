@@ -40,6 +40,10 @@ from .raeto import (
     RAETO_QUOTE_ASSETS, RaetoLaunchConfigV1, decode_raeto_launch_tail,
     encode_raeto_launch_tail, is_raeto_profile, validate_raeto_launch_config,
 )
+from .rwa import (
+    RWA_QUOTE_ASSET, RwaLaunchConfigV1, decode_rwa_launch_tail, encode_rwa_launch_tail,
+    is_rwa_profile, validate_rwa_launch_config, validate_rwa_launch_plan,
+)
 from .lifecycle_abis import (
     ABYSS_MARKET_CONFIG_COMPONENTS_V1, LAUNCH_DIRECTORY_V1_ABI, LAUNCH_FEE_HUB_V3_ABI,
     LAUNCH_FUNDING_ESCROW_V1_ABI, LAUNCH_IMPLEMENTATION_REGISTRY_V2_ABI,
@@ -335,6 +339,7 @@ class LifecyclePoolBoundV4MarketConfigV6:
     ufg_launch_config: UfgLaunchConfig | None = None
     auto_compound_config: AutoCompoundConfigV1 | None = None
     raeto_launch_config: RaetoLaunchConfigV1 | None = None
+    rwa_launch_config: RwaLaunchConfigV1 | None = None
 
 
 LifecyclePoolBoundV4MarketConfig = LifecyclePoolBoundV4MarketConfigV5 | LifecyclePoolBoundV4MarketConfigV6
@@ -863,6 +868,7 @@ def _validate_launch_plan(plan: LaunchPlanV1) -> None:
         previous = int(policy.asset, 16)
     if any(policy.rewards_bps != 0 for policy in plan.fee_assets) != (int(plan.token.reward_mode) != 0):
         raise LifecyclePlanningError("INVALID_FEE_POLICY", "Reward mode and committed rewards shares must agree")
+    validate_rwa_launch_plan(plan)
     previous = 0
     for funding in plan.funding:
         if int(funding.asset, 16) <= previous or funding.amount <= 0 or funding.input_amount <= 0:
@@ -1045,11 +1051,26 @@ def _validate_raeto_market(config: LifecycleV4MarketConfig | LifecyclePoolBoundV
         raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require config6 and an explicit raeto_launch_config")
     if any(field(snake, camel) is not None for snake, camel in (
             ("hmm_launch_config", "hmmLaunchConfig"), ("ufg_launch_config", "ufgLaunchConfig"),
-            ("auto_compound_config", "autoCompoundConfig"))):
-        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG or auto-compound tails")
+            ("auto_compound_config", "autoCompoundConfig"), ("rwa_launch_config", "rwaLaunchConfig"))):
+        raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles cannot carry HMM, UFG, auto-compound or RWA tails")
     if field("fee_mode", "feeMode") != 1 or field("lp_fee_pips", "lpFeePips") != 0 or field("developer_fee_bps", "developerFeeBps") != 0:
         raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto requires QuoteOnly fee_mode 1, zero LP fee and zero developer fee")
     validate_raeto_launch_config(raeto)
+
+
+def _validate_rwa_market(config: LifecycleV4MarketConfig | LifecyclePoolBoundV4MarketConfig | Mapping[str, Any]) -> None:
+    def field(snake: str, camel: str) -> Any:
+        return config.get(camel) if isinstance(config, Mapping) else getattr(config, snake, None)
+    rwa = field("rwa_launch_config", "rwaLaunchConfig")
+    if field("version", "version") != 6 or rwa is None:
+        raise LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles require config6 and an explicit rwa_launch_config")
+    if any(field(snake, camel) is not None for snake, camel in (
+            ("hmm_launch_config", "hmmLaunchConfig"), ("ufg_launch_config", "ufgLaunchConfig"),
+            ("auto_compound_config", "autoCompoundConfig"), ("raeto_launch_config", "raetoLaunchConfig"))):
+        raise LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles cannot carry HMM, UFG, auto-compound or Raeto tails")
+    if field("fee_mode", "feeMode") != 1 or field("lp_fee_pips", "lpFeePips") != 0 or field("developer_fee_bps", "developerFeeBps") != 0:
+        raise LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA requires QuoteOnly fee_mode 1, zero LP fee and zero developer fee")
+    validate_rwa_launch_config(rwa)
 
 
 def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4MarketConfig | Mapping[str, Any]) -> bytes:
@@ -1060,7 +1081,7 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
     else:
         _v1_fee_shape(config)
     prefix_config = ({key: value for key, value in config.items()
-        if key not in {"autoCompoundConfig", "raetoLaunchConfig", "hmmLaunchConfig", "ufgLaunchConfig"}}
+        if key not in {"autoCompoundConfig", "raetoLaunchConfig", "rwaLaunchConfig", "hmmLaunchConfig", "ufgLaunchConfig"}}
         if isinstance(config, Mapping) else config)
     prefix = abi_encode([_tuple_type(components)], [_struct_tuple(components, prefix_config)])
     profile_id = config["profileId"] if isinstance(config, Mapping) else config.profile_id
@@ -1068,11 +1089,17 @@ def encode_lifecycle_pool_bound_v4_market_config(config: LifecyclePoolBoundV4Mar
     ufg = config.get("ufgLaunchConfig") if isinstance(config, Mapping) else getattr(config, "ufg_launch_config", None)
     compound = config.get("autoCompoundConfig") if isinstance(config, Mapping) else getattr(config, "auto_compound_config", None)
     raeto = config.get("raetoLaunchConfig") if isinstance(config, Mapping) else getattr(config, "raeto_launch_config", None)
+    rwa = config.get("rwaLaunchConfig") if isinstance(config, Mapping) else getattr(config, "rwa_launch_config", None)
     if is_raeto_profile(profile_id):
         _validate_raeto_market(config)
         return prefix + encode_raeto_launch_tail(raeto)
     if raeto is not None:
         raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Only Raeto profiles accept a Raeto tail")
+    if is_rwa_profile(profile_id):
+        _validate_rwa_market(config)
+        return prefix + encode_rwa_launch_tail(rwa)
+    if rwa is not None:
+        raise LifecyclePlanningError("INVALID_RWA_CONFIG", "Only RWA profiles accept an RWA tail")
     if is_auto_compound_profile(profile_id):
         if version != 6 or compound is None or hmm is not None or ufg is not None:
             raise LifecyclePlanningError("INVALID_AUTO_COMPOUND_CONFIG", "Auto-compound profiles require config6 and only an explicit auto-compound tail")
@@ -1120,6 +1147,10 @@ def decode_lifecycle_pool_bound_v4_market_config(data: bytes | str, *, expected_
         if version != 6 or raw[:len(prefix)] != prefix:
             raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto profiles require an exact canonical config6 prefix")
         config = replace(config, raeto_launch_config=decode_raeto_launch_tail(raw[len(prefix):]))
+    if is_rwa_profile(config.profile_id):
+        if version != 6 or raw[:len(prefix)] != prefix:
+            raise LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA profiles require an exact canonical config6 prefix")
+        config = replace(config, rwa_launch_config=decode_rwa_launch_tail(raw[len(prefix):]))
     if is_hmm_profile(config.profile_id):
         if version != 6 or raw[:len(prefix)] != prefix:
             raise LifecyclePlanningError("INVALID_HMM_CONFIG", "HMM profiles require an exact canonical config6 prefix")
@@ -1503,6 +1534,12 @@ def validate_v4_lifecycle_market(*, market: LifecycleMarketConfig, config: Lifec
             raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Raeto quote asset must be WETH or USDG")
     elif getattr(config, "raeto_launch_config", None) is not None:
         raise LifecyclePlanningError("INVALID_RAETO_CONFIG", "Only Raeto profiles accept a Raeto tail")
+    if is_rwa_profile(config.profile_id):
+        _validate_rwa_market(config)
+        if market.quote_asset.lower() != RWA_QUOTE_ASSET.lower():
+            raise LifecyclePlanningError("INVALID_RWA_CONFIG", "RWA quote asset must be USDG")
+    elif getattr(config, "rwa_launch_config", None) is not None:
+        raise LifecyclePlanningError("INVALID_RWA_CONFIG", "Only RWA profiles accept an RWA tail")
     if is_hmm_profile(config.profile_id):
         hmm = getattr(config, "hmm_launch_config", None)
         if config.version != 6 or hmm is None or config.lp_fee_pips != 0 or config.developer_fee_bps != 0:
@@ -2939,14 +2976,16 @@ def _prepare_gas_estimate(plan: LaunchPlanV1, index: int) -> int:
         else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=market.config_version)
         if is_pool_bound_v4_config_version(market.config_version) else decode_lifecycle_v4_market_config(market.config))
     count = len(config.positions)
-    # Native/fork measured maxima shared with Node 0.16.0. Single-market
+    # Native/fork measured maxima shared with Node 0.17.0. Single-market
     # observations include overhead; additional positions use the marginal cost.
     base, position = ((9_800_000, 70_000) if market.config_version == 1 else
         (15_000_000, 50_000) if is_hmm_profile(market.profile_id) else
         (10_000_000, 70_000) if is_ufg_profile(market.profile_id) else
         (9_300_000, 70_000) if is_raeto_profile(market.profile_id) else
+        (9_900_000, 70_000) if is_rwa_profile(market.profile_id) else
         (8_900_000, 70_000) if is_auto_compound_profile(market.profile_id) else (9_000_000, 40_000))
-    return base + position * (count - 1)
+    basket_gas = 80_000 * len(config.rwa_launch_config.basket) if getattr(config, "rwa_launch_config", None) is not None else 0
+    return base + position * (count - 1) + basket_gas
 
 
 def _forwarding_reserve(plan: LaunchPlanV1, kind: str) -> int:
@@ -3255,6 +3294,7 @@ def build_next_transaction(
     if action != "cancel":
         for market in plan.markets:
             _validate_raeto_market_context(market)
+        validate_rwa_launch_plan(plan)
     if selected is None:
         raise LifecyclePlanningError("EXPLICIT_MODE_REQUIRED", "Building requires an explicitly selected mode")
     selected = _mode(selected)

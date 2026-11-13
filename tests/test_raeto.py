@@ -269,6 +269,7 @@ def test_share_changes_bind_plan_but_preserve_prefix_only_constructor_and_core_r
 def test_collector_abi_is_the_verified_node_subset():
     assert {item["name"] for item in RAETO_FEE_COLLECTOR_V1_ABI} == {
         "shareBps", "owed", "claimRaeto", "setShareBps", "launchToken", "quoteAsset",
+        "poolId", "payoutRegistry",
         "RaetoShareUpdated", "RaetoFeesBooked", "RaetoFeesClaimed",
     }
     for row in EVIDENCE["profiles"]:

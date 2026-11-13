@@ -19,8 +19,9 @@ from .lifecycle_rpc import LaunchBlock, LaunchExecutionLimits, pinned_rpc, quant
 from .hmm import is_hmm_profile
 from .ufg import UFG_LAUNCH_PROXY_ADDRESS, UfgLaunchConfig, is_ufg_profile
 from .raeto import is_raeto_profile
+from .rwa import is_rwa_profile
 
-_PROFILE_VERSION = "robinhood-4663-capacity-v5"
+_PROFILE_VERSION = "robinhood-4663-capacity-v6"
 
 
 def _approval(transaction: LifecycleTransaction) -> bool:
@@ -33,6 +34,7 @@ class _MarketGas:
     hmm: bool
     ufg_hook: bool
     raeto: bool
+    rwa: bool
     auto_compound: bool
     positions: int
 
@@ -43,7 +45,8 @@ def _market_gas(plan: LaunchPlanV1) -> tuple[_MarketGas, ...]:
         abyss = market.config_version == 1
         config = decode_lifecycle_abyss_market_config(market.config) if abyss else decode_lifecycle_pool_bound_v4_market_config(market.config, expected_version=6)
         result.append(_MarketGas(abyss, is_hmm_profile(market.profile_id), is_ufg_profile(market.profile_id),
-            is_raeto_profile(market.profile_id), is_auto_compound_profile(market.profile_id), len(config.positions)))
+            is_raeto_profile(market.profile_id), is_rwa_profile(market.profile_id),
+            is_auto_compound_profile(market.profile_id), len(config.positions)))
     return tuple(result)
 
 
@@ -58,7 +61,9 @@ def _capacity_basis(plan: LaunchPlanV1, transaction: LifecycleTransaction,
     # template-gas-matrix.json: Raeto/auto-compound atomic1 <=19.60M,
     # atomic8 <=23.99M; atomic32 exceeds32M. The18M calibration base plus
     # position/buy work and25% padding bounds compute and forwarding envelopes.
-    atomic_base = 18_000_000 if markets[0].raeto or markets[0].auto_compound else 22_000_000
+    # RWA atomic1 <=22.79M and atomic8/four buys <=27.39M; retain their 32M fit.
+    atomic_base = (17_000_000 if markets[0].rwa else
+        18_000_000 if markets[0].raeto or markets[0].auto_compound else 22_000_000)
     gas = atomic_base + creation + (6_500_000 if ufg_route else 0) if atomic else 1_500_000 + (250_000 if ufg_route else 0)
     # Empirical allowance for escrow/router work, not an arbitrary-route proof.
     # Conversion happens during begin, so activation keeps its existing budget.
@@ -67,16 +72,19 @@ def _capacity_basis(plan: LaunchPlanV1, transaction: LifecycleTransaction,
     for market in markets:
         if atomic:
             gas += (7_000_000 if market.hmm else 1_000_000 if market.ufg_hook else 500_000 if market.abyss else 0)
-            gas += (1_500_000 if market.abyss else 600_000) * (market.positions - 1)
+            gas += (1_500_000 if market.abyss else 550_000 if market.rwa else 600_000) * (market.positions - 1)
         else:
             gas += (500_000 + 1_250_000 * market.positions if market.abyss else
+                250_000 + 540_000 * market.positions if market.rwa else
                 (500_000 if market.raeto else 750_000 if market.auto_compound else 250_000) + 500_000 * market.positions)
             gas += 1_000_000 if market.hmm else 250_000 if market.ufg_hook else 0
     gas += 500_000 * len(quotes)
     # These collectors revalidate the prepared position set for each opening buy.
     for quote in quotes:
         market = markets[quote.market_index]
-        if market.raeto or market.auto_compound:
+        if market.rwa:
+            gas += 150_000 + 20_000 * market.positions
+        elif market.raeto or market.auto_compound:
             gas += 25_000 * market.positions
     if token.kind == LifecycleTokenKind.ERC404:
         gas += sum(100_000 * ((quote.token_out + token.nft_unit - 1) // token.nft_unit) for quote in quotes)

@@ -29,6 +29,8 @@ class KnownLifecycleProfile(str, Enum):
     V4_AUTO_COMPOUND_DYNAMIC_POOL = "v4-auto-compound-dynamic-pool"
     V4_RAETO_FIXED_POOL = "v4-raeto-fixed-pool"
     V4_RAETO_DYNAMIC_POOL = "v4-raeto-dynamic-pool"
+    V4_RWA_FIXED_POOL = "v4-rwa-fixed-pool"
+    V4_RWA_DYNAMIC_POOL = "v4-rwa-dynamic-pool"
 
 
 class KnownLifecycleHook(str, Enum):
@@ -112,6 +114,12 @@ def _load_deployment() -> LifecycleDeploymentPreset:
         raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "Raeto presets must bind to the canonical lifecycle deployment")
     data["adapters"].extend(raeto["adapters"])
     data["profiles"].extend(raeto["profiles"])
+    rwa = json.loads(files("black_market_sdk").joinpath("_rwa_release_20261113.json").read_text())
+    if (rwa["chainId"] != data["chainId"] or rwa["orchestrator"].lower() != addresses["orchestrator"].lower()
+            or rwa["registry"].lower() != addresses["registry"].lower()):
+        raise LifecyclePlanningError("PROFILE_PRESET_MISMATCH", "RWA presets must bind to the canonical lifecycle deployment")
+    data["adapters"].extend(rwa["adapters"])
+    data["profiles"].extend(rwa["profiles"])
     adapters = {row["id"]: LifecycleAdapterRegistration(row["address"], row["codehash"],
         row["capabilities"], row["configVersion"], True) for row in data["adapters"]}
     profiles = []
