@@ -82,7 +82,7 @@ def test_assessment_reserves_native_ceiling_and_only_immediate_envelope_with_fou
     draft, provider, client = scenario()
     launch = prepare(client, draft)
     assert launch.assessment.ready
-    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v5"
+    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v6"
     bounds = launch.assessment.gas_profile.bounds
     assert bounds.atomic_compute_gas_upper_bound > bounds.activation_compute_gas_upper_bound > 0
     immediate = launch.transactions[0]

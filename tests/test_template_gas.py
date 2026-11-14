@@ -16,6 +16,7 @@ from black_market_sdk import (
     encode_lifecycle_pool_bound_v4_market_config,
     encode_launch_plan, hash_launch_plan, is_raeto_profile, launch_plan_to_dict, parse_launch_plan,
     prepare_and_plan_lifecycle_launch, validate_raeto_launch_plan,
+    RWA_MAX_BASKET, is_rwa_profile, validate_rwa_launch_plan,
 )
 from black_market_sdk.lifecycle import _prepare_gas_estimate, _LIFECYCLE_CAPACITY_PADDING_BPS
 from black_market_sdk.lifecycle_rpc import hex_bytes
@@ -29,6 +30,12 @@ MATRIX = json.loads(MATRIX_PATH.read_text())
 PARITY = json.loads((FIXTURES / "template-gas-node-parity.json").read_text())
 KEYS = (KnownLifecycleProfile.V4_RAETO_FIXED_POOL, KnownLifecycleProfile.V4_RAETO_DYNAMIC_POOL,
     KnownLifecycleProfile.V4_AUTO_COMPOUND_STATIC_POOL, KnownLifecycleProfile.V4_AUTO_COMPOUND_DYNAMIC_POOL)
+RWA_MATRIX_PATH = FIXTURES / "template-gas-rwa-matrix.json"
+RWA_MATRIX = json.loads(RWA_MATRIX_PATH.read_text())
+RWA_PARITY = json.loads((FIXTURES / "template-gas-rwa-node-parity.json").read_text())
+RWA_KEYS = (KnownLifecycleProfile.V4_RWA_FIXED_POOL, KnownLifecycleProfile.V4_RWA_DYNAMIC_POOL)
+MATRIX_CASES = [(row, expected) for matrix, parity in ((MATRIX, PARITY), (RWA_MATRIX, RWA_PARITY))
+    for row, expected in zip(matrix["cases"], parity["cases"])]
 CEILING = ROBINHOOD_NATIVE_TRANSACTION_GAS_LIMIT
 
 
@@ -61,12 +68,11 @@ def test_preserved_matrix_covers_all_templates_dimensions_without_duplicate_exec
             assert {row["quoteIndex"] for row in rows if row["marketCount"] == 1} == {0, 1}
 
 
-@pytest.mark.parametrize("index,row", list(enumerate(MATRIX["cases"])),
+@pytest.mark.parametrize("row,expected", MATRIX_CASES,
     ids=[f"{index + 1}/{row['scenario']['key']}/{row['scenario']['mode']}/{row['scenario']['positions']}/{row['scenario']['buyCount']}"
-        for index, row in enumerate(MATRIX["cases"])])
-def test_every_observation_fits_compute_forwarding_margin_and_exact_node_bounds(index, row):
+        for index, (row, _) in enumerate(MATRIX_CASES)])
+def test_every_observation_fits_compute_forwarding_margin_and_exact_node_bounds(row, expected):
     plan = parse_launch_plan(json.dumps(row["plan"]))
-    expected = PARITY["cases"][index]
     assert hash_launch_plan(plan) == expected["planHash"]
     assert hashlib.sha256(encode_launch_plan(plan)).hexdigest() == expected["planEncodingSha256"]
     for headroom in expected["bounds"]:
@@ -113,7 +119,10 @@ def test_every_observation_fits_compute_forwarding_margin_and_exact_node_bounds(
     assert row["observed"]["phase"] == "Active"
     assert row["observed"]["positionCount"] == row["scenario"]["positions"]
     assert row["observed"]["opening"]["exactBuyOutputsMatched"] == len(plan.buys)
-    if is_raeto_profile(plan.markets[0].profile_id):
+    if is_rwa_profile(plan.markets[0].profile_id):
+        validate_rwa_launch_plan(plan)
+        assert [collector["basketSize"] for collector in row["observed"]["collectors"]] == [row["scenario"]["basket"]]
+    elif is_raeto_profile(plan.markets[0].profile_id):
         validate_raeto_launch_plan(plan)
         assert len(row["observed"]["collectors"]) == len(plan.markets)
         for collector in row["observed"]["collectors"]:
@@ -142,7 +151,7 @@ def test_new_templates_plan_and_continue_with_native_ceiling_without_execution(k
     draft = orient_opening_bands(draft, client, provider)
     launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=draft.creator, mode=mode))
     assert launch.assessment.ready and launch.mode == mode
-    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v5"
+    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v6"
     assert launch.transactions[0].gas_limit == CEILING
     assert len(launch.hook_deployments) == 1
     provider.plan = launch.plan
@@ -191,4 +200,65 @@ def test_raeto_dividends_native_conversion_uses_atomic_budget_until_positions_ex
     current = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
     assert current.as_transaction() == launch.transactions[0].as_transaction()
     assert current.assessment.ready
+    assert_no_execution(client)
+
+
+def test_preserved_rwa_matrix_covers_full_six_stock_grid_and_one_stock_extremes():
+    assert RWA_MATRIX["chainId"] == 4663 and RWA_MATRIX["forkBlock"] > 113_531_941
+    assert "NOT native ArbOS" in RWA_MATRIX["caveat"]
+    assert len(RWA_MATRIX["cases"]) == len(RWA_PARITY["cases"]) == 44
+    assert hashlib.sha256(RWA_MATRIX_PATH.read_bytes()).hexdigest() == RWA_PARITY["matrixSha256"]
+    signatures = {tuple(row["scenario"][name] for name in ("key", "positions", "buyCount", "mode", "basket"))
+        for row in RWA_MATRIX["cases"]}
+    assert len(signatures) == 44
+    for key in RWA_KEYS:
+        for positions in (1, 8, 32):
+            for buys in (0, 1, 4):
+                for mode in ("atomic", "staged"):
+                    assert (key, positions, buys, mode, RWA_MAX_BASKET) in signatures
+        for positions, buys in ((1, 0), (32, 4)):
+            for mode in ("atomic", "staged"):
+                assert (key, positions, buys, mode, 1) in signatures
+
+
+def test_preserved_read_only_rwa_smoke_binds_ready_v6_assessments_to_recorded_launches():
+    smoke = json.loads((FIXTURES / "template-gas-rwa-smoke.json").read_text())
+    for key in RWA_KEYS:
+        for mode in ("atomic", "staged"):
+            row = next(row for row in smoke["cases"] if row["scenario"]["key"] == key and row["scenario"]["mode"] == mode)
+            assert row["assessment"]["ready"] and row["readOnly"]
+            assert row["assessment"]["version"] == "robinhood-4663-capacity-v6"
+            assert int(row["next"]["gasLimit"]) == CEILING
+            retained = RWA_MATRIX["cases"][row["retainedExecution"]["matrixCase"]]
+            assert row["retainedExecution"]["launchId"] == retained["observed"]["launchId"]
+            assert retained["scenario"]["key"] == key
+
+
+@pytest.mark.parametrize("key", RWA_KEYS)
+@pytest.mark.parametrize("size", [1, RWA_MAX_BASKET])
+@pytest.mark.parametrize("mode", ["atomic", "staged"])
+def test_rwa_planning_and_continuation_preserve_terms_and_native_ceiling_without_execution(key, size, mode):
+    row = next(row for row in RWA_MATRIX["cases"] if row["scenario"]["key"] == key
+        and row["scenario"]["positions"] == 1 and row["scenario"]["buyCount"] == 0 and row["scenario"]["basket"] == size)
+    draft = parse_launch_plan(json.dumps(row["plan"]))
+    config = decode_lifecycle_pool_bound_v4_market_config(draft.markets[0].config)
+    # Synthetic unit-price bands exercise the real planner, not a replay of fork executions.
+    config = replace(config, sqrt_price_x96=1 << 96,
+        positions=tuple(replace(position, tick_lower=0, tick_upper=887220) for position in config.positions))
+    draft = replace(draft, markets=(replace(draft.markets[0],
+        config=encode_lifecycle_pool_bound_v4_market_config(config)),))
+    provider = ResumeScenario(draft)
+    client = CountingTransport(provider)
+    draft = orient_opening_bands(draft, client, provider)
+    launch = asyncio.run(prepare_and_plan_lifecycle_launch(client, draft, account=draft.creator, mode=mode))
+    assert launch.assessment.ready and launch.mode == mode
+    assert launch.assessment.gas_profile.version == "robinhood-4663-capacity-v6"
+    assert launch.transactions[0].gas_limit == CEILING and len(launch.hook_deployments) == 1
+    assert decode_lifecycle_pool_bound_v4_market_config(launch.plan.markets[0].config).rwa_launch_config == config.rwa_launch_config
+    assert launch.plan.fee_assets == draft.fee_assets
+    validate_rwa_launch_plan(launch.plan)
+    provider.plan = launch.plan
+    command = build_next_transaction(client, launch, reviewed_transaction=launch.transactions[0])
+    assert command.assessment.ready and command.gas_limit == CEILING
+    assert command.as_transaction() == launch.transactions[0].as_transaction()
     assert_no_execution(client)

@@ -1,5 +1,5 @@
 {
-  "generator": "Node SDK 0.16.0 capacity-v4; offline (no matrix re-execution)",
+  "generator": "Node SDK 0.17.0 capacity-v6; offline (no matrix re-execution)",
   "matrixSha256": "c4b625ec838351f815c545be174ccccb0eacd4bacd974c973b945e4d7c108b41",
   "cases": [
     {
