@@ -3,8 +3,8 @@
 import pytest
 
 from black_market_sdk import (
-    assert_launch_topology_coverage, derive_launch_pool_recipe, derive_launch_position_ranges,
-    get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio,
+    assert_launch_topology_coverage, derive_launch_buy_sqrt_price_limit_x96, derive_launch_pool_recipe,
+    derive_launch_position_ranges, estimate_launch_initial_buy, get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio,
 )
 
 
@@ -34,6 +34,28 @@ def test_abyss_recipe_rejects_unknown_fee_without_explicit_spacing():
         derive_launch_pool_recipe(paired_token_decimals=18,
             paired_token_usd_price_x18=10**18, target_market_cap_usd_x18=5_000 * 10**18,
             launched_token_is_quote=True, fee=101)
+
+
+@pytest.mark.parametrize("token0", [True, False])
+def test_initial_buy_estimate_rejects_a_limit_on_the_wrong_side(token0):
+    recipe = derive_launch_pool_recipe(paired_token_decimals=18, paired_token_usd_price_x18=2_400 * 10**18,
+        target_market_cap_usd_x18=5_000 * 10**18, launched_token_is_quote=token0, fee=10_000)
+    options = dict(launch_sqrt_price_x96=recipe.launch_sqrt_price_x96, liquidity=recipe.liquidity,
+        paired_token_amount_in=10**16, launched_token_is_quote=token0, fee=10_000)
+    guard = derive_launch_buy_sqrt_price_limit_x96(
+        launch_sqrt_price_x96=recipe.launch_sqrt_price_x96, launched_token_is_quote=token0)
+    assert estimate_launch_initial_buy(**options, sqrt_price_limit_x96=guard).launched_token_amount_out > 0
+    assert estimate_launch_initial_buy(**options,
+        sqrt_price_limit_x96=recipe.launch_sqrt_price_x96).launched_token_amount_out == 0
+    wrong = derive_launch_buy_sqrt_price_limit_x96(
+        launch_sqrt_price_x96=recipe.launch_sqrt_price_x96, launched_token_is_quote=not token0)
+    with pytest.raises(ValueError, match="wrong side"):
+        estimate_launch_initial_buy(**options, sqrt_price_limit_x96=wrong)
+    with pytest.raises(ValueError):
+        estimate_launch_initial_buy(**options, sqrt_price_limit_x96=1 << 160)
+    out_of_bounds = (1 << 160) - 1 if token0 else 0
+    with pytest.raises(ValueError, match="MIN_SQRT_RATIO"):
+        estimate_launch_initial_buy(**options, sqrt_price_limit_x96=out_of_bounds)
 
 
 def test_tick_math_bounds():
